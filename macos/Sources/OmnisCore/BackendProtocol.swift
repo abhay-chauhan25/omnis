@@ -8,7 +8,7 @@ public enum BackendProtocol {
 
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
-    case ask(id: String, text: String, route: String = "auto", web: Bool = true)
+    case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [])
     case cancel(id: String)
     /// The app's reply to a `toolRequest`: what the search found, or why it failed.
     case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String)
@@ -66,8 +66,11 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route, let web):
-            object = ["type": "ask", "id": id, "text": text, "route": route, "web": web]
+        case .ask(let id, let text, let route, let web, let history):
+            object = [
+                "type": "ask", "id": id, "text": text, "route": route, "web": web,
+                "history": history.map { ["role": $0.role.rawValue, "content": $0.content] },
+            ]
         case .toolResult(let id, let callID, let ok, let results, let error):
             object = [
                 "type": "tool_result", "id": id, "call_id": callID, "ok": ok, "error": error,

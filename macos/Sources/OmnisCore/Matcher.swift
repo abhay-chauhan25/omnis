@@ -155,3 +155,34 @@ public enum Matcher {
         return nil
     }
 }
+
+
+/// What to offer in the chat window's launch strip for the text typed so far.
+public struct LaunchSuggestion: Equatable, Sendable {
+    public let entries: [RegistryEntry]
+    /// True when Enter should launch the first entry instead of sending the
+    /// text as a message. In a chat box most text is a message, so this is
+    /// only true when the wording clearly asks for a launch: it starts with a
+    /// verb such as "open", or it is an entry's full name or an alias.
+    public let preselect: Bool
+
+    public static let none = LaunchSuggestion(entries: [], preselect: false)
+
+    public static func suggest(for input: String, registry: Registry, limit: Int = 4) -> LaunchSuggestion {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("\n"), trimmed.count <= 80 else { return .none }
+        // In a chat box, text that merely appears somewhere inside a name
+        // ("hi" in "Ghidra") is far more likely a message than a launch, so
+        // only names that the text starts, or starts a word of, are offered.
+        let matches = Matcher.rank(query: trimmed, registry: registry, limit: 12)
+            .filter { $0.score > Matcher.substring }
+            .prefix(limit)
+        guard let top = matches.first else { return .none }
+        let tokens = TextNormalizer.normalize(trimmed).split(separator: " ")
+        let startsWithVerb = tokens.count > 1 && QueryParser.verbs.contains(String(tokens[0]))
+        return LaunchSuggestion(
+            entries: matches.map(\.entry),
+            preselect: startsWithVerb || top.score >= Matcher.exact
+        )
+    }
+}

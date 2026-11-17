@@ -77,6 +77,7 @@ public final class BackendService: @unchecked Sendable {
         let text: String
         let route: String
         let web: Bool
+        let history: [ChatTurn]
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -135,7 +136,13 @@ public final class BackendService: @unchecked Sendable {
 
     /// Sends a question. Pieces of the answer arrive on the returned stream.
     /// Dropping or cancelling the stream cancels the request.
-    public func ask(_ text: String, route: String = "auto", web: Bool = true) -> AsyncThrowingStream<AnswerEvent, Error> {
+    /// `history` is the earlier turns of the conversation, oldest first.
+    public func ask(
+        _ text: String,
+        route: String = "auto",
+        web: Bool = true,
+        history: [ChatTurn] = []
+    ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
             guard text.count <= Self.maxQuestionLength else {
@@ -146,7 +153,7 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, route: route, web: web, continuation: continuation)
+                self.pending[id] = Pending(text: text, route: route, web: web, history: history, continuation: continuation)
                 self.send(id)
             }
         }
@@ -176,7 +183,7 @@ public final class BackendService: @unchecked Sendable {
             // Marked before writing: from here the request belongs to this
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
-            try write(.ask(id: id, text: request.text, route: request.route, web: request.web))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -277,7 +284,7 @@ public final class BackendService: @unchecked Sendable {
         try write(.hello(protocolVersion: BackendProtocol.version))
         for id in resend {
             guard let request = pending[id] else { continue }
-            try write(.ask(id: id, text: request.text, route: request.route, web: request.web))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history))
         }
     }
 

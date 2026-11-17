@@ -11,10 +11,11 @@ from . import protocol
 from .handlers import MOCK_MODEL
 from .models import AnswerError, AnswerInfo, ToolRequest
 
-# A handler takes the question, the requested route, and whether web search
-# is allowed. It yields pieces of text, may yield ToolRequests for the app to
-# carry out, and may finish with one AnswerInfo describing what answered.
-Handler = Callable[[str, str, bool], AsyncIterator["str | AnswerInfo | ToolRequest"]]
+# A handler takes the question, the requested route, whether web search is
+# allowed, and the earlier turns of the conversation. It yields pieces of
+# text, may yield ToolRequests for the app to carry out, and may finish with
+# one AnswerInfo describing what answered.
+Handler = Callable[[str, str, bool, list], AsyncIterator["str | AnswerInfo | ToolRequest"]]
 Writer = Callable[[bytes], None]
 
 EXIT_OK = 0
@@ -159,13 +160,16 @@ class Service:
             self._send(protocol.error("bad_request", "request id is already in use", request_id))
             return
         self._tasks[request_id] = asyncio.create_task(
-            self._answer(request_id, message["text"], message.get("route", "auto"), message.get("web", True))
+            self._answer(
+                request_id, message["text"], message.get("route", "auto"),
+                message.get("web", True), message.get("history", []),
+            )
         )
 
-    async def _answer(self, request_id: str, text: str, route: str, web: bool) -> None:
+    async def _answer(self, request_id: str, text: str, route: str, web: bool, history: list) -> None:
         info: AnswerInfo | None = None
         try:
-            async for piece in self._handler(text, route, web):
+            async for piece in self._handler(text, route, web, history):
                 if isinstance(piece, AnswerInfo):
                     info = piece
                 elif isinstance(piece, ToolRequest):

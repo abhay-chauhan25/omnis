@@ -1,0 +1,257 @@
+import AppKit
+import OmnisCore
+import SwiftUI
+
+/// Everything the chat window shows, and what happens when you send or launch.
+@MainActor
+final class ChatModel: ObservableObject {
+    /// Where a question is answered. "Auto" lets OMNIS decide.
+    enum Lane: String, CaseIterable, Identifiable {
+        case auto, local, claude
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .auto: return "Auto"
+            case .local: return "Local"
+            case .claude: return "Claude"
+            }
+        }
+    }
+
+    @Published var input = "" {
+        didSet { if input != oldValue { refreshSuggestions() } }
+    }
+    @Published private(set) var conversation = Conversation()
+    /// Apps and projects matching what is typed, offered above the input.
+    @Published private(set) var suggestions: [RegistryEntry] = []
+    /// The suggestion Enter would launch, or nil if Enter sends a message.
+    @Published private(set) var selectedSuggestion: Int?
+    @Published var webEnabled = true
+    @Published var lane: Lane = .auto
+    /// A short line under the input: a launch result or a settings warning.
+    @Published private(set) var notice: String?
+    /// Bumped each time the window opens, so the view can take keyboard focus.
+    @Published private(set) var openCount = 0
+
+    private var registry = Registry(entries: [], editor: RegistryConfig.standard.editor)
+    private let backend: BackendService?
+    private let audit: AuditLog
+    private let performer: LaunchPerforming
+    private var askTask: Task<Void, Never>?
+    private var noticeTask: Task<Void, Never>?
+
+    init(backend: BackendService?, audit: AuditLog) {
+        self.backend = backend
+        self.audit = audit
+        self.performer = SystemLaunchPerformer(onLateFailure: { url, status in
+            audit.record(action: "launch", kind: EntryKind.launcher.rawValue, target: url.lastPathComponent,
+                         outcome: "error", detail: "exited with status \(status)")
+        })
+    }
+
+    var editorName: String { registry.editor.name }
+    var isAnswering: Bool { conversation.isAnswering }
+    var canSend: Bool { !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isAnswering }
+
+    // MARK: Lifecycle
+
+    /// Called each time the window is shown. The conversation is kept.
+    func prepareForOpen() {
+        do {
+            let config = try ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)
+            registry = try Registry.load(config: config)
+            if let warning = registry.warnings.first { show(notice: warning, seconds: 6) }
+        } catch {
+            registry = Registry(entries: [], editor: RegistryConfig.standard.editor)
+            show(notice: error.localizedDescription, seconds: 6)
+        }
+        refreshSuggestions()
+        openCount += 1
+    }
+
+    /// Forgets the conversation and starts again.
+    func newChat() {
+        askTask?.cancel()
+        askTask = nil
+        conversation.clear()
+        input = ""
+        notice = nil
+    }
+
+    // MARK: Typing
+
+    private func refreshSuggestions() {
+        let suggestion = LaunchSuggestion.suggest(for: input, registry: registry)
+        suggestions = suggestion.entries
+        selectedSuggestion = suggestion.preselect ? 0 : nil
+    }
+
+    /// Up moves into the suggestions; down past the last one goes back to "send as a message".
+    func moveSelection(by delta: Int) {
+        guard !suggestions.isEmpty else { return }
+        switch (selectedSuggestion, delta) {
+        case (nil, let step) where step < 0: selectedSuggestion = suggestions.count - 1
+        case (nil, _): break
+        case (let current?, let step):
+            let next = current + step
+            selectedSuggestion = next < 0 ? 0 : (next >= suggestions.count ? nil : next)
+        }
+    }
+
+    /// Enter: launch the selected suggestion, or send the text.
+    func submit() {
+        if let index = selectedSuggestion, suggestions.indices.contains(index) {
+            launch(suggestions[index])
+        } else {
+            send()
+        }
+    }
+
+    // MARK: Launching
+
+    func launch(_ entry: RegistryEntry) {
+        let executor = Executor(registry: registry, performer: performer)
+        let audit = self.audit
+        input = ""
+        Task { [weak self] in
+            do {
+                try await executor.launch(entryID: entry.id)
+                audit.record(action: "launch", kind: entry.kind.rawValue, target: entry.name, outcome: "ok")
+                self?.show(notice: "Opened \(entry.name)", seconds: 2.5)
+            } catch {
+                audit.record(action: "launch", kind: entry.kind.rawValue, target: entry.name,
+                             outcome: "error", detail: error.localizedDescription)
+                self?.show(notice: "\(entry.name): \(error.localizedDescription)", seconds: 8)
+            }
+        }
+    }
+
+    private func show(notice text: String, seconds: Double) {
+        notice = text
+        announce(text)
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if self?.notice == text { self?.notice = nil }
+        }
+    }
+
+    // MARK: Asking
+
+    func send() {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isAnswering else { return }
+
+        // The typed prefixes still work and win over the controls for one message.
+        let options = RoutePrefix.split(text)
+        let route = options.route != "auto" ? options.route : lane.rawValue
+        let web = webEnabled && options.web
+
+        let history = conversation.history()
+        let answerID = conversation.begin(question: text)
+        input = ""
+
+        guard let backend else {
+            let reason = "The OMNIS backend is not set up, so questions cannot be answered yet."
+            conversation.update(answerID) { $0.state = .failed(reason) }
+            audit.record(action: "ask", outcome: "error", detail: "backend not configured")
+            return
+        }
+
+        let audit = self.audit
+        askTask = Task { [weak self] in
+            do {
+                for try await event in backend.ask(options.text, route: route, web: web, history: history) {
+                    guard !Task.isCancelled, let self else { return }
+                    switch event {
+                    case .chunk(let piece):
+                        self.conversation.update(answerID) { $0.text += piece }
+                    case .searching:
+                        self.conversation.update(answerID) { $0.searching = true }
+                        self.announce("Searching the web")
+                    case .sources(let results):
+                        self.conversation.update(answerID) { $0.searching = false; $0.sources = results }
+                        // Counts only. The search terms are never logged.
+                        audit.record(action: "web_search", outcome: "ok", detail: "\(results.count) results")
+                    case .searchFailed(let why):
+                        self.conversation.update(answerID) { $0.searching = false; $0.searchProblem = why }
+                        audit.record(action: "web_search", outcome: "error", detail: why)
+                    case .finished(let model, let details):
+                        self.conversation.update(answerID) {
+                            $0.state = .done
+                            $0.sourceLine = Self.sourceLabel(model: model, details: details)
+                        }
+                        audit.record(action: "ask", outcome: "ok", detail: Self.auditDetail(model: model, details: details))
+                        self.announce("Answer ready")
+                    }
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                // The backend's own error output helps explain a failed start.
+                // It is written by the service, not copied from what was typed.
+                let detail = [error.localizedDescription, backend.lastDiagnostic].compactMap { $0 }.joined(separator: " | ")
+                audit.record(action: "ask", outcome: "error", detail: detail)
+                self?.conversation.update(answerID) { $0.state = .failed(error.localizedDescription) }
+                self?.announce("Problem: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Stops the answer being written. What arrived so far is kept.
+    func stop() {
+        guard let last = conversation.messages.last, last.state == .streaming else { return }
+        askTask?.cancel()
+        askTask = nil
+        conversation.update(last.id) { $0.state = .stopped; $0.searching = false }
+        audit.record(action: "ask", outcome: "stopped")
+    }
+
+    /// Opens a search source in the browser. Only ordinary web pages, and
+    /// only ones that are listed under an answer in this conversation.
+    func open(_ source: SearchResult) {
+        guard conversation.messages.contains(where: { $0.sources.contains(source) }),
+              source.url.scheme?.lowercased() == "https" else { return }
+        NSWorkspace.shared.open(source.url)
+        audit.record(action: "open_source", target: source.host, outcome: "ok")
+    }
+
+    /// Speaks a change aloud for VoiceOver users.
+    private func announce(_ message: String) {
+        AccessibilityNotification.Announcement(message).post()
+    }
+
+    // MARK: Labels
+
+    /// The "which model answered" line under an answer.
+    static func sourceLabel(model: String?, details: AnswerDetails) -> String? {
+        guard let model else { return nil }
+        switch details.route {
+        case "local":
+            var parts = ["\(model), on this Mac"]
+            if (details.searches ?? 0) > 0 { parts.append("searched the web") }
+            if let total = details.totalMilliseconds {
+                parts.append(String(format: "%.1f s", Double(total) / 1000))
+            }
+            return parts.joined(separator: " \u{00B7} ")
+        case "cloud-mock":
+            return "Claude is not connected. This is a stand-in, not an answer."
+        default:
+            return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
+        }
+    }
+
+    /// Numbers only: which model, which route, how long, how many tokens, what it cost.
+    static func auditDetail(model: String?, details: AnswerDetails) -> String {
+        var parts = ["model \(model ?? "unknown")"]
+        if let route = details.route { parts.append("route \(route)") }
+        if let reason = details.reason { parts.append("why: \(reason)") }
+        if let input = details.inputTokens { parts.append("in \(input) tokens") }
+        if let output = details.outputTokens { parts.append("out \(output) tokens") }
+        if let load = details.loadMilliseconds { parts.append("load \(load) ms") }
+        if let total = details.totalMilliseconds { parts.append("total \(total) ms") }
+        if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
+        if let searches = details.searches, searches > 0 { parts.append("web searches \(searches)") }
+        return parts.joined(separator: ", ")
+    }
+}

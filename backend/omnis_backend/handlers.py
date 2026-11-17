@@ -20,7 +20,9 @@ def _mock_delay_seconds() -> float:
         return 0.025
 
 
-async def mock_answer(text: str, route: str = "auto", web: bool = True) -> AsyncIterator["str | ToolRequest"]:
+async def mock_answer(
+    text: str, route: str = "auto", web: bool = True, history: list | None = None
+) -> AsyncIterator["str | ToolRequest"]:
     """Yield a canned reply a word at a time, the way a real model would stream.
 
     A question starting with "search:" asks the app for a web search and
@@ -34,6 +36,11 @@ async def mock_answer(text: str, route: str = "auto", web: bool = True) -> Async
         results = outcome.get("results") or []
         first = results[0]["title"] if results else "none"
         reply = f"Search ok={outcome.get('ok')} results={len(results)} first={first} error={outcome.get('error')}"
+    elif stripped.lower() == "history?":
+        # Test aid: report what conversation the app sent along.
+        turns = history or []
+        last = next((t["content"] for t in reversed(turns) if t["role"] == "user"), "none")
+        reply = f"History has {len(turns)} messages. The last thing you said before this was: {last}"
     else:
         reply = (
             "This is a mock answer from the OMNIS backend. No AI model is connected yet, "

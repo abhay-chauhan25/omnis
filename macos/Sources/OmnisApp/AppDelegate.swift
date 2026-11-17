@@ -3,7 +3,7 @@ import OmnisCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var popup: PopupController!
+    private var chat: ChatWindowController!
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem!
     private var backend: BackendService?
@@ -21,26 +21,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         backend = AppEnvironment.backendConfig().map { BackendService(config: $0, webSearch: web?.search) }
-        let model = PopupModel(backend: backend, audit: audit)
-        popup = PopupController(model: model)
+        let model = ChatModel(backend: backend, audit: audit)
+        chat = ChatWindowController(model: model)
 
         buildMainMenu()
         buildStatusItem()
 
-        hotKey = HotKey.controlSpace { [weak self] in self?.popup.toggle() }
+        hotKey = HotKey.controlSpace { [weak self] in self?.chat.toggle() }
         if hotKey == nil { reportHotKeyUnavailable() }
 
         if AppEnvironment.showOnLaunch {
-            popup.show()
-            if let query = AppEnvironment.initialQuery { model.query = query }
-            print("window \(popup.windowNumber)")
+            chat.show()
+            if let query = AppEnvironment.initialQuery { model.input = query }
+            print("window \(chat.windowNumber)")
             fflush(stdout)
         }
     }
 
-    /// Clicking the Dock icon opens the popup.
+    /// Clicking the Dock icon opens the chat window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        popup.show()
+        chat.show()
         return false
     }
 
@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openPopup() {
-        popup.show()
+        chat.show()
     }
 
     // MARK: Menus

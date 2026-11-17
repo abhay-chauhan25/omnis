@@ -46,19 +46,19 @@ class Harness:
         return await asyncio.wait_for(self.task, 2.0)
 
 
-async def three_words(text, route="auto", web=True):
+async def three_words(text, route="auto", web=True, history=None):
     for piece in ("one ", "two ", "three"):
         await asyncio.sleep(0)
         yield piece
 
 
-async def slow(text, route="auto", web=True):
+async def slow(text, route="auto", web=True, history=None):
     for i in range(1000):
         await asyncio.sleep(0.01)
         yield f"{i} "
 
 
-async def broken(text, route="auto", web=True):
+async def broken(text, route="auto", web=True, history=None):
     yield "partial "
     raise RuntimeError("secret detail that must not leak")
 
@@ -143,7 +143,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_tool_request_goes_out_and_its_result_comes_back(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True):
+        async def searcher(text, route="auto", web=True, history=None):
             request = ToolRequest("web_search", "the query", asyncio.get_running_loop().create_future())
             yield request
             outcome = await request.future
@@ -175,7 +175,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_while_waiting_for_a_search_cleans_up(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True):
+        async def searcher(text, route="auto", web=True, history=None):
             request = ToolRequest("web_search", "q", asyncio.get_running_loop().create_future())
             yield request
             await request.future
@@ -188,6 +188,23 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await h.until(lambda: h.of_type("answer_done"))
         self.assertTrue(h.of_type("answer_done")[0]["cancelled"])
         self.assertEqual(h.service._tool_waiters, {})
+        await h.close()
+
+    async def test_conversation_history_reaches_the_handler(self):
+        seen = []
+
+        async def recorder(text, route="auto", web=True, history=None):
+            seen.append(history)
+            yield "ok"
+
+        h = Harness(recorder)
+        line = json.dumps({"type": "ask", "id": "r1", "text": "next",
+                           "history": [{"role": "user", "content": "first"},
+                                       {"role": "assistant", "content": "reply"}]}).encode() + b"\n"
+        h.feed(HELLO + line + ask("r2"))
+        await h.until(lambda: len(h.of_type("answer_done")) == 2)
+        self.assertEqual(seen[0], [{"role": "user", "content": "first"}, {"role": "assistant", "content": "reply"}])
+        self.assertEqual(seen[1], [])
         await h.close()
 
     async def test_stops_itself_when_idle(self):

@@ -63,6 +63,18 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("has already happened", system)
         self.assertIn("unless you were given numbered search results", system)
 
+    async def test_earlier_turns_are_sent_between_the_instructions_and_the_question(self):
+        history = [{"role": "user", "content": "who won the grand prix"},
+                   {"role": "assistant", "content": "Lando Norris."}]
+        await collect(self.engine.answer("and who came second?", "auto", True, history))
+        roles = [(m["role"], m["content"]) for m in self.chats()[0]["messages"]]
+        self.assertEqual(roles[0][0], "system")
+        self.assertEqual(roles[1:], [("user", "who won the grand prix"), ("assistant", "Lando Norris."),
+                                     ("user", "and who came second?")])
+        # A question with no history still works.
+        await collect(self.engine.answer("hi"))
+        self.assertEqual(len(self.chats()[1]["messages"]), 2)
+
     async def test_reasoning_text_is_never_shown(self):
         self.fake.thinking = ["secret scratch work ", "more scratch"]
         text, _ = await collect(self.engine.answer("hi"))

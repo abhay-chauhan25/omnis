@@ -93,3 +93,57 @@ import Testing
         #expect(first == Matcher.rank(query: "tool", registry: many))
     }
 }
+
+@Suite struct LaunchSuggestionTests {
+    let registry = sampleRegistry()
+
+    func suggest(_ text: String) -> LaunchSuggestion { LaunchSuggestion.suggest(for: text, registry: registry) }
+
+    @Test func clearLaunchWordingIsPreselected() {
+        for text in ["open Ghidra", "open ChatGpt Classic app", "open Voyager project in vs code",
+                     "launch safari", "ghidra", "Safari", "voyager", "ChatGPT Classic"] {
+            let suggestion = suggest(text)
+            #expect(suggestion.preselect, "\(text) should launch on Enter")
+            #expect(!suggestion.entries.isEmpty)
+        }
+        #expect(suggest("open Voyager project in vs code").entries.first?.id == "project:VoyagerAI")
+    }
+
+    @Test func partialNamesAreOfferedButEnterStillSendsAMessage() {
+        for text in ["voy", "chat", "sys", "calc", "x"] {
+            let suggestion = suggest(text)
+            #expect(!suggestion.preselect, "\(text) should send as a message on Enter")
+        }
+        #expect(suggest("voy").entries.map(\.name).prefix(2) == ["VoyagerAI", "Voyagers"])
+    }
+
+    @Test func ordinaryMessagesOfferNothing() {
+        for text in ["hi", "what is the capital of France", "who won the grand prix",
+                     "and who came second?", "open", "", "   ", "line one\nline two"] {
+            #expect(suggest(text) == .none, "\(text) should offer nothing")
+        }
+        #expect(suggest(String(repeating: "safari ", count: 20)) == .none)
+    }
+
+    @Test func aQuestionThatMentionsAnAppIsNotALaunch() {
+        // The matcher needs the whole text to name the target, so sentences do not match.
+        for text in ["why is safari slow", "is xcode free", "how do I use ghidra to open a file"] {
+            #expect(suggest(text) == .none, "\(text) should offer nothing")
+        }
+    }
+
+    @Test func lettersBuriedInsideANameAreNotASuggestion() {
+        #expect(suggest("hi") == .none)          // inside "Ghidra"
+        #expect(suggest("code") == .none || suggest("code").entries.allSatisfy { $0.name.lowercased().contains("code") })
+        #expect(suggest("studio").entries.map(\.name) == ["Visual Studio Code"])  // starts a word: offered
+        #expect(!suggest("studio").preselect)
+    }
+
+    @Test func atMostFourAreOffered() {
+        let many = Registry(
+            entries: (1...20).map { RegistryEntry(kind: .app, name: "Tool \($0)", url: URL(fileURLWithPath: "/Applications/Tool \($0).app")) },
+            editor: vsCode
+        )
+        #expect(LaunchSuggestion.suggest(for: "tool", registry: many).entries.count == 4)
+    }
+}

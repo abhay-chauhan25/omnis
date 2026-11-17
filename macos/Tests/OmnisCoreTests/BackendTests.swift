@@ -61,6 +61,13 @@ import Testing
         #expect(try json(.ask(id: "q", text: "t", route: "local"))["route"] as? String == "local")
         #expect(ask["web"] as? Bool == true)
         #expect(try json(.ask(id: "q", text: "t", web: false))["web"] as? Bool == false)
+        #expect((ask["history"] as? [Any])?.isEmpty == true)
+        let withHistory = try json(.ask(id: "q", text: "next", history: [
+            ChatTurn(role: .user, content: "first"), ChatTurn(role: .assistant, content: "reply"),
+        ]))
+        #expect(withHistory["history"] as? [[String: String]] == [
+            ["role": "user", "content": "first"], ["role": "assistant", "content": "reply"],
+        ])
 
         let result = try json(.toolResult(id: "q", callID: "c1", ok: true, results: [
             SearchResult(title: "T", url: URL(string: "https://example.com/a?b=1")!, snippet: "S"),
@@ -153,6 +160,26 @@ import Testing
         #expect(stub.queries == ["claude max plan"])
         #expect(run.events.prefix(2) == [.searching(query: "claude max plan"), .sources(stub.results)])
         #expect(run.text == "Search ok=True results=2 first=What is the Max plan? error=")
+        backend.stop()
+    }
+
+    // The mock backend reports the history it was sent when asked "history?".
+    @Test func earlierTurnsTravelWithTheQuestionAndSurviveARestart() async throws {
+        let backend = service(idleSeconds: 0.4)
+        let history = [ChatTurn(role: .user, content: "who won the grand prix"),
+                       ChatTurn(role: .assistant, content: "Lando Norris.")]
+        let first = try await trace(backend.ask("history?", history: history))
+        #expect(first.text == "History has 2 messages. The last thing you said before this was: who won the grand prix")
+
+        let none = try await trace(backend.ask("history?"))
+        #expect(none.text.hasPrefix("History has 0 messages."))
+
+        // After the backend has gone idle and restarted, the history still arrives:
+        // the app owns the conversation, the backend remembers nothing.
+        #expect(await waitUntil { !backend.isRunning })
+        let again = try await trace(backend.ask("history?", history: history))
+        #expect(again.text.hasPrefix("History has 2 messages."))
+        #expect(backend.startCount == 2)
         backend.stop()
     }
 
@@ -520,6 +547,33 @@ import Testing
 
         backend.stop()
         await search.shutdown()
+    }
+
+    /// Real model: a follow-up only makes sense if the earlier turns were sent.
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter liveConversation
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveConversationRemembersEarlierTurns() async throws {
+        let ollama = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+        let backend = BackendService(config: config)
+
+        var chat = Conversation()
+        let first = chat.begin(question: "Who wrote Pride and Prejudice? One short sentence.")
+        let one = try await trace(backend.ask("Who wrote Pride and Prejudice? One short sentence.", web: false))
+        chat.update(first) { $0.text = one.text; $0.state = .done }
+        #expect(one.text.contains("Austen"))
+
+        let started = Date()
+        let two = try await trace(backend.ask("In what year was she born?", web: false, history: chat.history()))
+        print("LIVE_FOLLOWUP seconds \(Date().timeIntervalSince(started)) first: \(one.text) | follow-up: \(two.text)")
+        #expect(two.text.contains("1775"))
+
+        // Without the history the same follow-up cannot be answered.
+        let alone = try await trace(backend.ask("In what year was she born?", web: false))
+        #expect(!alone.text.contains("1775"))
+        backend.stop()
     }
 
     @Test func garbageFromTheBackendIsAnErrorNotACrash() async {

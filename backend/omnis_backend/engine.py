@@ -100,7 +100,7 @@ class LocalEngine:
         self._used: set[str] = set()
 
     async def answer(
-        self, text: str, route: str = "auto", web: bool = True
+        self, text: str, route: str = "auto", web: bool = True, history: list | None = None
     ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
         decision = decide(text, route)
         async with self._lock:
@@ -108,7 +108,7 @@ class LocalEngine:
                 async for item in self._claude_stand_in(decision):
                     yield item
             else:
-                async for item in self._local(text, decision, web):
+                async for item in self._local(text, decision, web, history or []):
                     yield item
 
     async def close(self) -> None:
@@ -121,7 +121,7 @@ class LocalEngine:
     # -- local -----------------------------------------------------------
 
     async def _local(
-        self, text: str, decision: Decision, web: bool
+        self, text: str, decision: Decision, web: bool, history: list
     ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
         model = self._models[decision.target]
         started = time.monotonic()
@@ -133,10 +133,11 @@ class LocalEngine:
 
         today = datetime.date.today().strftime("%d %B %Y")
         system = SYSTEM_PROMPT + DATE_PROMPT.format(today=today) + (WEB_PROMPT if web else "")
-        messages: list[dict] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": text},
-        ]
+        # Earlier turns go between the instructions and the new question, so a
+        # follow-up such as "and who came second?" makes sense to the model.
+        messages: list[dict] = [{"role": "system", "content": system}]
+        messages += [{"role": turn["role"], "content": turn["content"]} for turn in history]
+        messages.append({"role": "user", "content": text})
         info = AnswerInfo(model=model, route="local", reason=decision.reason)
         shown = False
 

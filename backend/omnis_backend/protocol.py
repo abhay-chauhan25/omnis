@@ -9,7 +9,9 @@ App to service:
     {"type": "cancel", "id": "<request id>"}
     {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
      "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "..."}
-        ("ask" may also carry "web": false to forbid web search for that question)
+        ("ask" may also carry "web": false to forbid web search for that question,
+         and "history": [{"role": "user"|"assistant", "content": "..."}] holding the
+         earlier turns of the conversation, oldest first)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -36,6 +38,8 @@ MAX_TEXT_CHARS = 100_000
 MAX_ID_CHARS = 128
 
 CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result")
+MAX_HISTORY_MESSAGES = 24
+MAX_HISTORY_CHARS = 24_000
 MAX_RESULTS = 8
 MAX_RESULT_FIELD_CHARS = 2000
 ROUTES = ("auto", "local", "claude")
@@ -94,7 +98,35 @@ def decode_client(line: bytes) -> dict[str, Any]:
     web = obj.get("web", True)
     if not isinstance(web, bool):
         raise ProtocolError("bad_request", "'web' must be true or false", request_id)
-    return {"type": "ask", "id": request_id, "text": text, "route": route, "web": web}
+    return {
+        "type": "ask", "id": request_id, "text": text, "route": route, "web": web,
+        "history": _decode_history(obj.get("history", []), request_id),
+    }
+
+
+def _decode_history(raw: Any, request_id: str) -> list[dict[str, str]]:
+    """Earlier turns of the conversation. Only user and assistant turns are
+    accepted, so nothing sent by the app can pose as a system instruction."""
+    if not isinstance(raw, list):
+        raise ProtocolError("bad_request", "'history' must be a list", request_id)
+    turns: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ProtocolError("bad_request", "each history entry must be an object", request_id)
+        role, content = item.get("role"), item.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            raise ProtocolError("bad_request", "history entries need a user or assistant role and text", request_id)
+        if content.strip():
+            turns.append({"role": role, "content": content})
+    # Keep the most recent turns that fit, dropping the oldest first.
+    kept: list[dict[str, str]] = []
+    total = 0
+    for turn in reversed(turns[-MAX_HISTORY_MESSAGES:]):
+        total += len(turn["content"])
+        if total > MAX_HISTORY_CHARS:
+            break
+        kept.append(turn)
+    return list(reversed(kept))
 
 
 def _decode_tool_result(obj: dict[str, Any], request_id: str) -> dict[str, Any]:
