@@ -4,14 +4,18 @@ Last updated: 2026-11-16
 
 ## Current stage
 
-**Stage 0 — Discovery and architecture.** Approved 2026-11-16. No product code, no installs, no API use.
+**Stage 1 — Local models behind the popup.** Approved 2026-11-16 (`docs/stages/stage-1.md`).
+
+Stage 0 (discovery and architecture) closed on 2026-11-16 with ADR-0001 to ADR-0006. Stage 2 must not start until it has been discussed with the user.
+
+Stage 0 checklist:
 
 - [x] 0a Housekeeping: agent roster, README, `.gitignore`, this file, Git rules in `CLAUDE.md`
 - [x] 0b Round 1: product scope and MVP (ADR-0001)
 - [x] 0b Round 2: popup co-design (ADR-0002)
 - [x] 0b Round 3: app structure and connection (ADR-0003). Local runtime is deferred to Stage 1 benchmarks.
-- [ ] 0b Round 4: security, memory, cost
-- [ ] Decision records written and accepted
+- [x] 0b Round 4: permissions, memory, Claude and battery (ADR-0004, ADR-0005, ADR-0006)
+- [x] Decision records written and accepted
 - [x] Thin-slice plan approved (`docs/stages/thin-slice.md`)
 
 ## Thin slice
@@ -52,6 +56,11 @@ Built, tested and accepted by the user on 2026-11-16. Visual refinements are def
 | 2026-11-16 | Connection: Python runs as a child process, JSON messages over pipes, no network port. | ADR-0003 |
 | 2026-11-16 | The finished popup must answer questions and show the answers in the popup. | ADR-0003 |
 | 2026-11-16 | Thin slice approved, with a Dock icon as well as a menu-bar icon. Launcher sees `/Applications`, `/System/Applications`, `~/projects` and listed launchers. Runtime files live in `~/Library/Application Support/OMNIS/`. No sandbox. | `docs/stages/thin-slice.md` |
+| 2026-11-16 | Permission tiers: read and launch freely; preview and confirm local changes; confirm every outside effect; destructive actions blocked. | ADR-0004 |
+| 2026-11-16 | Facts are remembered only after review; conversations kept locally for 30 days. | ADR-0005 |
+| 2026-11-16 | Claude: local-only default, per-file upload confirmation, 1 USD per request and 20 USD per month, no silent fallback. Local models allowed on battery. | ADR-0006 |
+| 2026-11-16 | Stage 1 approved: Ollama, `qwen3:4b` and `qwen3:8b`, loopback only, 5 minute unload. | `docs/stages/stage-1.md` |
+| 2026-11-16 | Stage 2 waits for a conversation with the user. | — |
 | 2026-11-16 | The macOS Control+Space input-source shortcut was turned off by the user, freeing the hotkey. | ADR-0002 |
 
 The stack, models, UI, memory design and integrations are not decided yet. `CLAUDE.md` §3–§8 is still a proposal.
@@ -81,15 +90,13 @@ What they showed when checked against this Mac:
 
 ## Open decisions
 
-1. Local runtime: Ollama, MLX, or llama.cpp; one local model or two (Round 3, benchmarked in Stage 1).
-2. Permission model: what needs per-action confirmation and what gets scoped standing approval (Round 4).
-3. Memory: what is saved automatically versus after review; Graphify evaluation (Round 4).
-4. Claude: budgets, which data may be uploaded, exact model IDs (Round 4).
+1. Whether two local models earn their keep over one (Stage 1 benchmarks).
+2. Graphify evaluation (needs the link; Stage 4).
+3. Exact Claude model IDs (when live use is approved).
+4. Main-window design (before Stage 2).
 
 ## Questions waiting on the user
 
-- Round 4 choices (permissions, memory, Claude budgets).
-- Approval of the Stage 1 plan (`docs/stages/stage-1.md`), including installing Ollama and downloading models.
 - Main-window design choices for Stage 2.
 - Whether Enter on a partial match may run a launcher script.
 - Icon design for the Dock and menu bar (placeholders are in use).
@@ -109,9 +116,10 @@ What they showed when checked against this Mac:
 - Apple M4 Pro, 24 GB RAM, about 507 GB free, macOS 26.5.1.
 - Present: Git, Python 3.13, uv, VS Code `code` command, Docker, Homebrew, Node.
 - Xcode 26.6 installed and selected.
-- Missing: Ollama, GitHub `gh` CLI. Each needs approval before install.
+- Ollama 0.40.16 installed with Homebrew on 2026-11-16. It is started on demand, not at login.
+- Missing: GitHub `gh` CLI. Needs approval before install.
 - Verification Agent is pinned to Sonnet; the other agents inherit the session model. Revisit for the security-heavy stages.
 
 ## Next step
 
-Round 4 decisions close Stage 0. Then Stage 1 on approval, with the Stage 2 design round alongside.
+Build Stage 1. Then discuss the main-window design with the user before any Stage 2 work.

@@ -2,7 +2,7 @@
 
 ## Approval checkpoint (before work)
 
-**Status: NOT APPROVED**
+**Status: APPROVED by the user on 2026-11-16**
 
 ### Goal and user-visible result
 
