@@ -8,7 +8,7 @@ Last updated: 2026-11-16
 
 - [x] 0a Housekeeping: agent roster, README, `.gitignore`, this file, Git rules in `CLAUDE.md`
 - [x] 0b Round 1: product scope and MVP (ADR-0001)
-- [ ] 0b Round 2: UI co-design, popup first
+- [x] 0b Round 2: popup co-design (ADR-0002)
 - [ ] 0b Round 3: architecture (stack, app-to-backend connection, local runtime)
 - [ ] 0b Round 4: security, memory, cost
 - [ ] Decision records written and accepted
@@ -32,7 +32,10 @@ Last updated: 2026-11-16
 | 2026-11-16 | Thin slice first, then the documented stages. | ADR-0001 |
 | 2026-11-16 | Claude stays mocked. Credits are expected around 2026-11-23; verify in the Anthropic Console and get explicit approval before any live call. | — |
 | 2026-11-16 | Personal use only. No public distribution planned. | — |
-| 2026-11-16 | Full Xcode will be installed by the user when the build needs it. | — |
+| 2026-11-16 | Full Xcode will be installed by the user when the build needs it. Done: Xcode 26.6 is installed. | — |
+| 2026-11-16 | Popup: centre bar, Control+Space, launcher style, closes after a launch, native glass, subtle motion. | ADR-0002 |
+| 2026-11-16 | "Voyager" means the `VoyagerAI` project. | — |
+| 2026-11-16 | Ghidra is launched by running its `ghidraRun` script from its folder. | — |
 
 The stack, models, UI, memory design and integrations are not decided yet. `CLAUDE.md` §3–§8 is still a proposal.
 
@@ -41,6 +44,7 @@ The stack, models, UI, memory design and integrations are not decided yet. `CLAU
 - 2026-11-16: Read all project docs and agent definitions; checked the local environment.
 - 2026-11-16: Stage 0a housekeeping.
 - 2026-11-16: Round 1 decisions recorded in ADR-0001.
+- 2026-11-16: Round 2 popup decisions recorded in ADR-0002.
 
 ## First commands to support
 
@@ -58,7 +62,6 @@ What they showed when checked against this Mac:
 
 ## Open decisions
 
-1. Popup design: position, hotkey, behaviour while typing, dismissal, visual style, motion (Round 2).
 2. Stack: Swift app plus Python service, all-Swift, or a web-tech shell (Round 3).
 3. App-to-backend connection and process lifecycle (Round 3).
 4. Local runtime: Ollama, MLX, or llama.cpp; one local model or two (Round 3, benchmarked in Stage 1).
@@ -68,9 +71,9 @@ What they showed when checked against this Mac:
 
 ## Questions waiting on the user
 
-- Popup design choices (Round 2).
-- How Ghidra is launched today, and where it lives.
-- Which folder "Voyager" means: `VoyagerAI` or `Voyagers`.
+- Stack and app-to-backend connection (Round 3).
+- The folder that holds Ghidra's `ghidraRun` script.
+- Whether to turn off the macOS Control+Space input-source shortcut or pick another hotkey.
 - The exact Graphify repo or link (needed by Round 4).
 
 ## Requirements not yet covered by the docs
@@ -86,9 +89,10 @@ What they showed when checked against this Mac:
 
 - Apple M4 Pro, 24 GB RAM, about 507 GB free, macOS 26.5.1.
 - Present: Git, Python 3.13, uv, VS Code `code` command, Docker, Homebrew, Node.
-- Missing: full Xcode (only Command Line Tools, Swift 5.10), Ollama, GitHub `gh` CLI. Each needs approval before install.
+- Xcode 26.6 installed and selected.
+- Missing: Ollama, GitHub `gh` CLI. Each needs approval before install.
 - Verification Agent is pinned to Sonnet; the other agents inherit the session model. Revisit for the security-heavy stages.
 
 ## Next step
 
-Round 2: co-design the popup. Then Round 3: stack and app-to-backend connection, which the thin slice is built on.
+Round 3: stack and app-to-backend connection, which the thin slice is built on.
