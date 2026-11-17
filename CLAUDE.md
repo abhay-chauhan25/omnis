@@ -104,27 +104,14 @@ Proposed layers:
 
 These are **proposed stages, not a fixed schedule**. Reorder with user approval based on actual needs.
 
-## 10. Multi-agent Claude Code workflow
-Agent definitions live under `.claude/agents/`. Delegate **bounded research, review, design alternatives, and approved implementation slices**. The main Claude session is the **integrator and sole point of communication/approval**. Subagents must not independently choose product direction or bypass gates.
-
-Suggested delegation:
-- `architecture-planner`: compare design options and draft ADRs; no implementation.
-- `macos-ux`: propose UI flows/wireframes and SwiftUI/AppKit tradeoffs; no UI coding before approval.
-- `local-inference`: Qwen/Ollama routing and performance investigations; approved scoped changes only.
-- `memory-graph`: memory schemas, provenance, graph/vector evaluations; approved scoped changes only.
-- `integrations-security`: MCP/tool integrations and threat modeling; approved scoped changes only.
-- `qa-cost`: test plans, benchmarks, API accounting and independent reviews.
-
-For each delegation: specify goal, approved constraints, files allowed, deliverable, tests, and **decisions to bring back**. Prefer parallel **read-only** exploration; avoid multiple agents editing the same files. Main session reconciles outputs, obtains approval, and integrates. Agent tooling and YAML frontmatter support may vary by Claude Code version; verify installed documentation before enabling optional agent features.
-
-## 11. Repo hygiene and documentation
+## 10. Repo hygiene and documentation
 Proposed structure (confirm first): `macos/`, `backend/`, `tests/`, `docs/decisions/`, `docs/architecture/`, `docs/stages/`, `.claude/agents/`.
 - `CLAUDE.md` is the governing instruction document; keep updated only with user approval for material changes.
 - Write ADRs for approved choices; track unresolved questions separately.
 - Do not commit `.env`, API keys, OAuth tokens, private documents, local model weights, logs, or personal memory DBs.
 - Keep reproducible setup instructions and minimal, explainable dependencies.
 
-## 12. Start here — first response to user
+## 11. Start here — first response to user
 Do **not** start coding immediately. Briefly restate OMNIS and ask for approval to begin **Stage 0**. First clarify:
 1. Desired initial MVP: keyboard popup, main app, or both?
 2. UI references/style and preferred behavior; invite back-and-forth design discussion.
@@ -135,3 +122,118 @@ Do **not** start coding immediately. Briefly restate OMNIS and ask for approval 
 7. Whether Claude API is currently funded (otherwise mocks only).
 
 Then propose a short architecture decision agenda and **wait**.
+
+
+# Multi-Agent Development Workflow
+
+The main Claude Code session is the primary developer,
+
+coordinator, and direct collaborator with the user.
+
+A separate Main Builder agent is NOT required.
+
+## Agent Responsibilities
+
+- Architecture Planner: Evaluate architectural approaches.
+
+- macOS UX Designer: Collaborate on interface design.
+
+- Local Inference Engineer: Research and implement local AI.
+
+- Memory Engineer: Develop persistent memory systems.
+
+- Integrations & Security Engineer: Develop integrations securely.
+
+- Verification Agent: Independently validate implementations.
+
+## Development Workflow
+
+1. DISCUSS
+
+   - Main session discusses the next feature with the user.
+
+   - Specialized agents may investigate alternatives.
+
+   - No major decisions without user approval.
+
+2. PLAN
+
+   - Main session creates an implementation plan.
+
+   - Explain technical decisions and tradeoffs.
+
+   - Obtain user approval before implementation.
+
+3. IMPLEMENT
+
+   - Main session owns implementation and integration.
+
+   - Delegate specialized tasks when beneficial.
+
+   - Avoid unnecessary parallel agents.
+
+   - Prevent overlapping file modifications.
+
+4. VERIFY
+
+   - Invoke the Verification Agent after meaningful changes.
+
+   - Independently review code and requirements.
+
+   - Run relevant tests.
+
+   - Main session addresses identified issues.
+
+   - Reverify significant fixes.
+
+5. TEACH
+
+   After each completed stage, explain:
+
+   - WHAT was implemented.
+
+   - WHY the approach was chosen.
+
+   - HOW the implementation works.
+
+   - HOW the user can test it.
+
+   - WHAT comes next.
+
+6. DOCUMENT
+
+   - Update PROGRESS.md.
+
+   - Record approved architectural decisions.
+
+   - Document unresolved issues.
+
+## Agent Usage Guidelines
+
+- Do not invoke agents for trivial tasks.
+
+- Use agents when specialized analysis provides clear value.
+
+- Prefer sequential execution when tasks share dependencies.
+
+- Parallelize only independent tasks.
+
+- Main session retains responsibility for final integration.
+
+- Verification Agent should review independently.
+
+- Never bypass user approval through agent delegation.
+
+## UI Collaboration
+
+All significant UI decisions must be discussed with the user.
+
+The UX Designer may research, propose, and critique designs,
+
+but must not independently finalize layouts, colors,
+
+animations, interactions, or visual direction.
+
+The main session must obtain user approval before implementing
+
+significant UI changes.
