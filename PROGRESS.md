@@ -9,7 +9,7 @@ Last updated: 2026-11-16
 - [x] 0a Housekeeping: agent roster, README, `.gitignore`, this file, Git rules in `CLAUDE.md`
 - [x] 0b Round 1: product scope and MVP (ADR-0001)
 - [x] 0b Round 2: popup co-design (ADR-0002)
-- [ ] 0b Round 3: architecture (stack, app-to-backend connection, local runtime)
+- [x] 0b Round 3: app structure and connection (ADR-0003). Local runtime is deferred to Stage 1 benchmarks.
 - [ ] 0b Round 4: security, memory, cost
 - [ ] Decision records written and accepted
 - [ ] Thin-slice plan approved
@@ -35,7 +35,11 @@ Last updated: 2026-11-16
 | 2026-11-16 | Full Xcode will be installed by the user when the build needs it. Done: Xcode 26.6 is installed. | — |
 | 2026-11-16 | Popup: centre bar, Control+Space, launcher style, closes after a launch, native glass, subtle motion. | ADR-0002 |
 | 2026-11-16 | "Voyager" means the `VoyagerAI` project. | — |
-| 2026-11-16 | Ghidra is launched by running its `ghidraRun` script from its folder. | — |
+| 2026-11-16 | Ghidra is launched by running `~/Research/EmbeddedCybersecVIP/ghidra_12.1.3_PUBLIC/ghidraRun`. | — |
+| 2026-11-16 | Structure: Swift core plus an on-demand Python service that proposes but never executes. | ADR-0003 |
+| 2026-11-16 | Connection: Python runs as a child process, JSON messages over pipes, no network port. | ADR-0003 |
+| 2026-11-16 | The finished popup must answer questions and show the answers in the popup. | ADR-0003 |
+| 2026-11-16 | The macOS Control+Space input-source shortcut was turned off by the user, freeing the hotkey. | ADR-0002 |
 
 The stack, models, UI, memory design and integrations are not decided yet. `CLAUDE.md` §3–§8 is still a proposal.
 
@@ -45,6 +49,7 @@ The stack, models, UI, memory design and integrations are not decided yet. `CLAU
 - 2026-11-16: Stage 0a housekeeping.
 - 2026-11-16: Round 1 decisions recorded in ADR-0001.
 - 2026-11-16: Round 2 popup decisions recorded in ADR-0002.
+- 2026-11-16: Round 3 structure and connection recorded in ADR-0003.
 
 ## First commands to support
 
@@ -71,9 +76,7 @@ What they showed when checked against this Mac:
 
 ## Questions waiting on the user
 
-- Stack and app-to-backend connection (Round 3).
-- The folder that holds Ghidra's `ghidraRun` script.
-- Whether to turn off the macOS Control+Space input-source shortcut or pick another hotkey.
+- Approval of the thin-slice plan.
 - The exact Graphify repo or link (needed by Round 4).
 
 ## Requirements not yet covered by the docs
@@ -95,4 +98,4 @@ What they showed when checked against this Mac:
 
 ## Next step
 
-Round 3: stack and app-to-backend connection, which the thin slice is built on.
+Thin-slice plan for approval. Round 4 (security, memory, cost) follows the slice.
