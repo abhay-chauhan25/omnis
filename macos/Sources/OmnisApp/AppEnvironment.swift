@@ -16,7 +16,16 @@ enum AppEnvironment {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: python),
               fileManager.fileExists(atPath: directory + "/omnis_backend/__main__.py") else { return nil }
-        return .python(URL(fileURLWithPath: python), backendDirectory: URL(fileURLWithPath: directory, isDirectory: true))
+        // Without Ollama the backend still runs, with mock replies.
+        let ollamaPath = environment["OMNIS_OLLAMA"] ?? info["OMNISOllamaPath"] as? String
+        let ollama = ollamaPath.flatMap { path in
+            path.hasPrefix("/") && fileManager.isExecutableFile(atPath: path) ? URL(fileURLWithPath: path) : nil
+        }
+        return .python(
+            URL(fileURLWithPath: python),
+            backendDirectory: URL(fileURLWithPath: directory, isDirectory: true),
+            ollama: ollama
+        )
     }
 
     /// Development aid: `--show-on-launch` opens the popup immediately, and

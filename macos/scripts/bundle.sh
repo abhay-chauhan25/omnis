@@ -44,6 +44,9 @@ add NSHighResolutionCapable bool YES
 add NSPrincipalClass string NSApplication
 add OMNISBackendDirectory string "$backend"
 add OMNISPythonPath string "$python"
+# Optional: with Ollama present, questions are answered by local models.
+ollama="${OMNIS_OLLAMA:-$(command -v ollama || true)}"
+if [ -n "$ollama" ]; then add OMNISOllamaPath string "$ollama"; fi
 
 # Ad-hoc signature: enough to run on this Mac, not for distribution.
 codesign --force --sign - "$app" >/dev/null 2>&1

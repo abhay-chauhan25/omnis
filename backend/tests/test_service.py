@@ -46,19 +46,19 @@ class Harness:
         return await asyncio.wait_for(self.task, 2.0)
 
 
-async def three_words(text):
+async def three_words(text, route="auto"):
     for piece in ("one ", "two ", "three"):
         await asyncio.sleep(0)
         yield piece
 
 
-async def slow(text):
+async def slow(text, route="auto"):
     for i in range(1000):
         await asyncio.sleep(0.01)
         yield f"{i} "
 
 
-async def broken(text):
+async def broken(text, route="auto"):
     yield "partial "
     raise RuntimeError("secret detail that must not leak")
 

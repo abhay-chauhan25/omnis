@@ -4,13 +4,17 @@ One JSON object per line, UTF-8, newline terminated.
 
 App to service:
     {"type": "hello",  "protocol": 1}
-    {"type": "ask",    "id": "<request id>", "text": "<question>"}
+    {"type": "ask",    "id": "<request id>", "text": "<question>", "route": "auto"}
+        ("route" is optional: "auto", "local" or "claude")
     {"type": "cancel", "id": "<request id>"}
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
     {"type": "answer_chunk", "id": "...", "text": "..."}
-    {"type": "answer_done",  "id": "...", "model": "...", "cancelled": false}
+    {"type": "answer_done",  "id": "...", "model": "...", "cancelled": false,
+     "route": "...", "reason": "...", "input_tokens": 0, "output_tokens": 0,
+     "load_ms": 0, "total_ms": 0, "cost_usd": 0.0}
+        (everything after "cancelled" is optional)
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
     {"type": "bye", "reason": "idle"}
 """
@@ -28,6 +32,7 @@ MAX_TEXT_CHARS = 100_000
 MAX_ID_CHARS = 128
 
 CLIENT_TYPES = ("hello", "ask", "cancel")
+ROUTES = ("auto", "local", "claude")
 
 
 class ProtocolError(Exception):
@@ -75,7 +80,10 @@ def decode_client(line: bytes) -> dict[str, Any]:
         raise ProtocolError("bad_request", "'text' must be a non-empty string", request_id)
     if len(text) > MAX_TEXT_CHARS:
         raise ProtocolError("bad_request", "'text' is too long", request_id)
-    return {"type": "ask", "id": request_id, "text": text}
+    route = obj.get("route", "auto")
+    if route not in ROUTES:
+        raise ProtocolError("bad_request", "'route' must be auto, local or claude", request_id)
+    return {"type": "ask", "id": request_id, "text": text, "route": route}
 
 
 def encode(message: dict[str, Any]) -> bytes:
@@ -96,8 +104,13 @@ def answer_chunk(request_id: str, text: str) -> dict[str, Any]:
     return {"type": "answer_chunk", "id": request_id, "text": text}
 
 
-def answer_done(request_id: str, model: str, cancelled: bool = False) -> dict[str, Any]:
-    return {"type": "answer_done", "id": request_id, "model": model, "cancelled": cancelled}
+def answer_done(
+    request_id: str, model: str, cancelled: bool = False, details: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": "answer_done", "id": request_id, "model": model, "cancelled": cancelled}
+    for key, value in (details or {}).items():
+        out.setdefault(key, value)
+    return out
 
 
 def error(code: str, message: str, request_id: str | None = None) -> dict[str, Any]:

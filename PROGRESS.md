@@ -18,6 +18,19 @@ Stage 0 checklist:
 - [x] Decision records written and accepted
 - [x] Thin-slice plan approved (`docs/stages/thin-slice.md`)
 
+## Stage 1
+
+Built, tested and reviewed on 2026-11-16. Waiting on the user's hands-on check.
+
+- [x] Ollama installed; `qwen3:4b` and `qwen3:8b` downloaded
+- [x] Router, model client, engine, Claude stand-in
+- [x] Real answers in the popup with a "which model" line; usage in the audit log
+- [x] 60 Python tests and 56 Swift tests passing; live test passing
+- [x] Benchmark report (`docs/benchmarks/stage-1-local-models.md`)
+- [x] Independent review (two passes), findings fixed
+- [ ] User check of answers in the popup
+- [ ] Decision: keep two local models, or one?
+
 ## Thin slice
 
 Built, tested and accepted by the user on 2026-11-16. Visual refinements are deferred to a later UI pass.
@@ -61,6 +74,7 @@ Built, tested and accepted by the user on 2026-11-16. Visual refinements are def
 | 2026-11-16 | Claude: local-only default, per-file upload confirmation, 1 USD per request and 20 USD per month, no silent fallback. Local models allowed on battery. | ADR-0006 |
 | 2026-11-16 | Stage 1 approved: Ollama, `qwen3:4b` and `qwen3:8b`, loopback only, 5 minute unload. | `docs/stages/stage-1.md` |
 | 2026-11-16 | Stage 2 waits for a conversation with the user. | — |
+| 2026-11-16 | Not yet confirmed by the user: Claude is used only when asked for by name or with `claude:`; topic-based cloud routing is left to Stage 6. Made during Stage 1 to honour the local-only default. | `docs/stages/stage-1.md` |
 | 2026-11-16 | The macOS Control+Space input-source shortcut was turned off by the user, freeing the hotkey. | ADR-0002 |
 
 The stack, models, UI, memory design and integrations are not decided yet. `CLAUDE.md` §3–§8 is still a proposal.
@@ -73,6 +87,8 @@ The stack, models, UI, memory design and integrations are not decided yet. `CLAU
 - 2026-11-16: Round 2 popup decisions recorded in ADR-0002.
 - 2026-11-16: Round 3 structure and connection recorded in ADR-0003.
 - 2026-11-16: Thin slice implemented, reviewed and fixed.
+- 2026-11-16: Stage 0 closed.
+- 2026-11-16: Stage 1 implemented, benchmarked, reviewed and fixed.
 
 ## First commands to support
 
@@ -90,7 +106,7 @@ What they showed when checked against this Mac:
 
 ## Open decisions
 
-1. Whether two local models earn their keep over one (Stage 1 benchmarks).
+1. Whether two local models earn their keep over one. Speed alone does not settle it; quality on real tasks is unjudged.
 2. Graphify evaluation (needs the link; Stage 4).
 3. Exact Claude model IDs (when live use is approved).
 4. Main-window design (before Stage 2).
@@ -122,4 +138,4 @@ What they showed when checked against this Mac:
 
 ## Next step
 
-Build Stage 1. Then discuss the main-window design with the user before any Stage 2 work.
+User tries Stage 1. Then the main-window design conversation. No Stage 2 work before that conversation.

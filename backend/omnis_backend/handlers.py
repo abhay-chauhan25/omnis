@@ -18,7 +18,7 @@ def _mock_delay_seconds() -> float:
         return 0.025
 
 
-async def mock_answer(text: str) -> AsyncIterator[str]:
+async def mock_answer(text: str, route: str = "auto") -> AsyncIterator[str]:
     """Yield a canned reply a word at a time, the way a real model would stream."""
     reply = (
         "This is a mock answer from the OMNIS backend. No AI model is connected yet, "

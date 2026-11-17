@@ -19,7 +19,7 @@ final class PopupModel: ObservableObject {
 
     enum Phase: Equatable {
         case input
-        case answering(text: String, finished: Bool, model: String?)
+        case answering(text: String, finished: Bool, source: String?)
         case failed(String)
     }
 
@@ -150,6 +150,36 @@ final class PopupModel: ObservableObject {
         }
     }
 
+    /// The "which model answered" line under an answer.
+    static func sourceLabel(model: String?, details: AnswerDetails) -> String? {
+        guard let model else { return nil }
+        switch details.route {
+        case "local":
+            var parts = ["\(model), on this Mac"]
+            if let total = details.totalMilliseconds {
+                parts.append(String(format: "%.1f s", Double(total) / 1000))
+            }
+            return parts.joined(separator: " \u{00B7} ")
+        case "cloud-mock":
+            return "Claude is not connected. This is a stand-in, not an answer."
+        default:
+            return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
+        }
+    }
+
+    /// Numbers only: which model, which route, how long, how many tokens, what it cost.
+    static func auditDetail(model: String?, details: AnswerDetails) -> String {
+        var parts = ["model \(model ?? "unknown")"]
+        if let route = details.route { parts.append("route \(route)") }
+        if let reason = details.reason { parts.append("why: \(reason)") }
+        if let input = details.inputTokens { parts.append("in \(input) tokens") }
+        if let output = details.outputTokens { parts.append("out \(output) tokens") }
+        if let load = details.loadMilliseconds { parts.append("load \(load) ms") }
+        if let total = details.totalMilliseconds { parts.append("total \(total) ms") }
+        if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
+        return parts.joined(separator: ", ")
+    }
+
     private func ask(_ text: String) {
         guard let backend else {
             phase = .failed("The OMNIS backend is not set up, so questions cannot be answered yet.")
@@ -157,20 +187,22 @@ final class PopupModel: ObservableObject {
             return
         }
         askTask?.cancel()
-        phase = .answering(text: "", finished: false, model: nil)
+        phase = .answering(text: "", finished: false, source: nil)
         let audit = self.audit
         askTask = Task { [weak self] in
             var collected = ""
             do {
-                for try await event in backend.ask(text) {
+                let request = RoutePrefix.split(text)
+                for try await event in backend.ask(request.text, route: request.route) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
                         collected += piece
-                        self.phase = .answering(text: collected, finished: false, model: nil)
-                    case .finished(let model):
-                        self.phase = .answering(text: collected, finished: true, model: model)
-                        audit.record(action: "ask", outcome: "ok", detail: model.map { "model \($0)" })
+                        self.phase = .answering(text: collected, finished: false, source: nil)
+                    case .finished(let model, let details):
+                        self.phase = .answering(text: collected, finished: true,
+                                                source: Self.sourceLabel(model: model, details: details))
+                        audit.record(action: "ask", outcome: "ok", detail: Self.auditDetail(model: model, details: details))
                         self.announce("Answer: \(collected)")
                     }
                 }

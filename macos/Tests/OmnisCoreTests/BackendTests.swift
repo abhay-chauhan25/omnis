@@ -2,6 +2,42 @@ import Foundation
 import Testing
 @testable import OmnisCore
 
+@Suite struct AnswerFormatterTests {
+    @Test func linksWrittenByAModelAreNeverClickable() {
+        let hostile = [
+            "[Apple support](file:///System/Applications/Calculator.app)",
+            "[x](https://evil.example/?q=1)",
+            "<https://example.com>",
+            "see https://example.org/x now",
+            "[prefs](x-apple.systempreferences:com.apple.preference.security)",
+            "**bold [nested](https://a.example)** and `code`",
+        ]
+        for text in hostile {
+            let formatted = AnswerFormatter.format(text)
+            #expect(formatted.runs.allSatisfy { $0.link == nil })
+            #expect(!String(formatted.characters).isEmpty)
+        }
+    }
+
+    @Test func ordinaryFormattingAndLineBreaksSurvive() {
+        let formatted = AnswerFormatter.format("**Paris** is the capital.\n\nSecond line.")
+        let plain = String(formatted.characters)
+        #expect(plain.contains("Paris is the capital."))
+        #expect(plain.contains("Second line."))
+        #expect(!plain.contains("**"))
+        #expect(formatted.runs.contains { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true })
+        #expect(String(AnswerFormatter.format("").characters) == " ")
+    }
+
+    @Test func routePrefixesAreSplitOff() {
+        #expect(RoutePrefix.split("local: what is a paper") == ("local", "what is a paper"))
+        #expect(RoutePrefix.split("  Claude:  explain quicksort ") == ("claude", "explain quicksort"))
+        #expect(RoutePrefix.split("what is local: this") == ("auto", "what is local: this"))
+        #expect(RoutePrefix.split("local:") == ("auto", "local:"))
+        #expect(RoutePrefix.split("elsewhere: hi") == ("auto", "elsewhere: hi"))
+    }
+}
+
 @Suite struct ProtocolCodecTests {
     func json(_ message: ClientMessage) throws -> [String: Any] {
         let data = try ProtocolCodec.encode(message)
@@ -18,6 +54,8 @@ import Testing
         #expect(ask["type"] as? String == "ask")
         #expect(ask["id"] as? String == "q1")
         #expect(ask["text"] as? String == "line one\nline \"two\" \u{1F600}")
+        #expect(ask["route"] as? String == "auto")
+        #expect(try json(.ask(id: "q", text: "t", route: "local"))["route"] as? String == "local")
 
         let cancel = try json(.cancel(id: "q1"))
         #expect(cancel["type"] as? String == "cancel")
@@ -30,9 +68,16 @@ import Testing
             == .hello(protocolVersion: 1, service: "omnis-backend", version: "0.1.0"))
         #expect(try decode(#"{"type":"answer_chunk","id":"q","text":"hi "}"#) == .answerChunk(id: "q", text: "hi "))
         #expect(try decode(#"{"type":"answer_done","id":"q","model":"mock","cancelled":false}"#)
-            == .answerDone(id: "q", model: "mock", cancelled: false))
+            == .answerDone(id: "q", model: "mock", cancelled: false, details: AnswerDetails()))
         #expect(try decode(#"{"type":"answer_done","id":"q","cancelled":true}"#)
-            == .answerDone(id: "q", model: nil, cancelled: true))
+            == .answerDone(id: "q", model: nil, cancelled: true, details: AnswerDetails()))
+        #expect(try decode(#"{"type":"answer_done","id":"q","model":"qwen3:4b","cancelled":false,"route":"local","reason":"short","input_tokens":12,"output_tokens":34,"load_ms":2000,"total_ms":4100,"cost_usd":0.0}"#)
+            == .answerDone(id: "q", model: "qwen3:4b", cancelled: false, details: AnswerDetails(
+                route: "local", reason: "short", inputTokens: 12, outputTokens: 34,
+                loadMilliseconds: 2000, totalMilliseconds: 4100, costUSD: 0)))
+        // Wrongly typed extras are ignored, not trusted.
+        #expect(try decode(#"{"type":"answer_done","id":"q","model":"m","route":7,"input_tokens":"lots","cost_usd":true}"#)
+            == .answerDone(id: "q", model: "m", cancelled: false, details: AnswerDetails()))
         #expect(try decode(#"{"type":"error","code":"bad_request","message":"m"}"#)
             == .error(id: nil, code: "bad_request", message: "m"))
         #expect(try decode(#"{"type":"error","id":"q","code":"internal","message":"m"}"#)
@@ -87,7 +132,7 @@ import Testing
         for try await event in stream {
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
-            case .finished(let name): model = name
+            case .finished(let name, _): model = name
             }
         }
         return (text, model, chunks)
@@ -278,6 +323,46 @@ import Testing
             #expect(await waitUntil { !backend.isRunning })
         }
         #expect(backend.startCount == 3)
+    }
+
+    /// Uses the real models. Slow, so it only runs when asked:
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter live
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveLocalModelAnswersThroughTheWholeChain() async throws {
+        let ollama = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+        let backend = BackendService(config: config)
+
+        var text = ""
+        var finished: (model: String?, details: AnswerDetails)?
+        for try await event in backend.ask("What is the capital of France? Answer in one short sentence.") {
+            switch event {
+            case .chunk(let piece): text += piece
+            case .finished(let model, let details): finished = (model, details)
+            }
+        }
+        #expect(text.contains("Paris"))
+        #expect(!text.contains("</think>"))
+        #expect(finished?.model == "qwen3:4b")
+        #expect(finished?.details.route == "local")
+        #expect((finished?.details.outputTokens ?? 0) > 0)
+
+        var standIn: AnswerDetails?
+        for try await event in backend.ask("use claude to explain quicksort") {
+            if case .finished(_, let details) = event { standIn = details }
+        }
+        #expect(standIn?.route == "cloud-mock")
+        #expect(standIn?.costUSD == 0)
+
+        // A typed route survives the trip: a Claude-sounding request stays local.
+        var forced: AnswerDetails?
+        for try await event in backend.ask("use claude to say hello in one word", route: "local") {
+            if case .finished(_, let details) = event { forced = details }
+        }
+        #expect(forced?.route == "local")
+        backend.stop()
     }
 
     @Test func garbageFromTheBackendIsAnErrorNotACrash() async {

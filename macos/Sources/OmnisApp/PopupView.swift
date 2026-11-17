@@ -41,9 +41,9 @@ struct PopupView: View {
                     Divider()
                     results
                 }
-            case .answering(let text, let finished, let modelName):
+            case .answering(let text, let finished, let source):
                 Divider()
-                answer(text: text, finished: finished, modelName: modelName)
+                answer(text: text, finished: finished, source: source)
             case .failed(let message):
                 Divider()
                 failure(message)
@@ -92,10 +92,10 @@ struct PopupView: View {
 
     // MARK: Answer
 
-    private func answer(text: String, finished: Bool, modelName: String?) -> some View {
+    private func answer(text: String, finished: Bool, source: String?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ScrollView {
-                Text(text.isEmpty ? " " : text)
+                Text(AnswerFormatter.format(text))
                     .font(.system(size: 15))
                     .lineSpacing(3)
                     .textSelection(.enabled)
@@ -107,10 +107,9 @@ struct PopupView: View {
             HStack(spacing: 8) {
                 if !finished {
                     ProgressView().controlSize(.small)
-                    Text("Answering").foregroundStyle(.secondary)
-                } else if let modelName {
-                    Text(modelName == "mock" ? "Mock reply, no model used" : "Answered by \(modelName)")
-                        .foregroundStyle(.secondary)
+                    Text(text.isEmpty ? "Thinking" : "Answering").foregroundStyle(.secondary)
+                } else if let source {
+                    Text(source).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
                 Text("esc to close").foregroundStyle(.tertiary)

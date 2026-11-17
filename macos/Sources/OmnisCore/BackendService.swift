@@ -25,12 +25,19 @@ public struct BackendConfig: Sendable {
     }
 
     /// The standard way to run the Python service from a checkout of the repo.
-    public static func python(_ python: URL, backendDirectory: URL, idleSeconds: Double = 300) -> BackendConfig {
-        BackendConfig(
-            executable: python,
-            arguments: ["-m", "omnis_backend", "--idle-seconds", String(idleSeconds)],
-            workingDirectory: backendDirectory
-        )
+    /// With `ollama` set, questions go to local models and the model server is
+    /// started on demand; without it, the service gives canned mock replies.
+    public static func python(
+        _ python: URL,
+        backendDirectory: URL,
+        ollama: URL? = nil,
+        idleSeconds: Double = 300
+    ) -> BackendConfig {
+        var arguments = ["-m", "omnis_backend", "--idle-seconds", String(idleSeconds)]
+        if let ollama {
+            arguments += ["--engine", "local", "--ollama-bin", ollama.path, "--keep-alive-seconds", String(idleSeconds)]
+        }
+        return BackendConfig(executable: python, arguments: arguments, workingDirectory: backendDirectory)
     }
 }
 
@@ -54,7 +61,7 @@ public enum BackendError: Error, Equatable, LocalizedError {
 
 public enum AnswerEvent: Equatable, Sendable {
     case chunk(String)
-    case finished(model: String?)
+    case finished(model: String?, details: AnswerDetails)
 }
 
 /// Starts the backend only when a question is asked, talks to it over pipes,
@@ -62,6 +69,7 @@ public enum AnswerEvent: Equatable, Sendable {
 public final class BackendService: @unchecked Sendable {
     private struct Pending {
         let text: String
+        let route: String
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -115,7 +123,7 @@ public final class BackendService: @unchecked Sendable {
 
     /// Sends a question. Pieces of the answer arrive on the returned stream.
     /// Dropping or cancelling the stream cancels the request.
-    public func ask(_ text: String) -> AsyncThrowingStream<AnswerEvent, Error> {
+    public func ask(_ text: String, route: String = "auto") -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
             guard text.count <= Self.maxQuestionLength else {
@@ -126,7 +134,7 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, continuation: continuation)
+                self.pending[id] = Pending(text: text, route: route, continuation: continuation)
                 self.send(id)
             }
         }
@@ -156,7 +164,7 @@ public final class BackendService: @unchecked Sendable {
             // Marked before writing: from here the request belongs to this
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
-            try write(.ask(id: id, text: request.text))
+            try write(.ask(id: id, text: request.text, route: request.route))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -257,7 +265,7 @@ public final class BackendService: @unchecked Sendable {
         try write(.hello(protocolVersion: BackendProtocol.version))
         for id in resend {
             guard let request = pending[id] else { continue }
-            try write(.ask(id: id, text: request.text))
+            try write(.ask(id: id, text: request.text, route: request.route))
         }
     }
 
@@ -294,9 +302,9 @@ public final class BackendService: @unchecked Sendable {
             guard pending[id] != nil else { return }
             pending[id]?.receivedAny = true
             pending[id]?.continuation.yield(.chunk(text))
-        case .answerDone(let id, let model, _):
+        case .answerDone(let id, let model, _, let details):
             guard let request = pending.removeValue(forKey: id) else { return }
-            request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }))
+            request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }, details: details))
             request.continuation.finish()
         case .error(let id, let code, let message):
             let error = BackendError.service(

@@ -8,8 +8,11 @@ from collections.abc import AsyncIterator, Callable
 
 from . import protocol
 from .handlers import MOCK_MODEL
+from .models import AnswerError, AnswerInfo
 
-Handler = Callable[[str], AsyncIterator[str]]
+# A handler takes the question and the requested route. It yields pieces of
+# text and may finish with one AnswerInfo describing what answered.
+Handler = Callable[[str, str], AsyncIterator["str | AnswerInfo"]]
 Writer = Callable[[bytes], None]
 
 EXIT_OK = 0
@@ -41,6 +44,10 @@ class Service:
         self._stop = asyncio.Event()
         self._exit_code = EXIT_OK
         self._last_activity = time.monotonic()
+
+    def request_stop(self) -> None:
+        """Ask the loop to finish (used when the app tells the process to quit)."""
+        self._stop.set()
 
     # -- output ---------------------------------------------------------
 
@@ -140,15 +147,26 @@ class Service:
         if request_id in self._tasks:
             self._send(protocol.error("bad_request", "request id is already in use", request_id))
             return
-        self._tasks[request_id] = asyncio.create_task(self._answer(request_id, message["text"]))
+        self._tasks[request_id] = asyncio.create_task(
+            self._answer(request_id, message["text"], message.get("route", "auto"))
+        )
 
-    async def _answer(self, request_id: str, text: str) -> None:
+    async def _answer(self, request_id: str, text: str, route: str) -> None:
+        info: AnswerInfo | None = None
         try:
-            async for piece in self._handler(text):
-                self._send(protocol.answer_chunk(request_id, piece))
-            self._send(protocol.answer_done(request_id, self._model_name))
+            async for piece in self._handler(text, route):
+                if isinstance(piece, AnswerInfo):
+                    info = piece
+                else:
+                    self._send(protocol.answer_chunk(request_id, piece))
+            if info is None:
+                self._send(protocol.answer_done(request_id, self._model_name))
+            else:
+                self._send(protocol.answer_done(request_id, info.model, details=info.as_fields()))
         except asyncio.CancelledError:
             self._send(protocol.answer_done(request_id, self._model_name, cancelled=True))
+        except AnswerError as exc:
+            self._send(protocol.error(exc.code, exc.message, request_id))
         except Exception as exc:  # a handler bug must not take the service down
             self._send(protocol.error("internal", type(exc).__name__, request_id))
         finally:

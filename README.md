@@ -2,7 +2,7 @@
 
 OMNIS = **Orchestrated Multimodal Neural Intelligence System**.
 
-The repo holds the planning documents, agent instructions, and the first working piece: a popup launcher (the thin slice).
+The repo holds the planning documents, agent instructions, and the working app so far: a popup that launches apps and projects and answers questions with models running on this Mac.
 
 ## Contents
 - `CLAUDE.md` — project vision, requirements, collaboration/approval rules, architecture proposals, security constraints, staged plan.
@@ -21,9 +21,9 @@ The repo holds the planning documents, agent instructions, and the first working
 - No Gemini or OpenAI API integration is planned.
 - For Graphify, provide the exact repository or MCP URL before choosing a tool.
 
-## Running the thin slice
+## Running OMNIS
 
-Needs Xcode 26 and Python 3.11 or newer. No other dependencies.
+Needs Xcode 26 and Python 3.11 or newer. For real answers it also needs Ollama with the two models (`ollama pull qwen3:4b` and `ollama pull qwen3:8b`); without Ollama the popup still launches things and gives mock replies.
 
 ```sh
 macos/scripts/bundle.sh          # builds macos/build/OMNIS.app
@@ -32,6 +32,8 @@ open macos/build/OMNIS.app
 
 Press Control+Space, type, and press Enter. Esc closes the popup. Quit from the menu-bar icon or the Dock.
 
+Questions are answered on this Mac. Start a question with `claude:` to route it to Claude (a labelled stand-in until live use is approved) or `local:` to keep it local whatever it says.
+
 Launchers, aliases, project folders and the editor are set in `~/Library/Application Support/OMNIS/registry.json`, created on first run. Actions are recorded in `audit.log` beside it.
 
 Tests:
@@ -39,6 +41,7 @@ Tests:
 ```sh
 cd macos && swift test
 cd backend && python3 -m unittest discover -s tests -t .
+cd macos && OMNIS_LIVE_TESTS=1 swift test --filter live    # uses the real models
 ```
 
 Layout: `macos/` is the Swift app (`OmnisCore` for logic, `OmnisApp` for the popup). `backend/` is the Python service the app starts on demand.

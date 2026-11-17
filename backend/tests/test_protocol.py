@@ -13,7 +13,7 @@ class DecodeClientTests(unittest.TestCase):
 
     def test_ask(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
-        self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there"})
+        self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto"})
 
     def test_cancel(self):
         self.assertEqual(

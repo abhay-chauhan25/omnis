@@ -8,14 +8,39 @@ public enum BackendProtocol {
 
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
-    case ask(id: String, text: String)
+    case ask(id: String, text: String, route: String = "auto")
     case cancel(id: String)
+}
+
+/// What produced an answer and what it cost. All fields are optional on the
+/// wire; the mock backend sends none of them.
+public struct AnswerDetails: Equatable, Sendable {
+    /// "local", "cloud-mock" or "mock".
+    public var route: String?
+    /// Why this model was chosen, in plain words.
+    public var reason: String?
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var loadMilliseconds: Int?
+    public var totalMilliseconds: Int?
+    public var costUSD: Double?
+
+    public init(route: String? = nil, reason: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
+                loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil, costUSD: Double? = nil) {
+        self.route = route
+        self.reason = reason
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.loadMilliseconds = loadMilliseconds
+        self.totalMilliseconds = totalMilliseconds
+        self.costUSD = costUSD
+    }
 }
 
 public enum ServiceMessage: Equatable, Sendable {
     case hello(protocolVersion: Int, service: String, version: String)
     case answerChunk(id: String, text: String)
-    case answerDone(id: String, model: String?, cancelled: Bool)
+    case answerDone(id: String, model: String?, cancelled: Bool, details: AnswerDetails)
     case error(id: String?, code: String, message: String)
     case bye(reason: String)
 }
@@ -33,8 +58,8 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text):
-            object = ["type": "ask", "id": id, "text": text]
+        case .ask(let id, let text, let route):
+            object = ["type": "ask", "id": id, "text": text, "route": route]
         case .cancel(let id):
             object = ["type": "cancel", "id": id]
         }
@@ -64,10 +89,27 @@ public enum ProtocolCodec {
         case "answer_chunk":
             return .answerChunk(id: try string("id"), text: try string("text"))
         case "answer_done":
+            func optionalInt(_ key: String) -> Int? {
+                guard let number = object[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+                return number.intValue
+            }
+            func optionalText(_ key: String) -> String? {
+                (object[key] as? String).map { String($0.prefix(200)) }
+            }
+            let cost = (object["cost_usd"] as? NSNumber).flatMap { CFGetTypeID($0) != CFBooleanGetTypeID() ? $0.doubleValue : nil }
             return .answerDone(
                 id: try string("id"),
                 model: object["model"] as? String,
-                cancelled: (object["cancelled"] as? Bool) ?? false
+                cancelled: (object["cancelled"] as? Bool) ?? false,
+                details: AnswerDetails(
+                    route: optionalText("route"),
+                    reason: optionalText("reason"),
+                    inputTokens: optionalInt("input_tokens"),
+                    outputTokens: optionalInt("output_tokens"),
+                    loadMilliseconds: optionalInt("load_ms"),
+                    totalMilliseconds: optionalInt("total_ms"),
+                    costUSD: cost
+                )
             )
         case "error":
             return .error(id: object["id"] as? String, code: try string("code"), message: try string("message"))
