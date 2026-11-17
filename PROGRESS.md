@@ -16,15 +16,15 @@ Last updated: 2026-11-16
 
 ## Thin slice
 
-Built and tested on 2026-11-16. Waiting on the user's hands-on check.
+Built, tested and accepted by the user on 2026-11-16. Visual refinements are deferred to a later UI pass.
 
 - [x] Popup, hotkey, Dock and menu-bar presence
 - [x] Rule-based router, registry, launcher, audit log
 - [x] Python service started on demand over pipes, mock answers
 - [x] 52 Swift tests and 26 Python tests passing
 - [x] Independent review (two passes), findings fixed
-- [ ] User check: looks, hotkey, the three launches, VoiceOver
-- [ ] Decision: may Enter on a partial match run a launcher script?
+- [x] User check: accepted
+- [ ] Decision: may Enter on a partial match run a launcher script? Unchanged until the user chooses.
 
 ## Build order (ADR-0001)
 
@@ -88,7 +88,9 @@ What they showed when checked against this Mac:
 
 ## Questions waiting on the user
 
-- Hands-on check of the thin slice.
+- Round 4 choices (permissions, memory, Claude budgets).
+- Approval of the Stage 1 plan (`docs/stages/stage-1.md`), including installing Ollama and downloading models.
+- Main-window design choices for Stage 2.
 - Whether Enter on a partial match may run a launcher script.
 - Icon design for the Dock and menu bar (placeholders are in use).
 - The exact Graphify repo or link (needed by Round 4).
@@ -112,4 +114,4 @@ What they showed when checked against this Mac:
 
 ## Next step
 
-User checks the thin slice. Then Round 4 (security, memory, cost) and the Stage 1 plan.
+Round 4 decisions close Stage 0. Then Stage 1 on approval, with the Stage 2 design round alongside.
