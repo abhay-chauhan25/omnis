@@ -41,9 +41,9 @@ struct PopupView: View {
                     Divider()
                     results
                 }
-            case .answering(let text, let finished, let source):
+            case .answering(let answer):
                 Divider()
-                answer(text: text, finished: finished, source: source)
+                self.answer(answer)
             case .failed(let message):
                 Divider()
                 failure(message)
@@ -92,23 +92,36 @@ struct PopupView: View {
 
     // MARK: Answer
 
-    private func answer(text: String, finished: Bool, source: String?) -> some View {
+    private func answer(_ answer: PopupModel.Answer) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ScrollView {
-                Text(AnswerFormatter.format(text))
+                Text(AnswerFormatter.format(answer.text))
                     .font(.system(size: 15))
                     .lineSpacing(3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(answer.finished ? "Answer: \(answer.text)" : "Answering")
             }
-            .frame(maxHeight: 280)
+            .frame(maxHeight: 260)
             .fixedSize(horizontal: false, vertical: true)
 
+            if let problem = answer.searchProblem {
+                Label("Could not search the web: \(problem)", systemImage: "wifi.exclamationmark")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if !answer.sources.isEmpty {
+                sourceList(answer.sources)
+            }
+
             HStack(spacing: 8) {
-                if !finished {
+                if !answer.finished {
                     ProgressView().controlSize(.small)
-                    Text(text.isEmpty ? "Thinking" : "Answering").foregroundStyle(.secondary)
-                } else if let source {
+                    Text(answer.searching ? "Searching the web" : answer.text.isEmpty ? "Thinking" : "Answering")
+                        .foregroundStyle(.secondary)
+                } else if let source = answer.source {
                     Text(source).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
@@ -118,8 +131,33 @@ struct PopupView: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(finished ? "Answer: \(text)" : "Answering")
+    }
+
+    /// The pages the model was given. These are the only links in the popup:
+    /// they come from the search results, not from the model's own text.
+    private func sourceList(_ sources: [SearchResult]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Sources")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
+                Button {
+                    model.open(source)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("[\(index + 1)]").monospacedDigit().foregroundStyle(.secondary)
+                        Text(source.title).lineLimit(1).truncationMode(.tail)
+                        Text(source.host).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 12))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(source.url.absoluteString)
+                .accessibilityLabel("Source \(index + 1): \(source.title), \(source.host). Opens in your browser.")
+            }
+        }
     }
 
     private func failure(_ message: String) -> some View {

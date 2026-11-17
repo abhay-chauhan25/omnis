@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable
 
 from . import protocol
 from .handlers import MOCK_MODEL
-from .models import AnswerError, AnswerInfo
+from .models import AnswerError, AnswerInfo, ToolRequest
 
-# A handler takes the question and the requested route. It yields pieces of
-# text and may finish with one AnswerInfo describing what answered.
-Handler = Callable[[str, str], AsyncIterator["str | AnswerInfo"]]
+# A handler takes the question, the requested route, and whether web search
+# is allowed. It yields pieces of text, may yield ToolRequests for the app to
+# carry out, and may finish with one AnswerInfo describing what answered.
+Handler = Callable[[str, str, bool], AsyncIterator["str | AnswerInfo | ToolRequest"]]
 Writer = Callable[[bytes], None]
 
 EXIT_OK = 0
@@ -40,6 +42,8 @@ class Service:
         self._idle_seconds = idle_seconds
         self._model_name = model_name
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # (request id, call id) -> the future the handler is waiting on.
+        self._tool_waiters: dict[tuple[str, str], asyncio.Future] = {}
         self._greeted = False
         self._stop = asyncio.Event()
         self._exit_code = EXIT_OK
@@ -138,6 +142,13 @@ class Service:
             return
 
         request_id = message["id"]
+        if kind == "tool_result":
+            waiter = self._tool_waiters.pop((request_id, message["call_id"]), None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(
+                    {"ok": message["ok"], "results": message["results"], "error": message["error"]}
+                )
+            return  # a result nobody is waiting for is ignored
         if kind == "cancel":
             task = self._tasks.get(request_id)
             if task is not None:
@@ -148,15 +159,19 @@ class Service:
             self._send(protocol.error("bad_request", "request id is already in use", request_id))
             return
         self._tasks[request_id] = asyncio.create_task(
-            self._answer(request_id, message["text"], message.get("route", "auto"))
+            self._answer(request_id, message["text"], message.get("route", "auto"), message.get("web", True))
         )
 
-    async def _answer(self, request_id: str, text: str, route: str) -> None:
+    async def _answer(self, request_id: str, text: str, route: str, web: bool) -> None:
         info: AnswerInfo | None = None
         try:
-            async for piece in self._handler(text, route):
+            async for piece in self._handler(text, route, web):
                 if isinstance(piece, AnswerInfo):
                     info = piece
+                elif isinstance(piece, ToolRequest):
+                    call_id = uuid.uuid4().hex
+                    self._tool_waiters[(request_id, call_id)] = piece.future
+                    self._send(protocol.tool_request(request_id, call_id, piece.tool, piece.query))
                 else:
                     self._send(protocol.answer_chunk(request_id, piece))
             if info is None:
@@ -171,4 +186,6 @@ class Service:
             self._send(protocol.error("internal", type(exc).__name__, request_id))
         finally:
             self._tasks.pop(request_id, None)
+            for key in [key for key in self._tool_waiters if key[0] == request_id]:
+                del self._tool_waiters[key]
             self._touch()

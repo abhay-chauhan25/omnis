@@ -16,6 +16,9 @@ class FakeOllama:
         self.cut_after: int | None = None  # drop the connection after this many pieces
         self.think_delay = 0.0
         self.final_extra: dict = {}
+        # Each chat request that offers tools pops one entry and replies with
+        # that tool call instead of an answer. A dict is sent as the raw call.
+        self.tool_calls: list = []
         self.error: str | None = None
         self.status = 200
         self.disconnected = asyncio.Event()
@@ -93,6 +96,17 @@ class FakeOllama:
             await self._plain(writer, self.status, {"error": self.error or "boom"})
             return
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n")
+        body = self.requests[-1][2] or {}
+        if body.get("tools") and self.tool_calls:
+            call = self.tool_calls.pop(0)
+            if not isinstance(call, dict):
+                call = {"id": "call_1", "function": {"index": 0, "name": "web_search", "arguments": {"query": call}}}
+            await self._chunk(writer, {"message": {"role": "assistant", "content": "", "tool_calls": [call]}, "done": False})
+            await self._chunk(writer, {"message": {"role": "assistant", "content": ""}, "done": True,
+                                       "prompt_eval_count": 5, "eval_count": 7})
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+            return
         try:
             for piece in self.thinking:
                 if self.think_delay:

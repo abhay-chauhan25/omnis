@@ -18,7 +18,7 @@ final class PopupController: NSObject, NSWindowDelegate {
     private var closing = false
 
     /// The window is a fixed transparent canvas; the visible bar grows inside it.
-    private static let canvas = NSSize(width: PopupView.barWidth + PopupView.margin * 2, height: 560)
+    private static let canvas = NSSize(width: PopupView.barWidth + PopupView.margin * 2, height: 680)
     /// How far down the screen the top of the bar sits.
     private static let topFraction: CGFloat = 0.2
 

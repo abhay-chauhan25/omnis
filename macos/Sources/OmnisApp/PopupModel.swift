@@ -17,9 +17,23 @@ final class PopupModel: ObservableObject {
         }
     }
 
+    /// Everything shown for one answer.
+    struct Answer: Equatable {
+        var text = ""
+        var finished = false
+        /// The "which model answered" line.
+        var source: String?
+        /// True while a web search is running.
+        var searching = false
+        /// The pages the model was given, numbered as it cites them.
+        var sources: [SearchResult] = []
+        /// Why a web search could not be done, if one failed.
+        var searchProblem: String?
+    }
+
     enum Phase: Equatable {
         case input
-        case answering(text: String, finished: Bool, source: String?)
+        case answering(Answer)
         case failed(String)
     }
 
@@ -150,12 +164,22 @@ final class PopupModel: ObservableObject {
         }
     }
 
+    /// Opens a search source in the browser. Only ordinary web pages, and
+    /// only ones that were in the results shown.
+    func open(_ source: SearchResult) {
+        guard case .answering(let answer) = phase, answer.sources.contains(source),
+              source.url.scheme?.lowercased() == "https" else { return }
+        NSWorkspace.shared.open(source.url)
+        audit.record(action: "open_source", target: source.host, outcome: "ok")
+    }
+
     /// The "which model answered" line under an answer.
     static func sourceLabel(model: String?, details: AnswerDetails) -> String? {
         guard let model else { return nil }
         switch details.route {
         case "local":
             var parts = ["\(model), on this Mac"]
+            if (details.searches ?? 0) > 0 { parts.append("searched the web") }
             if let total = details.totalMilliseconds {
                 parts.append(String(format: "%.1f s", Double(total) / 1000))
             }
@@ -177,6 +201,7 @@ final class PopupModel: ObservableObject {
         if let load = details.loadMilliseconds { parts.append("load \(load) ms") }
         if let total = details.totalMilliseconds { parts.append("total \(total) ms") }
         if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
+        if let searches = details.searches, searches > 0 { parts.append("web searches \(searches)") }
         return parts.joined(separator: ", ")
     }
 
@@ -187,24 +212,36 @@ final class PopupModel: ObservableObject {
             return
         }
         askTask?.cancel()
-        phase = .answering(text: "", finished: false, source: nil)
+        phase = .answering(Answer())
         let audit = self.audit
         askTask = Task { [weak self] in
-            var collected = ""
+            var answer = Answer()
             do {
                 let request = RoutePrefix.split(text)
-                for try await event in backend.ask(request.text, route: request.route) {
+                for try await event in backend.ask(request.text, route: request.route, web: request.web) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
-                        collected += piece
-                        self.phase = .answering(text: collected, finished: false, source: nil)
+                        answer.text += piece
+                    case .searching:
+                        answer.searching = true
+                        self.announce("Searching the web")
+                    case .sources(let results):
+                        answer.searching = false
+                        answer.sources = results
+                        // Counts only. The search terms are never logged.
+                        audit.record(action: "web_search", outcome: "ok", detail: "\(results.count) results")
+                    case .searchFailed(let why):
+                        answer.searching = false
+                        answer.searchProblem = why
+                        audit.record(action: "web_search", outcome: "error", detail: why)
                     case .finished(let model, let details):
-                        self.phase = .answering(text: collected, finished: true,
-                                                source: Self.sourceLabel(model: model, details: details))
+                        answer.finished = true
+                        answer.source = Self.sourceLabel(model: model, details: details)
                         audit.record(action: "ask", outcome: "ok", detail: Self.auditDetail(model: model, details: details))
-                        self.announce("Answer: \(collected)")
+                        self.announce("Answer: \(answer.text)")
                     }
+                    self.phase = .answering(answer)
                 }
             } catch {
                 guard !Task.isCancelled else { return }

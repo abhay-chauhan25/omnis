@@ -7,13 +7,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem!
     private var backend: BackendService?
+    private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A backend that has just exited must give a write error, not end the app.
         signal(SIGPIPE, SIG_IGN)
 
-        backend = AppEnvironment.backendConfig().map(BackendService.init(config:))
+        let web = AppEnvironment.webSearch()
+        searchContainer = web?.container
+        if AppEnvironment.checkWebSearch {
+            runWebSearchCheck(web?.search)
+            return
+        }
+        backend = AppEnvironment.backendConfig().map { BackendService(config: $0, webSearch: web?.search) }
         let model = PopupModel(backend: backend, audit: audit)
         popup = PopupController(model: model)
 
@@ -41,7 +48,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         backend?.stop()
+        // Leave nothing running: stop the search container if it is up.
+        searchContainer?.stopNow()
         audit.flush()
+    }
+
+    private func runWebSearchCheck(_ search: SearXNGSearch?) {
+        Task {
+            guard let search else {
+                print("web search check: Docker was not found")
+                exit(2)
+            }
+            do {
+                let results = try await search.search("OMNIS web search check")
+                print("web search check: ok, \(results.count) results, first from \(results.first?.host ?? "none")")
+                await search.shutdown()
+                exit(0)
+            } catch {
+                print("web search check: failed, \(error.localizedDescription)")
+                await search.shutdown()
+                exit(1)
+            }
+        }
     }
 
     @objc private func openPopup() {

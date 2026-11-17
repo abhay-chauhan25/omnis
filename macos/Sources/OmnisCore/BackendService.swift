@@ -61,6 +61,12 @@ public enum BackendError: Error, Equatable, LocalizedError {
 
 public enum AnswerEvent: Equatable, Sendable {
     case chunk(String)
+    /// The model asked for a web search and the app is running it.
+    case searching(query: String)
+    /// The search finished and these results were given to the model.
+    case sources([SearchResult])
+    /// The search could not be done; the model was told so.
+    case searchFailed(String)
     case finished(model: String?, details: AnswerDetails)
 }
 
@@ -70,6 +76,7 @@ public final class BackendService: @unchecked Sendable {
     private struct Pending {
         let text: String
         let route: String
+        let web: Bool
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -94,8 +101,13 @@ public final class BackendService: @unchecked Sendable {
     private var diagnostic = ""
     private var greeted = false
 
-    public init(config: BackendConfig) {
+    private let webSearch: (any WebSearching)?
+
+    /// `webSearch` is what carries out a search when the model asks for one.
+    /// Without it, the model is told that web search is unavailable.
+    public init(config: BackendConfig, webSearch: (any WebSearching)? = nil) {
         self.config = config
+        self.webSearch = webSearch
         // Writing to a backend that has just exited must raise an error, not kill the app.
         signal(SIGPIPE, SIG_IGN)
     }
@@ -123,7 +135,7 @@ public final class BackendService: @unchecked Sendable {
 
     /// Sends a question. Pieces of the answer arrive on the returned stream.
     /// Dropping or cancelling the stream cancels the request.
-    public func ask(_ text: String, route: String = "auto") -> AsyncThrowingStream<AnswerEvent, Error> {
+    public func ask(_ text: String, route: String = "auto", web: Bool = true) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
             guard text.count <= Self.maxQuestionLength else {
@@ -134,7 +146,7 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, route: route, continuation: continuation)
+                self.pending[id] = Pending(text: text, route: route, web: web, continuation: continuation)
                 self.send(id)
             }
         }
@@ -164,7 +176,7 @@ public final class BackendService: @unchecked Sendable {
             // Marked before writing: from here the request belongs to this
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
-            try write(.ask(id: id, text: request.text, route: request.route))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -265,7 +277,7 @@ public final class BackendService: @unchecked Sendable {
         try write(.hello(protocolVersion: BackendProtocol.version))
         for id in resend {
             guard let request = pending[id] else { continue }
-            try write(.ask(id: id, text: request.text, route: request.route))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web))
         }
     }
 
@@ -306,6 +318,8 @@ public final class BackendService: @unchecked Sendable {
             guard let request = pending.removeValue(forKey: id) else { return }
             request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }, details: details))
             request.continuation.finish()
+        case .toolRequest(let id, let callID, let tool, let query):
+            runTool(requestID: id, callID: callID, tool: tool, query: query)
         case .error(let id, let code, let message):
             let error = BackendError.service(
                 code: String(code.prefix(64)),
@@ -321,6 +335,59 @@ public final class BackendService: @unchecked Sendable {
             }
         case .bye:
             break
+        }
+    }
+
+    /// Carries out something the model asked for. The backend only ever asks;
+    /// the decision and the action are here, on the app's side.
+    private func runTool(requestID: String, callID: String, tool: String, query: String) {
+        guard let request = pending[requestID] else { return }  // cancelled meanwhile
+
+        func reply(ok: Bool, results: [SearchResult], error: String) {
+            guard pending[requestID] != nil else { return }
+            try? write(.toolResult(id: requestID, callID: callID, ok: ok, results: results, error: error))
+            if ok {
+                pending[requestID]?.continuation.yield(.sources(results))
+            } else {
+                pending[requestID]?.continuation.yield(.searchFailed(error))
+            }
+        }
+
+        // Refuse anything that is not a web search, and any search when the
+        // user forbade it for this question, whatever the backend says.
+        guard tool == "web_search" else {
+            reply(ok: false, results: [], error: "that action is not available")
+            return
+        }
+        guard request.web else {
+            reply(ok: false, results: [], error: "web search is turned off for this question")
+            return
+        }
+        guard let webSearch else {
+            reply(ok: false, results: [], error: "web search is not set up")
+            return
+        }
+
+        request.continuation.yield(.searching(query: query))
+        let current = generation
+        Task { [weak self] in
+            let outcome: Result<[SearchResult], Error>
+            do {
+                outcome = .success(try await webSearch.search(query))
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.queue.async {
+                guard let self, current == self.generation else { return }
+                switch outcome {
+                case .success(let results) where !results.isEmpty:
+                    reply(ok: true, results: results, error: "")
+                case .success:
+                    reply(ok: false, results: [], error: "no results were found")
+                case .failure(let error):
+                    reply(ok: false, results: [], error: String(error.localizedDescription.prefix(200)))
+                }
+            }
         }
     }
 

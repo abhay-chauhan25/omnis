@@ -28,6 +28,29 @@ enum AppEnvironment {
         )
     }
 
+    /// Web search runs SearXNG in Docker. Returns nil if Docker cannot be found;
+    /// the popup then says web search is not set up.
+    static func webSearch() -> (search: SearXNGSearch, container: SearXNGContainer)? {
+        let environment = ProcessInfo.processInfo.environment
+        let info = Bundle.main.infoDictionary ?? [:]
+        let candidates = [environment["OMNIS_DOCKER"], info["OMNISDockerPath"] as? String,
+                          "/usr/local/bin/docker", "/opt/homebrew/bin/docker"]
+        let fileManager = FileManager.default
+        guard let path = candidates.compactMap({ $0 }).first(where: {
+            $0.hasPrefix("/") && fileManager.isExecutableFile(atPath: $0)
+        }) else { return nil }
+        let container = SearXNGContainer(
+            docker: URL(fileURLWithPath: path),
+            settingsDirectory: OmnisPaths.supportDirectory.appendingPathComponent("searxng", isDirectory: true)
+        )
+        return (SearXNGSearch(container: container), container)
+    }
+
+    /// Development aid: `--check-web-search` runs one search from inside the
+    /// app bundle, prints the outcome, stops the container and exits. It
+    /// proves the packaged app is allowed to reach the search service.
+    static var checkWebSearch: Bool { CommandLine.arguments.contains("--check-web-search") }
+
     /// Development aid: `--show-on-launch` opens the popup immediately, and
     /// `--query <text>` pre-fills it. Used for screenshots and manual checks.
     static var showOnLaunch: Bool { CommandLine.arguments.contains("--show-on-launch") }

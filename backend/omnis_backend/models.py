@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 
 
@@ -26,6 +27,21 @@ class AnswerInfo:
     load_ms: int = 0
     total_ms: int = 0
     cost_usd: float = 0.0
+    searches: int = 0
 
     def as_fields(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class ToolRequest:
+    """Something the model wants the app to do on its behalf.
+
+    The service passes it to the app and resolves `future` with the app's
+    reply: {"ok": bool, "results": [...], "error": str}. The Python side
+    never performs the action itself.
+    """
+
+    tool: str
+    query: str
+    future: "asyncio.Future[dict]"

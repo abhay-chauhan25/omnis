@@ -30,11 +30,13 @@ import Testing
     }
 
     @Test func routePrefixesAreSplitOff() {
-        #expect(RoutePrefix.split("local: what is a paper") == ("local", "what is a paper"))
-        #expect(RoutePrefix.split("  Claude:  explain quicksort ") == ("claude", "explain quicksort"))
-        #expect(RoutePrefix.split("what is local: this") == ("auto", "what is local: this"))
-        #expect(RoutePrefix.split("local:") == ("auto", "local:"))
-        #expect(RoutePrefix.split("elsewhere: hi") == ("auto", "elsewhere: hi"))
+        #expect(RoutePrefix.split("local: what is a paper") == AskOptions(route: "local", web: true, text: "what is a paper"))
+        #expect(RoutePrefix.split("  Claude:  explain quicksort ") == AskOptions(route: "claude", web: true, text: "explain quicksort"))
+        #expect(RoutePrefix.split("Offline: latest news") == AskOptions(route: "local", web: false, text: "latest news"))
+        #expect(RoutePrefix.split("what is local: this") == AskOptions(text: "what is local: this"))
+        #expect(RoutePrefix.split("local:") == AskOptions(text: "local:"))
+        #expect(RoutePrefix.split("offline:   ") == AskOptions(text: "offline:"))
+        #expect(RoutePrefix.split("elsewhere: hi") == AskOptions(text: "elsewhere: hi"))
     }
 }
 
@@ -49,6 +51,7 @@ import Testing
         let hello = try json(.hello(protocolVersion: 1))
         #expect(hello["type"] as? String == "hello")
         #expect(hello["protocol"] as? Int == 1)
+        #expect(BackendProtocol.version == 2)
 
         let ask = try json(.ask(id: "q1", text: "line one\nline \"two\" \u{1F600}"))
         #expect(ask["type"] as? String == "ask")
@@ -56,6 +59,17 @@ import Testing
         #expect(ask["text"] as? String == "line one\nline \"two\" \u{1F600}")
         #expect(ask["route"] as? String == "auto")
         #expect(try json(.ask(id: "q", text: "t", route: "local"))["route"] as? String == "local")
+        #expect(ask["web"] as? Bool == true)
+        #expect(try json(.ask(id: "q", text: "t", web: false))["web"] as? Bool == false)
+
+        let result = try json(.toolResult(id: "q", callID: "c1", ok: true, results: [
+            SearchResult(title: "T", url: URL(string: "https://example.com/a?b=1")!, snippet: "S"),
+        ], error: ""))
+        #expect(result["type"] as? String == "tool_result")
+        #expect(result["call_id"] as? String == "c1")
+        #expect(result["ok"] as? Bool == true)
+        let sent = try #require((result["results"] as? [[String: String]])?.first)
+        #expect(sent == ["title": "T", "url": "https://example.com/a?b=1", "snippet": "S"])
 
         let cancel = try json(.cancel(id: "q1"))
         #expect(cancel["type"] as? String == "cancel")
@@ -83,6 +97,8 @@ import Testing
         #expect(try decode(#"{"type":"error","id":"q","code":"internal","message":"m"}"#)
             == .error(id: "q", code: "internal", message: "m"))
         #expect(try decode(#"{"type":"bye","reason":"idle"}"#) == .bye(reason: "idle"))
+        #expect(try decode(#"{"type":"tool_request","id":"q","call_id":"c","tool":"web_search","query":"max plan"}"#)
+            == .toolRequest(id: "q", callID: "c", tool: "web_search", query: "max plan"))
     }
 
     @Test func refusesMalformedServiceMessages() {
@@ -94,6 +110,8 @@ import Testing
         #expect(failure(#"{"type":"run_command","cmd":"ls"}"#) == .unknownType("run_command"))
         #expect(failure(#"{"id":"q"}"#) == .missingField("type"))
         #expect(failure(#"{"type":"answer_chunk","id":"q"}"#) == .missingField("text"))
+        #expect(failure(#"{"type":"tool_request","id":"q","tool":"web_search","query":"x"}"#) == .missingField("call_id"))
+        #expect(failure(#"{"type":"tool_request","id":"q","call_id":"c","tool":"web_search","query":7}"#) == .missingField("query"))
         #expect(failure(#"{"type":"hello","protocol":true,"service":"s","version":"v"}"#) == .missingField("protocol"))
         #expect(failure(#"{"type":"hello","protocol":"1","service":"s","version":"v"}"#) == .missingField("protocol"))
     }
@@ -105,7 +123,7 @@ import Testing
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("backend", isDirectory: true)
 
-    func service(idleSeconds: Double = 0, delayMilliseconds: Int = 1) -> BackendService {
+    func service(idleSeconds: Double = 0, delayMilliseconds: Int = 1, webSearch: (any WebSearching)? = nil) -> BackendService {
         var environment = ProcessInfo.processInfo.environment
         environment["OMNIS_MOCK_DELAY_MS"] = String(delayMilliseconds)
         return BackendService(config: BackendConfig(
@@ -113,7 +131,106 @@ import Testing
             arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", String(idleSeconds)],
             workingDirectory: Self.backendDirectory,
             environment: environment
-        ))
+        ), webSearch: webSearch)
+    }
+
+    /// Runs a question and returns the text plus every non-text event.
+    func trace(_ stream: AsyncThrowingStream<AnswerEvent, Error>) async throws -> (text: String, events: [AnswerEvent]) {
+        var text = ""
+        var events: [AnswerEvent] = []
+        for try await event in stream {
+            if case .chunk(let piece) = event { text += piece } else { events.append(event) }
+        }
+        return (text, events)
+    }
+
+    // The mock backend asks for a web search when a question starts with "search:".
+
+    @Test func aSearchRequestIsCarriedOutByTheAppAndTheResultsGoBack() async throws {
+        let stub = StubSearch()
+        let backend = service(webSearch: stub)
+        let run = try await trace(backend.ask("search: claude max plan"))
+        #expect(stub.queries == ["claude max plan"])
+        #expect(run.events.prefix(2) == [.searching(query: "claude max plan"), .sources(stub.results)])
+        #expect(run.text == "Search ok=True results=2 first=What is the Max plan? error=")
+        backend.stop()
+    }
+
+    @Test func offlineQuestionsAreNeverSearchedEvenIfTheBackendAsks() async throws {
+        let stub = StubSearch()
+        let backend = service(webSearch: stub)
+        let run = try await trace(backend.ask("search: latest news", web: false))
+        #expect(stub.queries.isEmpty)
+        #expect(run.events.first == .searchFailed("web search is turned off for this question"))
+        #expect(run.text.contains("ok=False results=0"))
+        backend.stop()
+    }
+
+    @Test func withoutASearcherTheModelIsToldSearchIsNotSetUp() async throws {
+        let backend = service()
+        let run = try await trace(backend.ask("search: anything"))
+        #expect(run.events.first == .searchFailed("web search is not set up"))
+        #expect(run.text.contains("error=web search is not set up"))
+        backend.stop()
+    }
+
+    @Test func aFailedOrEmptySearchIsReportedNotHidden() async throws {
+        let stub = StubSearch()
+        stub.failure = WebSearchError.dockerNotRunning
+        let backend = service(webSearch: stub)
+        let failed = try await trace(backend.ask("search: x"))
+        #expect(failed.events.contains(.searchFailed("Docker is not running, so web search is unavailable")))
+        #expect(failed.text.contains("ok=False"))
+
+        stub.failure = nil
+        stub.results = []
+        let empty = try await trace(backend.ask("search: y"))
+        #expect(empty.events.contains(.searchFailed("no results were found")))
+        backend.stop()
+    }
+
+    @Test func cancellingDuringASearchLeavesTheServiceUsable() async throws {
+        let stub = StubSearch()
+        stub.delay = 2
+        let backend = service(webSearch: stub)
+        let task = Task { try await self.trace(backend.ask("search: slow")) }
+        #expect(await waitUntil { !stub.queries.isEmpty })
+        task.cancel()
+        _ = try? await task.value
+        stub.delay = 0
+        let next = try await trace(backend.ask("search: fast"))
+        #expect(next.text.contains("ok=True"))
+        #expect(backend.startCount == 1)
+        backend.stop()
+    }
+
+    /// A backend that asks for something other than a web search. The app
+    /// must refuse, whatever the request says.
+    @Test func anythingOtherThanAWebSearchIsRefused() async throws {
+        let script = #"""
+        echo '{"type":"hello","protocol":2,"service":"fake","version":"0"}'
+        while read -r line; do
+          case "$line" in
+            *'"type":"ask"'*)
+              id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+              echo "{\"type\":\"tool_request\",\"id\":\"$id\",\"call_id\":\"c1\",\"tool\":\"run_shell\",\"query\":\"rm -rf ~\"}" ;;
+            *'"type":"tool_result"'*)
+              case "$line" in *'"ok":false'*) verdict=refused ;; *) verdict=ALLOWED ;; esac
+              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"$verdict\"}"
+              echo "{\"type\":\"answer_done\",\"id\":\"$id\",\"model\":\"fake\",\"cancelled\":false}" ;;
+          esac
+        done
+        """#
+        let stub = StubSearch()
+        let backend = BackendService(config: BackendConfig(
+            executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        ), webSearch: stub)
+        let run = try await trace(backend.ask("do something"))
+        #expect(run.text == "refused")
+        #expect(stub.queries.isEmpty)
+        #expect(run.events.first == .searchFailed("that action is not available"))
+        backend.stop()
     }
 
     func fake(_ script: String, helloTimeout: TimeInterval = 10) -> BackendService {
@@ -133,6 +250,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
+            case .searching, .sources, .searchFailed: break
             }
         }
         return (text, model, chunks)
@@ -272,7 +390,7 @@ import Testing
         let reply = try output.fileHandleForReading.readToEnd() ?? Data()
         process.waitUntilExit()
         #expect(try ProtocolCodec.decode(reply.split(separator: 0x0A).first.map { Data($0) } ?? Data())
-            == .error(id: nil, code: "unsupported_version", message: "service speaks protocol 1"))
+            == .error(id: nil, code: "unsupported_version", message: "service speaks protocol 2"))
         #expect(process.terminationStatus == 2)
     }
 
@@ -341,11 +459,12 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
+            case .searching, .sources, .searchFailed: break
             }
         }
         #expect(text.contains("Paris"))
         #expect(!text.contains("</think>"))
-        #expect(finished?.model == "qwen3:4b")
+        #expect(finished?.model == "gemma4:12b")
         #expect(finished?.details.route == "local")
         #expect((finished?.details.outputTokens ?? 0) > 0)
 
@@ -365,6 +484,44 @@ import Testing
         backend.stop()
     }
 
+    /// Real model, real search container, real web. Needs Docker running.
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter liveWebSearch
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveWebSearchAnswersFromRealResults() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let ollama = URL(fileURLWithPath: environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        let docker = URL(fileURLWithPath: environment["OMNIS_DOCKER"] ?? "/usr/local/bin/docker")
+        let container = SearXNGContainer(docker: docker,
+                                         settingsDirectory: OmnisPaths.supportDirectory.appendingPathComponent("searxng"))
+        let search = SearXNGSearch(container: container, idleSeconds: 0)
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+        let backend = BackendService(config: config, webSearch: search)
+
+        let started = Date()
+        let run = try await trace(backend.ask("What are the benefits of the Claude Max plan?"))
+        print("LIVE_SEARCH seconds \(Date().timeIntervalSince(started)) text: \(run.text)")
+
+        let sources = run.events.compactMap { event -> [SearchResult]? in
+            if case .sources(let results) = event { return results } else { return nil }
+        }.first ?? []
+        #expect(!sources.isEmpty)
+        #expect(sources.allSatisfy { $0.url.scheme == "https" })
+        #expect(run.text.localizedCaseInsensitiveContains("max"))
+        let details = run.events.compactMap { event -> AnswerDetails? in
+            if case .finished(_, let details) = event { return details } else { return nil }
+        }.first
+        #expect((details?.searches ?? 0) >= 1)
+
+        // The same question offline must not search.
+        let offline = try await trace(backend.ask("What are the benefits of the Claude Max plan?", web: false))
+        #expect(!offline.events.contains { if case .searching = $0 { return true } else { return false } })
+
+        backend.stop()
+        await search.shutdown()
+    }
+
     @Test func garbageFromTheBackendIsAnErrorNotACrash() async {
         let backend = fake("echo 'this is not json'; cat > /dev/null")
         await #expect(throws: BackendError.protocolViolation("unreadable message")) {
@@ -372,4 +529,27 @@ import Testing
         }
         backend.stop()
     }
+}
+
+/// A search provider for tests: no Docker, no network.
+final class StubSearch: WebSearching, @unchecked Sendable {
+    private let lock = NSLock()
+    private var asked: [String] = []
+    var results = [
+        SearchResult(title: "What is the Max plan?", url: URL(string: "https://support.example/max")!, snippet: "More usage."),
+        SearchResult(title: "Pricing", url: URL(string: "https://example.com/pricing")!, snippet: "Free, Pro, Max."),
+    ]
+    var failure: Error?
+    var delay: Double = 0
+
+    var queries: [String] { lock.withLock { asked } }
+
+    func search(_ query: String) async throws -> [SearchResult] {
+        lock.withLock { asked.append(query) }
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+        if let failure { throw failure }
+        return results
+    }
+
+    func shutdown() async {}
 }

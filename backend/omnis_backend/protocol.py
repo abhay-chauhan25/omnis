@@ -7,6 +7,9 @@ App to service:
     {"type": "ask",    "id": "<request id>", "text": "<question>", "route": "auto"}
         ("route" is optional: "auto", "local" or "claude")
     {"type": "cancel", "id": "<request id>"}
+    {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
+     "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "..."}
+        ("ask" may also carry "web": false to forbid web search for that question)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -15,6 +18,7 @@ Service to app:
      "route": "...", "reason": "...", "input_tokens": 0, "output_tokens": 0,
      "load_ms": 0, "total_ms": 0, "cost_usd": 0.0}
         (everything after "cancelled" is optional)
+    {"type": "tool_request", "id": "...", "call_id": "...", "tool": "web_search", "query": "..."}
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
     {"type": "bye", "reason": "idle"}
 """
@@ -26,12 +30,14 @@ from typing import Any
 
 from . import __version__
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 SERVICE_NAME = "omnis-backend"
 MAX_TEXT_CHARS = 100_000
 MAX_ID_CHARS = 128
 
-CLIENT_TYPES = ("hello", "ask", "cancel")
+CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result")
+MAX_RESULTS = 8
+MAX_RESULT_FIELD_CHARS = 2000
 ROUTES = ("auto", "local", "claude")
 
 
@@ -74,6 +80,8 @@ def decode_client(line: bytes) -> dict[str, Any]:
     request_id = _require_id(obj)
     if kind == "cancel":
         return {"type": "cancel", "id": request_id}
+    if kind == "tool_result":
+        return _decode_tool_result(obj, request_id)
 
     text = obj.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -83,7 +91,40 @@ def decode_client(line: bytes) -> dict[str, Any]:
     route = obj.get("route", "auto")
     if route not in ROUTES:
         raise ProtocolError("bad_request", "'route' must be auto, local or claude", request_id)
-    return {"type": "ask", "id": request_id, "text": text, "route": route}
+    web = obj.get("web", True)
+    if not isinstance(web, bool):
+        raise ProtocolError("bad_request", "'web' must be true or false", request_id)
+    return {"type": "ask", "id": request_id, "text": text, "route": route, "web": web}
+
+
+def _decode_tool_result(obj: dict[str, Any], request_id: str) -> dict[str, Any]:
+    call_id = obj.get("call_id")
+    if not isinstance(call_id, str) or not call_id or len(call_id) > MAX_ID_CHARS:
+        raise ProtocolError("bad_request", "'call_id' must be a non-empty string", request_id)
+    ok = obj.get("ok")
+    if not isinstance(ok, bool):
+        raise ProtocolError("bad_request", "'ok' must be true or false", request_id)
+    raw = obj.get("results", [])
+    if not isinstance(raw, list):
+        raise ProtocolError("bad_request", "'results' must be a list", request_id)
+    results = []
+    for item in raw[:MAX_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        entry = {}
+        for key in ("title", "url", "snippet"):
+            value = item.get(key, "")
+            entry[key] = value[:MAX_RESULT_FIELD_CHARS] if isinstance(value, str) else ""
+        results.append(entry)
+    error = obj.get("error", "")
+    return {
+        "type": "tool_result",
+        "id": request_id,
+        "call_id": call_id,
+        "ok": ok,
+        "results": results,
+        "error": error[:300] if isinstance(error, str) else "",
+    }
 
 
 def encode(message: dict[str, Any]) -> bytes:
@@ -111,6 +152,10 @@ def answer_done(
     for key, value in (details or {}).items():
         out.setdefault(key, value)
     return out
+
+
+def tool_request(request_id: str, call_id: str, tool: str, query: str) -> dict[str, Any]:
+    return {"type": "tool_request", "id": request_id, "call_id": call_id, "tool": tool, "query": query}
 
 
 def error(code: str, message: str, request_id: str | None = None) -> dict[str, Any]:

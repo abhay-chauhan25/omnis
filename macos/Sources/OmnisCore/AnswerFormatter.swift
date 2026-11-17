@@ -20,17 +20,38 @@ public enum AnswerFormatter {
     }
 }
 
-/// A typed prefix that picks the route by hand: "local: ..." or "claude: ...".
+/// How one question should be handled, from an optional typed prefix:
+///   "local: ..."    stay on this Mac's models, whatever the wording
+///   "claude: ..."   send to Claude
+///   "offline: ..."  stay on this Mac and do not search the web
+public struct AskOptions: Equatable, Sendable {
+    public var route: String
+    public var web: Bool
+    public var text: String
+
+    public init(route: String = "auto", web: Bool = true, text: String) {
+        self.route = route
+        self.web = web
+        self.text = text
+    }
+}
+
 public enum RoutePrefix {
-    public static func split(_ text: String) -> (route: String, text: String) {
+    private static let prefixes: [(word: String, route: String, web: Bool)] = [
+        ("local", "local", true),
+        ("claude", "claude", true),
+        ("offline", "local", false),
+    ]
+
+    public static func split(_ text: String) -> AskOptions {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        for route in ["local", "claude"] {
-            let prefix = route + ":"
+        for entry in prefixes {
+            let prefix = entry.word + ":"
             if trimmed.lowercased().hasPrefix(prefix) {
                 let rest = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !rest.isEmpty { return (route, rest) }
+                if !rest.isEmpty { return AskOptions(route: entry.route, web: entry.web, text: rest) }
             }
         }
-        return ("auto", trimmed)
+        return AskOptions(text: trimmed)
     }
 }

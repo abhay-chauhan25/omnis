@@ -7,7 +7,7 @@ import asyncio
 import signal
 import sys
 
-from .engine import LocalEngine
+from .engine import DEFAULT_MODEL, LocalEngine
 from .handlers import mock_answer
 from .ollama import DEFAULT_PORT, OllamaClient
 from .service import Service
@@ -57,8 +57,8 @@ def main() -> int:
                         help="mock: canned replies. local: models on this Mac through Ollama")
     parser.add_argument("--ollama-bin", default=None, help="path to the ollama program, to start it on demand")
     parser.add_argument("--ollama-port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--light-model", default="qwen3:4b")
-    parser.add_argument("--moderate-model", default="qwen3:8b")
+    parser.add_argument("--light-model", default=DEFAULT_MODEL)
+    parser.add_argument("--moderate-model", default=DEFAULT_MODEL)
     parser.add_argument("--keep-alive-seconds", type=float, default=300.0,
                         help="how long an unused model stays in memory")
     args = parser.parse_args()

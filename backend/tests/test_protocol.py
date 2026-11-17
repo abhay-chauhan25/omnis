@@ -7,19 +7,47 @@ from omnis_backend import protocol
 class DecodeClientTests(unittest.TestCase):
     def test_hello(self):
         self.assertEqual(
-            protocol.decode_client(b'{"type":"hello","protocol":1}'),
-            {"type": "hello", "protocol": 1},
+            protocol.decode_client(b'{"type":"hello","protocol":2}'),
+            {"type": "hello", "protocol": 2},
         )
 
     def test_ask(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
-        self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto"})
+        self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto", "web": True})
 
     def test_cancel(self):
         self.assertEqual(
             protocol.decode_client(b'{"type":"cancel","id":"a1"}'),
             {"type": "cancel", "id": "a1"},
         )
+
+    def test_ask_can_forbid_web_search(self):
+        got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","web":false}')
+        self.assertIs(got["web"], False)
+        self.assert_bad(b'{"type":"ask","id":"a","text":"x","web":"no"}')
+
+    def test_tool_result_is_validated_and_trimmed(self):
+        big = "x" * 10_000
+        line = json.dumps({
+            "type": "tool_result", "id": "a", "call_id": "c", "ok": True, "error": big,
+            "results": [{"title": big, "url": "https://e.example", "snippet": 7, "extra": "dropped"}, "junk"]
+            + [{"title": "t"}] * 20,
+        }).encode()
+        got = protocol.decode_client(line)
+        self.assertEqual(len(got["results"]), protocol.MAX_RESULTS - 1)  # the junk entry is skipped
+        first = got["results"][0]
+        self.assertEqual(set(first), {"title", "url", "snippet"})
+        self.assertEqual(len(first["title"]), protocol.MAX_RESULT_FIELD_CHARS)
+        self.assertEqual(first["snippet"], "")
+        self.assertEqual(len(got["error"]), 300)
+        for bad in (
+            b'{"type":"tool_result","id":"a","ok":true}',
+            b'{"type":"tool_result","id":"a","call_id":"c","ok":"yes"}',
+            b'{"type":"tool_result","id":"a","call_id":"c","ok":true,"results":"none"}',
+            b'{"type":"tool_result","call_id":"c","ok":true}',
+        ):
+            with self.subTest(bad=bad):
+                self.assert_bad(bad)
 
     def test_extra_fields_are_dropped(self):
         got = protocol.decode_client(b'{"type":"cancel","id":"a1","run":"rm -rf /"}')

@@ -3,13 +3,15 @@ import Foundation
 /// The message protocol shared with `backend/omnis_backend/protocol.py`.
 /// One JSON object per line. Keep the two files in step.
 public enum BackendProtocol {
-    public static let version = 1
+    public static let version = 2
 }
 
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
-    case ask(id: String, text: String, route: String = "auto")
+    case ask(id: String, text: String, route: String = "auto", web: Bool = true)
     case cancel(id: String)
+    /// The app's reply to a `toolRequest`: what the search found, or why it failed.
+    case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String)
 }
 
 /// What produced an answer and what it cost. All fields are optional on the
@@ -24,9 +26,12 @@ public struct AnswerDetails: Equatable, Sendable {
     public var loadMilliseconds: Int?
     public var totalMilliseconds: Int?
     public var costUSD: Double?
+    /// How many web searches were made for this answer.
+    public var searches: Int?
 
     public init(route: String? = nil, reason: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
-                loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil, costUSD: Double? = nil) {
+                loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil, costUSD: Double? = nil,
+                searches: Int? = nil) {
         self.route = route
         self.reason = reason
         self.inputTokens = inputTokens
@@ -34,6 +39,7 @@ public struct AnswerDetails: Equatable, Sendable {
         self.loadMilliseconds = loadMilliseconds
         self.totalMilliseconds = totalMilliseconds
         self.costUSD = costUSD
+        self.searches = searches
     }
 }
 
@@ -41,6 +47,8 @@ public enum ServiceMessage: Equatable, Sendable {
     case hello(protocolVersion: Int, service: String, version: String)
     case answerChunk(id: String, text: String)
     case answerDone(id: String, model: String?, cancelled: Bool, details: AnswerDetails)
+    /// The model wants the app to do something. Only "web_search" exists.
+    case toolRequest(id: String, callID: String, tool: String, query: String)
     case error(id: String?, code: String, message: String)
     case bye(reason: String)
 }
@@ -58,8 +66,13 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route):
-            object = ["type": "ask", "id": id, "text": text, "route": route]
+        case .ask(let id, let text, let route, let web):
+            object = ["type": "ask", "id": id, "text": text, "route": route, "web": web]
+        case .toolResult(let id, let callID, let ok, let results, let error):
+            object = [
+                "type": "tool_result", "id": id, "call_id": callID, "ok": ok, "error": error,
+                "results": results.map { ["title": $0.title, "url": $0.url.absoluteString, "snippet": $0.snippet] },
+            ]
         case .cancel(let id):
             object = ["type": "cancel", "id": id]
         }
@@ -108,9 +121,13 @@ public enum ProtocolCodec {
                     outputTokens: optionalInt("output_tokens"),
                     loadMilliseconds: optionalInt("load_ms"),
                     totalMilliseconds: optionalInt("total_ms"),
-                    costUSD: cost
+                    costUSD: cost,
+                    searches: optionalInt("searches")
                 )
             )
+        case "tool_request":
+            return .toolRequest(id: try string("id"), callID: try string("call_id"),
+                                tool: try string("tool"), query: String(try string("query").prefix(400)))
         case "error":
             return .error(id: object["id"] as? String, code: try string("code"), message: try string("message"))
         case "bye":

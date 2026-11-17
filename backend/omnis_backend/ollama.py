@@ -215,6 +215,8 @@ class OllamaClient:
         messages: list[dict],
         keep_alive_seconds: int,
         context_tokens: int = 8192,
+        tools: list[dict] | None = None,
+        think: bool | None = True,
     ) -> AsyncIterator[dict]:
         """Stream a chat reply. Yields the server's JSON objects one by one.
 
@@ -234,6 +236,15 @@ class OllamaClient:
             # needs; a bounded one keeps memory use predictable.
             "options": {"num_ctx": context_tokens},
         }
+        # `think` is True for the Qwen3 build described above. Other models
+        # may accept False (answer without reasoning) or not take the field at
+        # all (None leaves it out).
+        if think is None:
+            del body["think"]
+        else:
+            body["think"] = think
+        if tools:
+            body["tools"] = tools
         status, headers, reader, writer = await self._open("POST", "/api/chat", body)
         try:
             if status != 200:

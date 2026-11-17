@@ -26,7 +26,7 @@ class ProcessTests(unittest.TestCase):
     def test_full_round_trip_over_pipes(self):
         proc = start("--idle-seconds", "0")
         try:
-            proc.stdin.write(b'{"type":"hello","protocol":1}\n')
+            proc.stdin.write(b'{"type":"hello","protocol":2}\n')
             proc.stdin.write(b'{"type":"ask","id":"q1","text":"what is OMNIS?"}\n')
             proc.stdin.flush()
             messages = []
@@ -52,7 +52,7 @@ class ProcessTests(unittest.TestCase):
     def test_exits_by_itself_when_idle(self):
         proc = start("--idle-seconds", "0.3")
         try:
-            proc.stdin.write(b'{"type":"hello","protocol":1}\n')
+            proc.stdin.write(b'{"type":"hello","protocol":2}\n')
             proc.stdin.flush()
             self.assertEqual(proc.wait(timeout=5), 0)
             lines = [json.loads(line) for line in proc.stdout.read().splitlines()]

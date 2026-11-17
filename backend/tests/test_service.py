@@ -4,7 +4,7 @@ import unittest
 
 from omnis_backend.service import EXIT_OK, EXIT_UNSUPPORTED_VERSION, Service
 
-HELLO = b'{"type":"hello","protocol":1}\n'
+HELLO = b'{"type":"hello","protocol":2}\n'
 
 
 def ask(request_id: str, text: str = "hello") -> bytes:
@@ -46,19 +46,19 @@ class Harness:
         return await asyncio.wait_for(self.task, 2.0)
 
 
-async def three_words(text, route="auto"):
+async def three_words(text, route="auto", web=True):
     for piece in ("one ", "two ", "three"):
         await asyncio.sleep(0)
         yield piece
 
 
-async def slow(text, route="auto"):
+async def slow(text, route="auto", web=True):
     for i in range(1000):
         await asyncio.sleep(0.01)
         yield f"{i} "
 
 
-async def broken(text, route="auto"):
+async def broken(text, route="auto", web=True):
     yield "partial "
     raise RuntimeError("secret detail that must not leak")
 
@@ -69,7 +69,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         h.feed(HELLO + ask("r1"))
         await h.until(lambda: h.of_type("answer_done"))
         self.assertEqual(h.out[0]["type"], "hello")
-        self.assertEqual(h.out[0]["protocol"], 1)
+        self.assertEqual(h.out[0]["protocol"], 2)
         self.assertEqual([m["text"] for m in h.of_type("answer_chunk")], ["one ", "two ", "three"])
         done = h.of_type("answer_done")[0]
         self.assertEqual((done["id"], done["cancelled"], done["model"]), ("r1", False, "mock"))
@@ -138,6 +138,56 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err["code"], "internal")
         self.assertNotIn("secret", json.dumps(h.out))
         self.assertFalse(h.task.done())
+        await h.close()
+
+    async def test_a_tool_request_goes_out_and_its_result_comes_back(self):
+        from omnis_backend.models import ToolRequest
+
+        async def searcher(text, route="auto", web=True):
+            request = ToolRequest("web_search", "the query", asyncio.get_running_loop().create_future())
+            yield request
+            outcome = await request.future
+            yield f"got {len(outcome['results'])} results, web={web}"
+
+        h = Harness(searcher)
+        h.feed(HELLO + json.dumps({"type": "ask", "id": "r1", "text": "x", "web": True}).encode() + b"\n")
+        await h.until(lambda: h.of_type("tool_request"))
+        request = h.of_type("tool_request")[0]
+        self.assertEqual((request["id"], request["tool"], request["query"]), ("r1", "web_search", "the query"))
+
+        def result(request_id, call_id):
+            return json.dumps({"type": "tool_result", "id": request_id, "call_id": call_id, "ok": True,
+                               "results": [{"title": "t", "url": "https://a.example", "snippet": "s"}]}).encode() + b"\n"
+
+        # Results for the wrong request or call are ignored, not delivered.
+        h.feed(result("other", request["call_id"]) + result("r1", "wrong-call"))
+        await asyncio.sleep(0.05)
+        self.assertEqual(h.of_type("answer_chunk"), [])
+        h.feed(result("r1", request["call_id"]))
+        await h.until(lambda: h.of_type("answer_done"))
+        self.assertEqual(h.of_type("answer_chunk")[0]["text"], "got 1 results, web=True")
+        # A second copy of the same result has nowhere to go.
+        h.feed(result("r1", request["call_id"]))
+        await asyncio.sleep(0.05)
+        self.assertEqual(h.of_type("error"), [])
+        await h.close()
+
+    async def test_cancel_while_waiting_for_a_search_cleans_up(self):
+        from omnis_backend.models import ToolRequest
+
+        async def searcher(text, route="auto", web=True):
+            request = ToolRequest("web_search", "q", asyncio.get_running_loop().create_future())
+            yield request
+            await request.future
+            yield "never"
+
+        h = Harness(searcher)
+        h.feed(HELLO + ask("r1"))
+        await h.until(lambda: h.of_type("tool_request"))
+        h.feed(cancel("r1"))
+        await h.until(lambda: h.of_type("answer_done"))
+        self.assertTrue(h.of_type("answer_done")[0]["cancelled"])
+        self.assertEqual(h.service._tool_waiters, {})
         await h.close()
 
     async def test_stops_itself_when_idle(self):

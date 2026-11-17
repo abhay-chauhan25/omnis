@@ -47,6 +47,12 @@ add OMNISPythonPath string "$python"
 # Optional: with Ollama present, questions are answered by local models.
 ollama="${OMNIS_OLLAMA:-$(command -v ollama || true)}"
 if [ -n "$ollama" ]; then add OMNISOllamaPath string "$ollama"; fi
+# Optional: with Docker present, the local models can search the web.
+docker="${OMNIS_DOCKER:-$(command -v docker || true)}"
+if [ -n "$docker" ]; then add OMNISDockerPath string "$docker"; fi
+# The search service is reached over plain HTTP on this Mac's own loopback
+# address. This permits that and nothing else.
+plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$plist"
 
 # Ad-hoc signature: enough to run on this Mac, not for distribution.
 codesign --force --sign - "$app" >/dev/null 2>&1
