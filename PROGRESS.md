@@ -12,7 +12,7 @@ Last updated: 2026-11-16
 - [x] 0b Round 3: app structure and connection (ADR-0003). Local runtime is deferred to Stage 1 benchmarks.
 - [ ] 0b Round 4: security, memory, cost
 - [ ] Decision records written and accepted
-- [ ] Thin-slice plan approved
+- [ ] Thin-slice plan approved (drafted in `docs/stages/thin-slice.md`)
 
 ## Build order (ADR-0001)
 
@@ -67,8 +67,6 @@ What they showed when checked against this Mac:
 
 ## Open decisions
 
-2. Stack: Swift app plus Python service, all-Swift, or a web-tech shell (Round 3).
-3. App-to-backend connection and process lifecycle (Round 3).
 4. Local runtime: Ollama, MLX, or llama.cpp; one local model or two (Round 3, benchmarked in Stage 1).
 5. Permission model: what needs per-action confirmation and what gets scoped standing approval (Round 4).
 6. Memory: what is saved automatically versus after review; Graphify evaluation (Round 4).
