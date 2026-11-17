@@ -2,7 +2,7 @@
 
 OMNIS = **Orchestrated Multimodal Neural Intelligence System**.
 
-This starter pack contains **planning and agent instructions only**; it does not install dependencies or implement the assistant.
+The repo holds the planning documents, agent instructions, and the first working piece: a popup launcher (the thin slice).
 
 ## Contents
 - `CLAUDE.md` — project vision, requirements, collaboration/approval rules, architecture proposals, security constraints, staged plan.
@@ -20,6 +20,28 @@ This starter pack contains **planning and agent instructions only**; it does not
 - Claude API access is **not required** to start. Use mocks until the user explicitly enables billing.
 - No Gemini or OpenAI API integration is planned.
 - For Graphify, provide the exact repository or MCP URL before choosing a tool.
+
+## Running the thin slice
+
+Needs Xcode 26 and Python 3.11 or newer. No other dependencies.
+
+```sh
+macos/scripts/bundle.sh          # builds macos/build/OMNIS.app
+open macos/build/OMNIS.app
+```
+
+Press Control+Space, type, and press Enter. Esc closes the popup. Quit from the menu-bar icon or the Dock.
+
+Launchers, aliases, project folders and the editor are set in `~/Library/Application Support/OMNIS/registry.json`, created on first run. Actions are recorded in `audit.log` beside it.
+
+Tests:
+
+```sh
+cd macos && swift test
+cd backend && python3 -m unittest discover -s tests -t .
+```
+
+Layout: `macos/` is the Swift app (`OmnisCore` for logic, `OmnisApp` for the popup). `backend/` is the Python service the app starts on demand.
 
 ## Planning templates
 - `PROGRESS.md` — current stage, approved decisions, outstanding tasks, next steps.

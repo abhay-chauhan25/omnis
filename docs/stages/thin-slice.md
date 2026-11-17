@@ -2,7 +2,7 @@
 
 ## Approval checkpoint (before work)
 
-**Status: NOT APPROVED**
+**Status: APPROVED by the user on 2026-11-16**, with one change: the app has both a Dock icon and a menu-bar icon.
 
 ### Goal and user-visible result
 
@@ -72,24 +72,80 @@ Independent review by the Verification Agent before the stage is called done.
 ### Decisions awaiting user approval
 
 1. The scope above.
-2. Presence: no Dock icon, plus a small menu-bar icon whose only item is Quit. Alternatives: a Dock icon, or no icon at all.
+2. Presence: decided as a Dock icon plus a menu-bar icon.
 3. Registry sources: apps found in `/Applications` and `/System/Applications`, folders directly inside `~/projects`, plus the Ghidra launcher. Alternative: only entries listed by hand.
 4. Writing runtime files to `~/Library/Application Support/OMNIS/`.
 5. No third-party dependencies in this slice.
 
-## Implementation log (only after approval)
+## Implementation log
 
-- Changes made:
-- Tests executed and results:
-- Deviations and why:
+### Changes made
 
-## Teaching handoff (required before next stage)
+- `backend/omnis_backend/`: `protocol.py` (message format and validation), `service.py` (read loop, cancel, idle stop), `handlers.py` (mock answer), `__main__.py` (entry point).
+- `macos/Sources/OmnisCore/`: `Registry.swift`, `Matcher.swift`, `Executor.swift`, `AuditLog.swift`, `BackendProtocol.swift`, `BackendService.swift`.
+- `macos/Sources/OmnisApp/`: `OmnisMain.swift`, `AppDelegate.swift`, `HotKey.swift`, `PopupController.swift`, `PopupModel.swift`, `PopupView.swift`, `AppEnvironment.swift`.
+- `macos/scripts/bundle.sh`: builds `macos/build/OMNIS.app` with an ad-hoc signature.
+- Outside the repo: `~/Library/Application Support/OMNIS/registry.json` holds the Ghidra launcher and the "voyager" alias. Personal paths are kept out of the repo.
 
-1. **What** was built:
-2. **Why** this approach:
-3. **How** it works (files and request/data flow):
-4. **How to run and test** it:
-5. **What was verified** and what remains unverified:
-6. **Security, memory, battery and API cost** observations:
-7. **What you should understand / try next:**
-8. **Questions and approval needed for the next stage:**
+### Tests executed and results
+
+- Swift: 52 tests, all passing (`cd macos && swift test`).
+- Python: 26 tests, all passing (`cd backend && python3 -m unittest discover -s tests -t .`).
+- Measured on this Mac with the app idle: 0% CPU, 0 idle wakeups, about 20 MB memory footprint, no Python process until the first question. Loading the registry (138 entries) took about 10 ms.
+- Independent review, twice: pass with warnings both times. The second pass checked the fixes for the first and found one of them incomplete. Findings and actions are listed below. The final fix (last two rows) is covered by tests but was not reviewed a third time.
+
+### Review findings
+
+| Finding | Action |
+|---|---|
+| A question over 1 MB left the popup waiting forever | Fixed. Questions over 100,000 characters are refused, and an error with no request id now ends every waiting request. |
+| Requests could be orphaned if the service had exited but not yet been cleaned up | Fixed. The stopped process is settled before a new one starts. |
+| Enter on a partial match can run a launcher script ("gh" runs Ghidra) | Open. A product decision for the user. |
+| A failed service start gave no clue why | Fixed. The service's last error output goes into the audit log. |
+| A late launch failure wiped what was being typed | Fixed. |
+| Registry reloaded from disk on every open | Measured at about 10 ms. Left as is. |
+| VoiceOver was not told when an answer finished | Fixed. Rows also expose an activate action. |
+| Settings folder was readable by other users of this Mac | Fixed. Folder is private, as are both files. |
+| Text from the service was shown without a length limit | Fixed. Capped at 500 characters. |
+| Second review: a request could still be left waiting if a write to the service failed | Fixed. A request is assigned to the process before the write, and a failed write stops the process so the request is retried once or failed. |
+| Found while testing that fix: a service that starts but never replies kept a request waiting | Fixed. A started service has 10 seconds to say hello or it is stopped. |
+
+### Deviations and why
+
+- The Ask row is always the last row, not only when nothing matches. A question can share a word with an app name, and it must still be askable.
+- Menus hold "Open OMNIS" as well as Quit, so the popup is reachable if the hotkey is ever unavailable. An Edit menu exists because paste does not work in a text field without one.
+- The Python service runs with plain `python3`, not `uv`. It has no dependencies, so `uv` adds nothing yet.
+- A stated kind ("... app", "... in VS Code") puts entries of that kind first. A small score boost was not enough to beat an alias.
+- The Dock and menu-bar icons are placeholders (the default app icon and a system symbol). Icon design is a later UI discussion.
+- App discovery looks two levels deep so that the `Utilities` folder is included.
+
+### Known limits
+
+- There is no time limit on an answer once the service has said hello. A real model that stalls mid-answer would wait until Esc. To be set in Stage 1 against measured model speeds.
+- Enter on a partial match runs whatever is on top, including a launcher script.
+- If a launcher script fails after starting, the failure is only in the audit log.
+
+### Not verified
+
+Nothing below could be checked without hands on the keyboard and eyes on the screen:
+
+- How the popup looks, including the glass effect, in light and dark mode.
+- Control+Space, over a fullscreen app and on an external monitor.
+- The three real launches (Ghidra, ChatGPT Classic, VoyagerAI in VS Code).
+- VoiceOver and keyboard-only use.
+
+## Teaching handoff
+
+1. **What was built.** A menu-bar and Dock app whose only window is a centre bar. It launches apps, projects and custom launchers by rule-based matching, and passes anything else to a Python service that currently returns a canned reply.
+2. **Why this approach.** Launching never needs a model, so it stays in Swift and is instant. The Python service exists only for AI work, so it is started on demand and stops when idle. Swift decides and executes; Python can only send text back.
+3. **How it works.**
+   - Control+Space → `HotKey` → `PopupController.show()`, which reloads the registry and shows the panel.
+   - Each keystroke → `PopupModel.queryChanged()` → `QueryParser` strips filler words → `Matcher.rank` scores every registry entry → rows.
+   - Enter on an entry → `Executor.launch(entryID:)` looks the id up in the registry, builds a `LaunchPlan`, and `SystemLaunchPerformer` carries it out. The popup closes first.
+   - Enter on the Ask row → `BackendService.ask` starts `python3 -m omnis_backend` if needed, writes one JSON line, and streams `answer_chunk` lines back into the popup.
+   - Every launch and question writes one line to `audit.log`. Typed text is never logged.
+4. **How to run and test it.** See the README section "Running the thin slice".
+5. **What was verified.** See "Tests executed" and "Not verified" above.
+6. **Security, memory, battery, cost.** No network, no API cost, no macOS permission prompts. The app is not sandboxed. Launchers inherit the app's environment. Idle cost was measured as near zero.
+7. **Try next.** Edit `registry.json` to add a launcher or alias and reopen the popup; the change is picked up on the next open.
+8. **Decisions needed.** Whether Enter on a partial match should be allowed to run a launcher script. Then Round 4 and the Stage 1 plan.

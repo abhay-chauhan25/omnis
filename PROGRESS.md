@@ -12,7 +12,19 @@ Last updated: 2026-11-16
 - [x] 0b Round 3: app structure and connection (ADR-0003). Local runtime is deferred to Stage 1 benchmarks.
 - [ ] 0b Round 4: security, memory, cost
 - [ ] Decision records written and accepted
-- [ ] Thin-slice plan approved (drafted in `docs/stages/thin-slice.md`)
+- [x] Thin-slice plan approved (`docs/stages/thin-slice.md`)
+
+## Thin slice
+
+Built and tested on 2026-11-16. Waiting on the user's hands-on check.
+
+- [x] Popup, hotkey, Dock and menu-bar presence
+- [x] Rule-based router, registry, launcher, audit log
+- [x] Python service started on demand over pipes, mock answers
+- [x] 52 Swift tests and 26 Python tests passing
+- [x] Independent review (two passes), findings fixed
+- [ ] User check: looks, hotkey, the three launches, VoiceOver
+- [ ] Decision: may Enter on a partial match run a launcher script?
 
 ## Build order (ADR-0001)
 
@@ -39,6 +51,7 @@ Last updated: 2026-11-16
 | 2026-11-16 | Structure: Swift core plus an on-demand Python service that proposes but never executes. | ADR-0003 |
 | 2026-11-16 | Connection: Python runs as a child process, JSON messages over pipes, no network port. | ADR-0003 |
 | 2026-11-16 | The finished popup must answer questions and show the answers in the popup. | ADR-0003 |
+| 2026-11-16 | Thin slice approved, with a Dock icon as well as a menu-bar icon. Launcher sees `/Applications`, `/System/Applications`, `~/projects` and listed launchers. Runtime files live in `~/Library/Application Support/OMNIS/`. No sandbox. | `docs/stages/thin-slice.md` |
 | 2026-11-16 | The macOS Control+Space input-source shortcut was turned off by the user, freeing the hotkey. | ADR-0002 |
 
 The stack, models, UI, memory design and integrations are not decided yet. `CLAUDE.md` §3–§8 is still a proposal.
@@ -50,6 +63,7 @@ The stack, models, UI, memory design and integrations are not decided yet. `CLAU
 - 2026-11-16: Round 1 decisions recorded in ADR-0001.
 - 2026-11-16: Round 2 popup decisions recorded in ADR-0002.
 - 2026-11-16: Round 3 structure and connection recorded in ADR-0003.
+- 2026-11-16: Thin slice implemented, reviewed and fixed.
 
 ## First commands to support
 
@@ -67,14 +81,16 @@ What they showed when checked against this Mac:
 
 ## Open decisions
 
-4. Local runtime: Ollama, MLX, or llama.cpp; one local model or two (Round 3, benchmarked in Stage 1).
-5. Permission model: what needs per-action confirmation and what gets scoped standing approval (Round 4).
-6. Memory: what is saved automatically versus after review; Graphify evaluation (Round 4).
-7. Claude: budgets, which data may be uploaded, exact model IDs (Round 4).
+1. Local runtime: Ollama, MLX, or llama.cpp; one local model or two (Round 3, benchmarked in Stage 1).
+2. Permission model: what needs per-action confirmation and what gets scoped standing approval (Round 4).
+3. Memory: what is saved automatically versus after review; Graphify evaluation (Round 4).
+4. Claude: budgets, which data may be uploaded, exact model IDs (Round 4).
 
 ## Questions waiting on the user
 
-- Approval of the thin-slice plan.
+- Hands-on check of the thin slice.
+- Whether Enter on a partial match may run a launcher script.
+- Icon design for the Dock and menu bar (placeholders are in use).
 - The exact Graphify repo or link (needed by Round 4).
 
 ## Requirements not yet covered by the docs
@@ -96,4 +112,4 @@ What they showed when checked against this Mac:
 
 ## Next step
 
-Thin-slice plan for approval. Round 4 (security, memory, cost) follows the slice.
+User checks the thin slice. Then Round 4 (security, memory, cost) and the Stage 1 plan.

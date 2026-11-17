@@ -1,0 +1,6 @@
+[project]
+name = "omnis-backend"
+version = "0.1.0"
+description = "On-demand OMNIS backend service. Proposes and answers; never executes actions."
+requires-python = ">=3.11"
+dependencies = []

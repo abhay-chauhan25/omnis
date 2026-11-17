@@ -1,0 +1,357 @@
+import Foundation
+
+/// How to start the backend: a program, its arguments, and where to run it.
+public struct BackendConfig: Sendable {
+    public var executable: URL
+    public var arguments: [String]
+    public var workingDirectory: URL
+    public var environment: [String: String]?
+    /// How long a freshly started backend has to say hello before it is
+    /// treated as broken and stopped.
+    public var helloTimeout: TimeInterval
+
+    public init(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        environment: [String: String]? = nil,
+        helloTimeout: TimeInterval = 10
+    ) {
+        self.executable = executable
+        self.arguments = arguments
+        self.workingDirectory = workingDirectory
+        self.environment = environment
+        self.helloTimeout = helloTimeout
+    }
+
+    /// The standard way to run the Python service from a checkout of the repo.
+    public static func python(_ python: URL, backendDirectory: URL, idleSeconds: Double = 300) -> BackendConfig {
+        BackendConfig(
+            executable: python,
+            arguments: ["-m", "omnis_backend", "--idle-seconds", String(idleSeconds)],
+            workingDirectory: backendDirectory
+        )
+    }
+}
+
+public enum BackendError: Error, Equatable, LocalizedError {
+    case launchFailed(String)
+    case serviceStopped
+    case service(code: String, message: String)
+    case protocolViolation(String)
+    case questionTooLong
+
+    public var errorDescription: String? {
+        switch self {
+        case .launchFailed(let why): return "The OMNIS backend could not start: \(why)"
+        case .serviceStopped: return "The OMNIS backend stopped before it finished answering."
+        case .service(_, let message): return "The OMNIS backend reported a problem: \(message)"
+        case .protocolViolation(let why): return "The OMNIS backend sent something unexpected: \(why)"
+        case .questionTooLong: return "That question is too long to send."
+        }
+    }
+}
+
+public enum AnswerEvent: Equatable, Sendable {
+    case chunk(String)
+    case finished(model: String?)
+}
+
+/// Starts the backend only when a question is asked, talks to it over pipes,
+/// and copes with it stopping (idle timeout or crash).
+public final class BackendService: @unchecked Sendable {
+    private struct Pending {
+        let text: String
+        let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
+        var receivedAny = false
+        var retried = false
+        /// True once the question has been written to the current process.
+        var sent = false
+    }
+
+    /// Longest question accepted, matching `MAX_TEXT_CHARS` in the Python service.
+    public static let maxQuestionLength = 100_000
+    private static let maxDisplayLength = 500
+
+    private let config: BackendConfig
+    private let queue = DispatchQueue(label: "omnis.backend")
+
+    // All of the following are touched only on `queue`.
+    private var process: Process?
+    private var input: FileHandle?
+    private var generation = 0
+    private var buffer = Data()
+    private var pending: [String: Pending] = [:]
+    private var starts = 0
+    private var diagnostic = ""
+    private var greeted = false
+
+    public init(config: BackendConfig) {
+        self.config = config
+        // Writing to a backend that has just exited must raise an error, not kill the app.
+        signal(SIGPIPE, SIG_IGN)
+    }
+
+    deinit {
+        process?.terminationHandler = nil
+        process?.terminate()
+    }
+
+    // MARK: Public surface
+
+    public var isRunning: Bool { queue.sync { process?.isRunning ?? false } }
+
+    /// How many times the backend process has been started.
+    public var startCount: Int { queue.sync { starts } }
+
+    public var processIdentifier: Int32? {
+        queue.sync { (process?.isRunning ?? false) ? process?.processIdentifier : nil }
+    }
+
+    /// The last thing the backend wrote to its error output, for troubleshooting.
+    public var lastDiagnostic: String? {
+        queue.sync { diagnostic.isEmpty ? nil : diagnostic }
+    }
+
+    /// Sends a question. Pieces of the answer arrive on the returned stream.
+    /// Dropping or cancelling the stream cancels the request.
+    public func ask(_ text: String) -> AsyncThrowingStream<AnswerEvent, Error> {
+        let id = UUID().uuidString
+        return AsyncThrowingStream { continuation in
+            guard text.count <= Self.maxQuestionLength else {
+                continuation.finish(throwing: BackendError.questionTooLong)
+                return
+            }
+            continuation.onTermination = { [weak self] reason in
+                if case .cancelled = reason { self?.cancel(id) }
+            }
+            queue.async {
+                self.pending[id] = Pending(text: text, continuation: continuation)
+                self.send(id)
+            }
+        }
+    }
+
+    /// Stops the backend now. Any unfinished answers end with an error.
+    public func stop() {
+        queue.sync {
+            generation += 1
+            let old = process
+            process = nil
+            try? input?.close()
+            input = nil
+            buffer.removeAll()
+            old?.terminationHandler = nil
+            if old?.isRunning == true { old?.terminate() }
+            failAll(BackendError.serviceStopped)
+        }
+    }
+
+    // MARK: Internals (always on `queue`)
+
+    private func send(_ id: String) {
+        guard let request = pending[id] else { return }
+        do {
+            try ensureRunning()
+            // Marked before writing: from here the request belongs to this
+            // process, and the exit handling will retry or fail it.
+            pending[id]?.sent = true
+            try write(.ask(id: id, text: request.text))
+        } catch let error as BackendError {
+            finish(id, throwing: error)
+        } catch {
+            // The pipe closed under us (the backend is exiting or gone).
+            guard let process else {
+                finish(id, throwing: BackendError.serviceStopped)
+                return
+            }
+            // Hand the request to the exit handling, and make sure an exit
+            // really happens so it cannot be left waiting.
+            pending[id]?.sent = true
+            if process.isRunning { process.terminate() }
+        }
+    }
+
+    private func cancel(_ id: String) {
+        queue.async {
+            guard self.pending.removeValue(forKey: id) != nil else { return }
+            try? self.write(.cancel(id: id))
+        }
+    }
+
+    private func ensureRunning() throws {
+        if let process, process.isRunning { return }
+
+        // The old process has exited but its exit notice has not been handled
+        // yet. Settle its requests now, or they would be orphaned.
+        let resend = process == nil ? [] : reapStoppedProcess()
+
+        generation += 1
+        let current = generation
+        buffer.removeAll()
+
+        let child = Process()
+        child.executableURL = config.executable
+        child.arguments = config.arguments
+        child.currentDirectoryURL = config.workingDirectory
+        if let environment = config.environment { child.environment = environment }
+
+        let toChild = Pipe()
+        let fromChild = Pipe()
+        child.standardInput = toChild
+        child.standardOutput = fromChild
+        let errors = Pipe()
+        child.standardError = errors
+        diagnostic = ""
+        errors.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            let text = String(decoding: data, as: UTF8.self)
+            self?.queue.async {
+                guard let self, current == self.generation else { return }
+                self.diagnostic = String((self.diagnostic + text).suffix(Self.maxDisplayLength))
+            }
+        }
+
+        fromChild.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            self?.queue.async { self?.consume(data, generation: current) }
+        }
+        child.terminationHandler = { [weak self] _ in
+            self?.queue.async { self?.handleExit(generation: current) }
+        }
+
+        do {
+            try child.run()
+        } catch {
+            fromChild.fileHandleForReading.readabilityHandler = nil
+            errors.fileHandleForReading.readabilityHandler = nil
+            for id in resend { finish(id, throwing: BackendError.launchFailed(error.localizedDescription)) }
+            throw BackendError.launchFailed(error.localizedDescription)
+        }
+        // Close this side's copies of the child's pipe ends. Otherwise a write
+        // to a backend that has stopped reading would succeed silently
+        // instead of failing, and the request would wait for nothing.
+        try? toChild.fileHandleForReading.close()
+        try? fromChild.fileHandleForWriting.close()
+        try? errors.fileHandleForWriting.close()
+        process = child
+        input = toChild.fileHandleForWriting
+        starts += 1
+        greeted = false
+        queue.asyncAfter(deadline: .now() + config.helloTimeout) { [weak self] in
+            guard let self, current == self.generation, !self.greeted else { return }
+            // Started but silent. Stop it; the exit handling settles the requests.
+            if self.process?.isRunning == true { self.process?.terminate() }
+        }
+        // Assign the carried-over requests to this process before any write,
+        // so a failed write cannot leave them unowned.
+        for id in resend { pending[id]?.sent = true }
+        try write(.hello(protocolVersion: BackendProtocol.version))
+        for id in resend {
+            guard let request = pending[id] else { continue }
+            try write(.ask(id: id, text: request.text))
+        }
+    }
+
+    private func write(_ message: ClientMessage) throws {
+        guard let input else { throw BackendError.serviceStopped }
+        var line = try ProtocolCodec.encode(message)
+        line.append(0x0A)
+        try input.write(contentsOf: line)
+    }
+
+    private func consume(_ data: Data, generation: Int) {
+        guard generation == self.generation else { return }
+        buffer.append(data)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            guard !line.isEmpty else { continue }
+            do {
+                handle(try ProtocolCodec.decode(line))
+            } catch {
+                failAll(BackendError.protocolViolation("unreadable message"))
+            }
+        }
+    }
+
+    private func handle(_ message: ServiceMessage) {
+        switch message {
+        case .hello(let version, _, _):
+            greeted = true
+            if version != BackendProtocol.version {
+                failAll(BackendError.protocolViolation("backend speaks protocol \(version)"))
+            }
+        case .answerChunk(let id, let text):
+            guard pending[id] != nil else { return }
+            pending[id]?.receivedAny = true
+            pending[id]?.continuation.yield(.chunk(text))
+        case .answerDone(let id, let model, _):
+            guard let request = pending.removeValue(forKey: id) else { return }
+            request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }))
+            request.continuation.finish()
+        case .error(let id, let code, let message):
+            let error = BackendError.service(
+                code: String(code.prefix(64)),
+                message: String(message.prefix(Self.maxDisplayLength))
+            )
+            if let id {
+                finish(id, throwing: error)
+            } else {
+                // The backend could not tie the problem to a request, so no
+                // waiting request can be trusted to finish. End them all
+                // rather than leave one waiting forever.
+                failAll(error)
+            }
+        case .bye:
+            break
+        }
+    }
+
+    private func handleExit(generation: Int) {
+        guard generation == self.generation, process != nil else { return }
+        for id in reapStoppedProcess() { send(id) }
+    }
+
+    /// Clears out a process that has exited and settles the requests it held.
+    /// Returns the ids that should be sent again.
+    private func reapStoppedProcess() -> [String] {
+        process?.terminationHandler = nil
+        process = nil
+        try? input?.close()
+        input = nil
+        buffer.removeAll()
+
+        // A request that had not produced anything yet is safe to send again
+        // once: this covers the backend going idle just as a question arrives.
+        var retry: [String] = []
+        for (id, request) in pending where request.sent {
+            if !request.receivedAny && !request.retried {
+                pending[id]?.retried = true
+                pending[id]?.sent = false
+                retry.append(id)
+            } else {
+                finish(id, throwing: BackendError.serviceStopped)
+            }
+        }
+        return retry
+    }
+
+    private func finish(_ id: String, throwing error: Error) {
+        pending.removeValue(forKey: id)?.continuation.finish(throwing: error)
+    }
+
+    private func failAll(_ error: Error) {
+        let all = pending
+        pending.removeAll()
+        for request in all.values { request.continuation.finish(throwing: error) }
+    }
+}
