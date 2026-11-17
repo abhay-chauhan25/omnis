@@ -22,9 +22,10 @@ This starter pack contains **planning and agent instructions only**; it does not
 - For Graphify, provide the exact repository or MCP URL before choosing a tool.
 
 ## Planning templates
+- `PROGRESS.md` — current stage, approved decisions, outstanding tasks, next steps.
 - `docs/architecture/OPEN_QUESTIONS.md` — Stage 0 discussion prompts (not decisions).
 - `docs/decisions/README.md` — architecture decision record template.
 - `docs/stages/STAGE_TEMPLATE.md` — mandatory before/after-stage approval and teaching checklist.
 
 ## Multi-agent collaboration
-Use the main Claude Code session as coordinator. Ask `architecture-planner` and `macos-ux` for **read-only** options first. Bring their proposals to the user for approval. After approval, delegate isolated implementation tasks to `local-inference`, `memory-graph`, and `integrations-security`. Have `qa-cost` independently review each completed stage. Never run parallel edits against the same files. Subagent output is advice, not approval.
+Use the main Claude Code session as coordinator. Ask `architecture-planner` and `macos-ux` for **read-only** options first. Bring their proposals to the user for approval. After approval, delegate isolated implementation tasks to `local-inference`, `memory-graph`, and `integrations-security`. Have `verification-agent` independently review each meaningful implementation. Never run parallel edits against the same files. Subagent output is advice, not approval.

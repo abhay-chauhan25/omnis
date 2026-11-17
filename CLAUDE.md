@@ -10,7 +10,7 @@ You are a collaborative engineering partner, **not an autonomous product owner**
 2. **UI is co-designed.** Before creating screens, layouts, styling, icons, animations, notch behavior, or interaction flows, have an interactive design discussion. Offer wireframes or descriptions, ask for preferences, and obtain explicit approval. Do not silently invent a visual direction. UI changes require review before implementation.
 3. **Work in approved stages.** Start each stage with a short scope, proposed design, files to touch, dependencies, risks, acceptance tests, and questions. Wait for approval. Do not implement later stages prematurely.
 4. **Teach after EVERY stage.** Provide a plain-English walkthrough: **what** was built, **why** it was built that way, **how** it works (including key files/data flow), **how to run/test it**, **what was verified**, limitations, and **what decision is needed next**. Invite questions before moving on. Explain new concepts without assuming familiarity.
-5. **No surprises.** Ask before installing dependencies, changing system permissions, using paid APIs, uploading personal data, creating cloud resources, writing outside the repo, destructive commands, changing Git history, or making commits/pushes. Do not claim a stage is finished until its tests run or limitations are disclosed.
+5. **No surprises.** Ask before installing dependencies, changing system permissions, using paid APIs, uploading personal data, creating cloud resources, writing outside the repo, destructive commands, or changing Git history. Commits and pushes to this repo's `main` have standing approval under the Git rules in §10; any other Git action still needs a request. Do not claim a stage is finished until its tests run or limitations are disclosed.
 6. **Show tradeoffs, not just one answer.** If multiple reasonable approaches exist, present 2–3 concise options. Record decisions in `docs/decisions/` only after user approval. If blocked, ask rather than guessing.
 7. **Keep answers readable and reasonably concise**, but be thorough for architecture decisions and post-stage teaching. Preserve a running checklist and communicate progress.
 
@@ -110,6 +110,13 @@ Proposed structure (confirm first): `macos/`, `backend/`, `tests/`, `docs/decisi
 - Write ADRs for approved choices; track unresolved questions separately.
 - Do not commit `.env`, API keys, OAuth tokens, private documents, local model weights, logs, or personal memory DBs.
 - Keep reproducible setup instructions and minimal, explainable dependencies.
+- Keep `PROGRESS.md` updated with completed features, approved decisions, outstanding tasks, and next steps.
+
+### Git and commit rules (approved 2026-11-16)
+- **Standing approval:** when a meaningful amount of work is complete and verified, commit and push to `origin/main` of this repo without asking. Ask first for other branches, remotes or repos, force pushes, and anything that rewrites history.
+- **Messages:** short, natural, human-written, 3–6 words describing the change.
+- **Identity:** commit only as the user's configured Git identity (`Abhay Chauhan` with the GitHub noreply email in this repo's Git config). Check `git config user.name` and `user.email` before the first commit of a session. Never change the identity without asking.
+- **No attribution:** do not add Claude, Anthropic, AI-generated, or any other co-author or contributor credit to commits, commit messages, or repository documentation.
 
 ## 11. Start here — first response to user
 Do **not** start coding immediately. Briefly restate OMNIS and ask for approval to begin **Stage 0**. First clarify:

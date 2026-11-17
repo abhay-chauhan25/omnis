@@ -1,0 +1,51 @@
+# Secrets and credentials (CLAUDE.md §6, §10). Real secrets belong in the macOS Keychain.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+credentials*.json
+token*.json
+client_secret*.json
+
+# Personal data: memory databases, logs, usage exports
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+logs/
+usage-export*.csv
+
+# Local model weights
+*.gguf
+*.safetensors
+*.mlpackage
+*.mlmodelc
+
+# macOS
+.DS_Store
+
+# Editor and Claude Code local state
+.vscode/
+.idea/
+.claude/settings.local.json
+.claude/worktrees/
+
+# Build output for the candidate stacks. Trim once the stack is decided.
+.build/
+build/
+dist/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
