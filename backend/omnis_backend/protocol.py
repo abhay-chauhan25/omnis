@@ -10,7 +10,8 @@ App to service:
     {"type": "configure", "claude_key": "<key or empty>"}
         (sent once after hello; the key is held in memory only)
     {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
-     "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "..."}
+     "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "...",
+     "content": "<text for tools that return text, such as the calendar>"}
         ("ask" may also carry "web": false to forbid web search for that question,
          "history": [{"role": "user"|"assistant", "content": "..."}] holding the
          earlier turns of the conversation, oldest first, and
@@ -18,7 +19,9 @@ App to service:
          say on whether Claude may be used for this question, and
          "attachments": [{"kind": "image", "name": "...", "data": "<base64 JPEG or PNG>"},
                          {"kind": "text", "name": "...", "text": "..."}], files the user
-         attached. A history entry from the user may carry "attachments" too.)
+         attached. A history entry from the user may carry "attachments" too.
+         "personal": true marks the question as touching personal data, and
+         "calendar": true says the app will read the calendar if asked.)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -28,6 +31,8 @@ Service to app:
      "load_ms": 0, "total_ms": 0, "cost_usd": 0.0}
         (everything after "cancelled" is optional)
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "web_search", "query": "..."}
+    {"type": "tool_request", "id": "...", "call_id": "...", "tool": "calendar_events", "query": "",
+     "arguments": {"start": "2026-11-18", "end": "2026-11-18"}}
     {"type": "usage", "id": "...", "model": "...", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
         (after every Claude turn, so cost is recorded even if the answer does not finish)
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
@@ -55,6 +60,7 @@ MAX_ATTACHMENT_TEXT_CHARS = 60_000
 MAX_NAME_CHARS = 200
 MAX_HISTORY_MESSAGES = 24
 MAX_HISTORY_CHARS = 12_000
+MAX_TOOL_CONTENT_CHARS = 20_000
 MAX_RESULTS = 8
 MAX_RESULT_FIELD_CHARS = 2000
 ROUTES = ("auto", "local", "claude")
@@ -124,7 +130,15 @@ def decode_client(line: bytes) -> dict[str, Any]:
         "history": _decode_history(obj.get("history", []), request_id),
         "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
         "attachments": _decode_attachments(obj.get("attachments", []), request_id),
+        "options": {"personal": _flag(obj, "personal", request_id), "calendar": _flag(obj, "calendar", request_id)},
     }
+
+
+def _flag(obj: dict[str, Any], name: str, request_id: str) -> bool:
+    value = obj.get(name, False)
+    if not isinstance(value, bool):
+        raise ProtocolError("bad_request", f"'{name}' must be true or false", request_id)
+    return value
 
 
 _BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
@@ -235,6 +249,7 @@ def _decode_tool_result(obj: dict[str, Any], request_id: str) -> dict[str, Any]:
             entry[key] = value[:MAX_RESULT_FIELD_CHARS] if isinstance(value, str) else ""
         results.append(entry)
     error = obj.get("error", "")
+    content = obj.get("content", "")
     return {
         "type": "tool_result",
         "id": request_id,
@@ -242,6 +257,7 @@ def _decode_tool_result(obj: dict[str, Any], request_id: str) -> dict[str, Any]:
         "ok": ok,
         "results": results,
         "error": error[:300] if isinstance(error, str) else "",
+        "content": content[:MAX_TOOL_CONTENT_CHARS] if isinstance(content, str) else "",
     }
 
 
@@ -277,8 +293,13 @@ def usage(request_id: str, model: str, input_tokens: int, output_tokens: int, co
             "output_tokens": output_tokens, "cost_usd": cost_usd}
 
 
-def tool_request(request_id: str, call_id: str, tool: str, query: str) -> dict[str, Any]:
-    return {"type": "tool_request", "id": request_id, "call_id": call_id, "tool": tool, "query": query}
+def tool_request(
+    request_id: str, call_id: str, tool: str, query: str, arguments: dict[str, str] | None = None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": "tool_request", "id": request_id, "call_id": call_id, "tool": tool, "query": query}
+    if arguments:
+        out["arguments"] = arguments
+    return out
 
 
 def error(code: str, message: str, request_id: str | None = None) -> dict[str, Any]:

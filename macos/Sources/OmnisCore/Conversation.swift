@@ -39,6 +39,12 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var sources: [SearchResult] = []
     /// Why a web search could not be done, if one failed.
     public var searchProblem: String?
+    /// True while the calendar is being read for this answer.
+    public var readingCalendar = false
+    /// What was read from the calendar, in a few words ("18 Nov, 2 events").
+    public var calendarNotes: [String] = []
+    /// Why the calendar could not be read, if a read failed.
+    public var calendarProblem: String?
     /// The "which model answered" line.
     public var sourceLine: String?
     /// Files the user attached to this message.
@@ -64,11 +70,18 @@ public struct Conversation: Equatable, Sendable {
     /// in the chat is used for a web search, even after the file itself has
     /// dropped out of the history that is sent along: the model's answers
     /// about the file are still there. A new chat clears it.
-    public private(set) var hasFiles = false
+    public private(set) var hasPersonalData = false
 
     public init() {}
 
     public mutating func keepLocal() {
+        staysLocal = true
+    }
+
+    /// Called when personal information enters the chat without a file being
+    /// attached, such as when the calendar is read.
+    public mutating func markPersonal() {
+        hasPersonalData = true
         staysLocal = true
     }
 
@@ -81,7 +94,7 @@ public struct Conversation: Equatable, Sendable {
         var message = ChatMessage(role: .user, text: question)
         message.attachments = attachments
         if !attachments.isEmpty {
-            hasFiles = true
+            hasPersonalData = true
             staysLocal = true
         }
         messages.append(message)
@@ -100,7 +113,7 @@ public struct Conversation: Equatable, Sendable {
     public mutating func clear() {
         messages.removeAll()
         staysLocal = false
-        hasFiles = false
+        hasPersonalData = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

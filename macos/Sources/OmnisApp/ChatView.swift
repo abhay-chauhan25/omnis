@@ -62,7 +62,7 @@ struct ChatView: View {
                 if model.conversation.staysLocal {
                     Label("On this Mac", systemImage: "lock.fill")
                         .font(.system(size: 11, weight: .medium))
-                        .help("This chat is staying on this Mac. Start a new chat to use Claude.")
+                        .help("This chat is staying on this Mac, because you kept it local or it holds a file or your calendar. Start a new chat to use Claude.")
                         .accessibilityLabel("This chat is staying on this Mac")
                 }
                 Button(action: model.newChat) {
@@ -201,8 +201,8 @@ struct ChatView: View {
                 Label("Web off in this chat", systemImage: "globe.badge.chevron.backward")
                     .labelStyle(.titleAndIcon)
                     .foregroundStyle(.secondary)
-                    .help("Web search is off in a chat that has a file, so nothing from the file can end up in a search. Start a new chat to search the web.")
-                    .accessibilityLabel("Web search is off in this chat because it has a file")
+                    .help("Web search is off in a chat that holds a file or your calendar, so none of it can end up in a search. Start a new chat to search the web.")
+                    .accessibilityLabel("Web search is off in this chat because it holds personal information")
             } else {
                 Button {
                     model.webEnabled.toggle()
@@ -301,6 +301,19 @@ private struct MessageView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            if let problem = message.calendarProblem {
+                Label("Could not read your calendar: \(problem)", systemImage: "calendar.badge.exclamationmark")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if !message.calendarNotes.isEmpty {
+                // Shown so you can always see when your calendar was read, and for which days.
+                Label("Read your calendar for " + message.calendarNotes.joined(separator: "; "), systemImage: "calendar")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+            }
             if let problem = message.searchProblem {
                 Label("Could not search the web: \(problem)", systemImage: "wifi.exclamationmark")
                     .font(.system(size: 12))
@@ -319,7 +332,8 @@ private struct MessageView: View {
         case .streaming:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(message.searching ? "Searching the web for \u{201C}\(message.searchQueries.last ?? "")\u{201D}"
+                Text(message.readingCalendar ? "Checking your calendar"
+                     : message.searching ? "Searching the web for \u{201C}\(message.searchQueries.last ?? "")\u{201D}"
                      : message.text.isEmpty ? "Thinking" : "Answering")
                     .lineLimit(1)
             }

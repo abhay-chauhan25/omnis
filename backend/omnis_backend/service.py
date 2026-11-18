@@ -16,7 +16,7 @@ from .models import AnswerError, AnswerInfo, ToolRequest, UsageEvent
 # Claude, and any files attached to the question. It yields pieces of
 # text, may yield ToolRequests for the app to carry out, and may finish with
 # one AnswerInfo describing what answered.
-Handler = Callable[[str, str, bool, list, dict, list], AsyncIterator["str | AnswerInfo | ToolRequest"]]
+Handler = Callable[[str, str, bool, list, dict, list, dict], AsyncIterator["str | AnswerInfo | ToolRequest"]]
 Writer = Callable[[bytes], None]
 
 EXIT_OK = 0
@@ -156,7 +156,8 @@ class Service:
             waiter = self._tool_waiters.pop((request_id, message["call_id"]), None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(
-                    {"ok": message["ok"], "results": message["results"], "error": message["error"]}
+                    {"ok": message["ok"], "results": message["results"], "error": message["error"],
+                     "content": message["content"]}
                 )
             return  # a result nobody is waiting for is ignored
         if kind == "cancel":
@@ -172,16 +173,17 @@ class Service:
             self._answer(
                 request_id, message["text"], message.get("route", "auto"),
                 message.get("web", True), message.get("history", []), message.get("cloud", {}),
-                message.get("attachments", []),
+                message.get("attachments", []), message.get("options", {}),
             )
         )
 
     async def _answer(
-        self, request_id: str, text: str, route: str, web: bool, history: list, cloud: dict, attachments: list
+        self, request_id: str, text: str, route: str, web: bool, history: list, cloud: dict, attachments: list,
+        options: dict,
     ) -> None:
         info: AnswerInfo | None = None
         try:
-            async for piece in self._handler(text, route, web, history, cloud, attachments):
+            async for piece in self._handler(text, route, web, history, cloud, attachments, options):
                 if isinstance(piece, AnswerInfo):
                     info = piece
                 elif isinstance(piece, UsageEvent):
@@ -190,7 +192,7 @@ class Service:
                 elif isinstance(piece, ToolRequest):
                     call_id = uuid.uuid4().hex
                     self._tool_waiters[(request_id, call_id)] = piece.future
-                    self._send(protocol.tool_request(request_id, call_id, piece.tool, piece.query))
+                    self._send(protocol.tool_request(request_id, call_id, piece.tool, piece.query, piece.arguments))
                 else:
                     self._send(protocol.answer_chunk(request_id, piece))
             if info is None:

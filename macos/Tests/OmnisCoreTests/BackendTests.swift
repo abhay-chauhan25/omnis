@@ -85,6 +85,14 @@ import Testing
         let sent = try #require((result["results"] as? [[String: String]])?.first)
         #expect(sent == ["title": "T", "url": "https://example.com/a?b=1", "snippet": "S"])
 
+        let calendarAsk = try json(.ask(id: "q", text: "t", personal: true, calendar: true))
+        #expect(calendarAsk["personal"] as? Bool == true)
+        #expect(calendarAsk["calendar"] as? Bool == true)
+        #expect(ask["personal"] as? Bool == false)
+        #expect(ask["calendar"] as? Bool == false)
+        let calendarResult = try json(.toolResult(id: "q", callID: "c", ok: true, results: [], error: "", content: "Wed 18 Nov: Standup"))
+        #expect(calendarResult["content"] as? String == "Wed 18 Nov: Standup")
+
         let configure = try json(.configure(claudeKey: "sk-test"))
         #expect(configure["type"] as? String == "configure")
         #expect(configure["claude_key"] as? String == "sk-test")
@@ -120,6 +128,9 @@ import Testing
         #expect(try decode(#"{"type":"error","id":"q","code":"internal","message":"m"}"#)
             == .error(id: "q", code: "internal", message: "m"))
         #expect(try decode(#"{"type":"bye","reason":"idle"}"#) == .bye(reason: "idle"))
+        #expect(try decode(#"{"type":"tool_request","id":"q","call_id":"c","tool":"calendar_events","query":"","arguments":{"start":"2026-11-18","end":"2026-11-19","junk":7}}"#)
+            == .toolRequest(id: "q", callID: "c", tool: "calendar_events", query: "",
+                            arguments: ["start": "2026-11-18", "end": "2026-11-19"]))
         #expect(try decode(#"{"type":"usage","id":"q","model":"claude-haiku-5-5","input_tokens":900,"output_tokens":40,"cost_usd":0.00011}"#)
             == .usage(id: "q", model: "claude-haiku-5-5", inputTokens: 900, outputTokens: 40, costUSD: 0.00011))
         // Negative or absurd figures cannot reduce what is recorded.
@@ -278,6 +289,85 @@ import Testing
         let bare = backend(key: nil)
         #expect(try await trace(bare.ask("x")).text == "configure=none anthropic_env_vars=0")
         bare.stop()
+    }
+
+    // The mock backend asks for the calendar when a question starts with "calendar:".
+
+    func calendarService(_ calendar: (any CalendarReading)?) -> BackendService {
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMNIS_MOCK_DELAY_MS"] = "1"
+        return BackendService(config: BackendConfig(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0"],
+            workingDirectory: Self.backendDirectory, environment: environment
+        ), calendar: calendar)
+    }
+
+    @Test func theCalendarIsReadByTheAppForTheDaysAskedFor() async throws {
+        let stub = StubCalendar()
+        stub.events = [CalendarEvent(title: "Standup", start: Date(timeIntervalSince1970: 1_795_000_000),
+                                     end: Date(timeIntervalSince1970: 1_795_001_800), calendar: "Work")]
+        let backend = calendarService(stub)
+        let run = try await trace(backend.ask("calendar: 2026-11-18 2026-11-19", calendar: true))
+        let expected = try CalendarFormatter.range(start: "2026-11-18", end: "2026-11-19")
+        #expect(stub.ranges.count == 1)
+        #expect(stub.ranges.first?.0 == expected.0)
+        #expect(stub.ranges.first?.1 == expected.1)
+        #expect(run.events.prefix(2) == [.readingCalendar, .calendarRead(summary: "18 Nov to 19 Nov", events: 1)])
+        #expect(run.text.hasPrefix("Calendar ok=True error= content="))
+        #expect(run.text.contains("Standup (Work)"))
+        backend.stop()
+    }
+
+    @Test func theCalendarIsNotReadUnlessTheAppOfferedItForThatQuestion() async throws {
+        let stub = StubCalendar()
+        let backend = calendarService(stub)
+        let run = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: false))
+        #expect(stub.ranges.isEmpty)
+        #expect(run.events.first == .calendarFailed("the calendar is not available"))
+        #expect(run.text.contains("ok=False"))
+        backend.stop()
+
+        // And never when no calendar was supplied at all.
+        let none = calendarService(nil)
+        let again = try await trace(none.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
+        #expect(again.events.first == .calendarFailed("the calendar is not available"))
+        none.stop()
+    }
+
+    @Test func aRefusedPermissionOrBadDatesAreReportedInWords() async throws {
+        let stub = StubCalendar()
+        stub.failure = CalendarError.notAllowed
+        let backend = calendarService(stub)
+        let denied = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
+        #expect(denied.events.contains { event in
+            if case .calendarFailed(let why) = event { return why.contains("has not been allowed to read your calendar") }
+            return false
+        })
+        #expect(denied.text.contains("ok=False"))
+
+        let bad = try await trace(backend.ask("calendar: tomorrow tomorrow", calendar: true))
+        #expect(bad.events.first == .calendarFailed("the dates asked for were not valid"))
+        #expect(stub.ranges.count == 1)     // the bad dates never reached the calendar
+        backend.stop()
+    }
+
+    @Test func aSlowCalendarReadIsGivenUpOnAndNoLateResultIsShown() async throws {
+        let stub = StubCalendar()
+        stub.delay = 1.5
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMNIS_MOCK_DELAY_MS"] = "1"
+        var config = BackendConfig(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0"],
+            workingDirectory: Self.backendDirectory, environment: environment
+        )
+        config.searchDeadline = 0.3
+        let backend = BackendService(config: config, calendar: stub)
+        let run = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
+        #expect(run.events.contains(.calendarFailed("reading the calendar took too long")))
+        #expect(!run.events.contains { if case .calendarRead = $0 { return true } else { return false } })
+        backend.stop()
     }
 
     // The mock backend reports the files it was sent when asked "attachments?".
@@ -482,7 +572,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
-            case .searching, .sources, .searchFailed, .usage: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed: break
             }
         }
         return (text, model, chunks)
@@ -691,7 +781,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
-            case .searching, .sources, .searchFailed, .usage: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed: break
             }
         }
         #expect(text.contains("Paris"))
@@ -779,6 +869,60 @@ import Testing
         // Without the history the same follow-up cannot be answered.
         let alone = try await trace(backend.ask("In what year was she born?", web: false))
         #expect(!alone.text.contains("1775"))
+        backend.stop()
+    }
+
+    /// Real model, made-up calendar: it must ask for the right day and answer from what comes back.
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter liveCalendar
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveCalendarQuestionReadsTheRightDay() async throws {
+        let ollama = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
+        let stub = StubCalendar()
+        stub.events = [
+            CalendarEvent(title: "Dentist", start: tomorrow.addingTimeInterval(10 * 3600), end: tomorrow.addingTimeInterval(11 * 3600),
+                          calendar: "Personal", location: "Main Street Dental"),
+            CalendarEvent(title: "Project review with Priya", start: tomorrow.addingTimeInterval(15 * 3600),
+                          end: tomorrow.addingTimeInterval(16 * 3600), calendar: "Work"),
+        ]
+        let backend = BackendService(config: config, webSearch: StubSearch(), calendar: stub)
+
+        let started = Date()
+        let run = try await trace(backend.ask("What's on my calendar tomorrow?", personal: true, calendar: true))
+        print("LIVE_CALENDAR seconds \(Date().timeIntervalSince(started)) answer: \(run.text)")
+        // It asked for exactly tomorrow.
+        #expect(stub.ranges.count == 1)
+        #expect(stub.ranges.first?.0 == tomorrow)
+        #expect(stub.ranges.first?.1 == calendar.date(byAdding: .day, value: 1, to: tomorrow))
+        #expect(run.text.localizedCaseInsensitiveContains("Dentist"))
+        #expect(run.text.contains("Priya"))
+        #expect(run.text.contains("10:00"))
+        #expect(!run.events.contains { if case .searching = $0 { return true } else { return false } })
+
+        // A follow-up from the same chat, answered from what was already read.
+        let history = [ChatTurn(role: .user, content: "What's on my calendar tomorrow?"),
+                       ChatTurn(role: .assistant, content: run.text)]
+        let followUp = try await trace(backend.ask("Where is the first one?", history: history, personal: true, calendar: true))
+        print("LIVE_CALENDAR follow-up: \(followUp.text)")
+        #expect(followUp.text.localizedCaseInsensitiveContains("Main Street"))
+
+        // A question that has nothing to do with the calendar does not read it.
+        let before = stub.ranges.count
+        let other = try await trace(backend.ask("What is 12 times 12?", calendar: true))
+        print("LIVE_CALENDAR unrelated: \(other.text)")
+        #expect(stub.ranges.count == before)
+        #expect(other.text.contains("144"))
+
+        // An empty day is reported as empty, not invented.
+        stub.events = []
+        let empty = try await trace(backend.ask("Do I have anything on next Saturday?", personal: true, calendar: true))
+        print("LIVE_CALENDAR empty: \(empty.text)")
+        #expect(!empty.text.localizedCaseInsensitiveContains("Dentist"))
         backend.stop()
     }
 

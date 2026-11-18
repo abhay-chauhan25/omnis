@@ -75,6 +75,12 @@ public enum AnswerEvent: Equatable, Sendable {
     case sources([SearchResult])
     /// The search could not be done; the model was told so.
     case searchFailed(String)
+    /// The model asked to see the calendar and the app is reading it.
+    case readingCalendar
+    /// The calendar was read. `summary` says what, in a few words, without any event's details.
+    case calendarRead(summary: String, events: Int)
+    /// The calendar could not be read; the model was told so.
+    case calendarFailed(String)
     /// One Claude turn was billed. Record it now: the answer may not finish.
     case usage(model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     case finished(model: String?, details: AnswerDetails)
@@ -90,6 +96,8 @@ public final class BackendService: @unchecked Sendable {
         let history: [ChatTurn]
         let cloud: CloudPermission
         let attachments: [Attachment]
+        let personal: Bool
+        let calendar: Bool
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -115,12 +123,15 @@ public final class BackendService: @unchecked Sendable {
     private var greeted = false
 
     private let webSearch: (any WebSearching)?
+    private let calendar: (any CalendarReading)?
 
-    /// `webSearch` is what carries out a search when the model asks for one.
-    /// Without it, the model is told that web search is unavailable.
-    public init(config: BackendConfig, webSearch: (any WebSearching)? = nil) {
+    /// `webSearch` is what carries out a search when the model asks for one,
+    /// and `calendar` what reads the calendar. Without one, the model is told
+    /// that it is unavailable.
+    public init(config: BackendConfig, webSearch: (any WebSearching)? = nil, calendar: (any CalendarReading)? = nil) {
         self.config = config
         self.webSearch = webSearch
+        self.calendar = calendar
         // Writing to a backend that has just exited must raise an error, not kill the app.
         signal(SIGPIPE, SIG_IGN)
     }
@@ -155,7 +166,9 @@ public final class BackendService: @unchecked Sendable {
         web: Bool = true,
         history: [ChatTurn] = [],
         cloud: CloudPermission = CloudPermission(),
-        attachments: [Attachment] = []
+        attachments: [Attachment] = [],
+        personal: Bool = false,
+        calendar: Bool = false
     ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -168,7 +181,8 @@ public final class BackendService: @unchecked Sendable {
             }
             queue.async {
                 self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
-                                           attachments: attachments, continuation: continuation)
+                                           attachments: attachments, personal: personal,
+                                           calendar: calendar && self.calendar != nil, continuation: continuation)
                 self.send(id)
             }
         }
@@ -199,7 +213,8 @@ public final class BackendService: @unchecked Sendable {
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud, attachments: request.attachments))
+                           cloud: request.cloud, attachments: request.attachments,
+                           personal: request.personal, calendar: request.calendar))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -310,7 +325,8 @@ public final class BackendService: @unchecked Sendable {
         for id in resend {
             guard let request = pending[id] else { continue }
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud, attachments: request.attachments))
+                           cloud: request.cloud, attachments: request.attachments,
+                           personal: request.personal, calendar: request.calendar))
         }
     }
 
@@ -358,8 +374,12 @@ public final class BackendService: @unchecked Sendable {
             pending[id]?.receivedAny = true
             pending[id]?.continuation.yield(.usage(model: model, inputTokens: inputTokens,
                                                     outputTokens: outputTokens, costUSD: costUSD))
-        case .toolRequest(let id, let callID, let tool, let query):
-            runTool(requestID: id, callID: callID, tool: tool, query: query)
+        case .toolRequest(let id, let callID, let tool, let query, let arguments):
+            if tool == "calendar_events" {
+                readCalendar(requestID: id, callID: callID, arguments: arguments)
+            } else {
+                runTool(requestID: id, callID: callID, tool: tool, query: query)
+            }
         case .error(let id, let code, let message):
             let error = BackendError.service(
                 code: String(code.prefix(64)),
@@ -376,6 +396,81 @@ public final class BackendService: @unchecked Sendable {
         case .bye:
             break
         }
+    }
+
+    /// Reads the calendar for the model. Reading only, and only when the app
+    /// offered the calendar for this question.
+    private func readCalendar(requestID: String, callID: String, arguments: [String: String]) {
+        guard let request = pending[requestID] else { return }
+
+        var replied = false
+        func reply(ok: Bool, content: String, error: String, summary: String = "", count: Int = 0) {
+            guard !replied, pending[requestID] != nil else { return }
+            replied = true
+            do {
+                try write(.toolResult(id: requestID, callID: callID, ok: ok, results: [], error: error, content: content))
+            } catch {
+                pending[requestID]?.continuation.yield(.calendarFailed("the calendar could not be passed on"))
+                return
+            }
+            if ok {
+                pending[requestID]?.continuation.yield(.calendarRead(summary: summary, events: count))
+            } else {
+                pending[requestID]?.continuation.yield(.calendarFailed(error))
+            }
+        }
+
+        guard request.calendar, let calendar else {
+            reply(ok: false, content: "", error: "the calendar is not available")
+            return
+        }
+        let range: (Date, Date)
+        do {
+            range = try CalendarFormatter.range(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
+        } catch {
+            reply(ok: false, content: "", error: CalendarError.badDates.localizedDescription)
+            return
+        }
+
+        request.continuation.yield(.readingCalendar)
+        let current = generation
+        // The first read may wait on the macOS permission prompt, so it is given a little longer.
+        queue.asyncAfter(deadline: .now() + config.searchDeadline) { [weak self] in
+            guard let self, current == self.generation else { return }
+            reply(ok: false, content: "", error: "reading the calendar took too long")
+        }
+        let label = Self.summary(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
+        Task { [weak self] in
+            let outcome: Result<[CalendarEvent], Error>
+            do {
+                outcome = .success(try await calendar.events(from: range.0, to: range.1))
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.queue.async {
+                guard let self, current == self.generation else { return }
+                switch outcome {
+                case .success(let events):
+                    reply(ok: true, content: CalendarFormatter.text(for: events), error: "",
+                          summary: label, count: events.count)
+                case .failure(let error):
+                    reply(ok: false, content: "", error: String(error.localizedDescription.prefix(240)))
+                }
+            }
+        }
+    }
+
+    /// "18 Nov" or "18 Nov to 20 Nov", for the line shown under the answer.
+    static func summary(start: String, end: String) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        let shown = DateFormatter()
+        shown.locale = Locale(identifier: "en_GB")
+        shown.dateFormat = "d MMM"
+        guard let first = parser.date(from: start), let last = parser.date(from: end) else { return "calendar" }
+        let (from, to) = first <= last ? (first, last) : (last, first)
+        return from == to ? shown.string(from: from) : "\(shown.string(from: from)) to \(shown.string(from: to))"
     }
 
     /// Carries out something the model asked for. The backend only ever asks;

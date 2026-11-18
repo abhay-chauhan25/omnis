@@ -55,7 +55,7 @@ final class ChatModel: ObservableObject {
 
     var editorName: String { registry.editor.name }
     /// True when this chat cannot search the web because a file is, or was, part of it.
-    var webBlockedByFile: Bool { conversation.hasFiles || !pendingAttachments.isEmpty }
+    var webBlockedByFile: Bool { conversation.hasPersonalData || !pendingAttachments.isEmpty }
     var isAnswering: Bool { conversation.isAnswering }
     var canSend: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -252,8 +252,12 @@ final class ChatModel: ObservableObject {
 
         // A file is personal: it is read by the model on this Mac, the chat
         // stays here, and nothing from it is put into a web search.
-        if !attachments.isEmpty || conversation.hasFiles {
-            route = "local"
+        // A question about your own schedule is kept on this Mac from the
+        // start, so it is never offered to Claude.
+        let aboutCalendar = PersonalIntent.mentionsCalendar(options.text)
+        let personal = !attachments.isEmpty || conversation.hasPersonalData || aboutCalendar
+        if personal { route = "local" }
+        if !attachments.isEmpty || conversation.hasPersonalData {
             web = false
         }
         if !attachments.isEmpty {
@@ -290,7 +294,7 @@ final class ChatModel: ObservableObject {
         askTask = Task { [weak self] in
             do {
                 for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
-                                                   attachments: attachments) {
+                                                   attachments: attachments, personal: personal, calendar: true) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -305,6 +309,20 @@ final class ChatModel: ObservableObject {
                     case .searchFailed(let why):
                         self.conversation.update(answerID) { $0.searching = false; $0.searchProblem = why }
                         audit.record(action: "web_search", outcome: "error", detail: why)
+                    case .readingCalendar:
+                        self.conversation.update(answerID) { $0.readingCalendar = true }
+                        self.announce("Checking your calendar")
+                    case .calendarRead(let summary, let events):
+                        // From here the chat holds calendar information: it stays
+                        // on this Mac and no longer searches the web.
+                        self.conversation.markPersonal()
+                        let note = "\(summary): \(events == 1 ? "1 event" : "\(events) events")"
+                        self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarNotes.append(note) }
+                        // Counts only. No event's title, time or place is logged.
+                        audit.record(action: "calendar_read", outcome: "ok", detail: "\(events) events")
+                    case .calendarFailed(let why):
+                        self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarProblem = why }
+                        audit.record(action: "calendar_read", outcome: "error", detail: why)
                     case .usage(let model, let inputTokens, let outputTokens, let costUSD):
                         // Recorded turn by turn, so a stopped, failed or fallen-back
                         // answer still counts towards the month.
@@ -339,7 +357,7 @@ final class ChatModel: ObservableObject {
         guard let last = conversation.messages.last, last.state == .streaming else { return }
         askTask?.cancel()
         askTask = nil
-        conversation.update(last.id) { $0.state = .stopped; $0.searching = false }
+        conversation.update(last.id) { $0.state = .stopped; $0.searching = false; $0.readingCalendar = false }
         audit.record(action: "ask", outcome: "stopped")
     }
 
@@ -375,6 +393,7 @@ final class ChatModel: ObservableObject {
             return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
         }
         if (details.searches ?? 0) > 0 { parts.append("searched the web") }
+        if (details.calendarReads ?? 0) > 0 { parts.append("read your calendar") }
         if let total = details.totalMilliseconds {
             parts.append(String(format: "%.1f s", Double(total) / 1000))
         }
@@ -410,6 +429,7 @@ final class ChatModel: ObservableObject {
         if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
         if let searches = details.searches, searches > 0 { parts.append("web searches \(searches)") }
         if let fallback = details.fallback { parts.append("fallback: \(fallback)") }
+        if let reads = details.calendarReads, reads > 0 { parts.append("calendar reads \(reads)") }
         return parts.joined(separator: ", ")
     }
 }

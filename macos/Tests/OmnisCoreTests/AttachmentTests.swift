@@ -303,9 +303,9 @@ enum Make {
 
     @Test func aChatThatHasHadAFileStaysLocalAndOfflineEvenAfterTheFileLeavesTheHistory() {
         var chat = Conversation()
-        #expect(!chat.hasFiles && !chat.staysLocal)
+        #expect(!chat.hasPersonalData && !chat.staysLocal)
         var id = chat.begin(question: "read this", attachments: [notes])
-        #expect(chat.hasFiles && chat.staysLocal)   // set at once, even before any answer
+        #expect(chat.hasPersonalData && chat.staysLocal)   // set at once, even before any answer
         chat.update(id) { $0.text = "It says: body."; $0.state = .done }
 
         // Enough later turns to push the file's turn out of what is sent along.
@@ -314,10 +314,20 @@ enum Make {
             chat.update(id) { $0.text = "answer \(index)"; $0.state = .done }
         }
         #expect(chat.history().allSatisfy { $0.attachments.isEmpty })
-        #expect(chat.hasFiles && chat.staysLocal)   // the app still remembers
+        #expect(chat.hasPersonalData && chat.staysLocal)   // the app still remembers
 
         chat.clear()
-        #expect(!chat.hasFiles && !chat.staysLocal)
+        #expect(!chat.hasPersonalData && !chat.staysLocal)
+    }
+
+    @Test func readingTheCalendarMarksTheChatTheSameWay() {
+        var chat = Conversation()
+        _ = chat.begin(question: "what is on tomorrow")
+        #expect(!chat.hasPersonalData)
+        chat.markPersonal()
+        #expect(chat.hasPersonalData && chat.staysLocal)
+        chat.clear()
+        #expect(!chat.hasPersonalData && !chat.staysLocal)
     }
 
     @Test func aFileOnAFailedQuestionStillMarksTheChat() {
@@ -325,7 +335,7 @@ enum Make {
         let id = chat.begin(question: "read this", attachments: [notes])
         chat.update(id) { $0.state = .failed("model stopped") }
         #expect(chat.history().isEmpty)
-        #expect(chat.hasFiles && chat.staysLocal)
+        #expect(chat.hasPersonalData && chat.staysLocal)
     }
 
     @Test func aFileOnAFailedQuestionIsNotSentAgain() {

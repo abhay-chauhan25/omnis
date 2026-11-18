@@ -46,19 +46,19 @@ class Harness:
         return await asyncio.wait_for(self.task, 2.0)
 
 
-async def three_words(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+async def three_words(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
     for piece in ("one ", "two ", "three"):
         await asyncio.sleep(0)
         yield piece
 
 
-async def slow(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+async def slow(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
     for i in range(1000):
         await asyncio.sleep(0.01)
         yield f"{i} "
 
 
-async def broken(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+async def broken(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
     yield "partial "
     raise RuntimeError("secret detail that must not leak")
 
@@ -143,7 +143,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_tool_request_goes_out_and_its_result_comes_back(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
             request = ToolRequest("web_search", "the query", asyncio.get_running_loop().create_future())
             yield request
             outcome = await request.future
@@ -175,7 +175,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_while_waiting_for_a_search_cleans_up(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
             request = ToolRequest("web_search", "q", asyncio.get_running_loop().create_future())
             yield request
             await request.future
@@ -193,7 +193,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_conversation_history_reaches_the_handler(self):
         seen = []
 
-        async def recorder(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+        async def recorder(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
             seen.append(history)
             yield "ok"
 
@@ -211,7 +211,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         from omnis_backend.models import UsageEvent
         configured = []
 
-        async def billed(text, route="auto", web=True, history=None, cloud=None, attachments=None):
+        async def billed(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
             yield UsageEvent("claude-haiku-5-5", 100, 20, 0.00002)
             raise RuntimeError("fails after being billed")
 

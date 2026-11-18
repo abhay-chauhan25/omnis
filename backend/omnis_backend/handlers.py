@@ -22,7 +22,7 @@ def _mock_delay_seconds() -> float:
 
 async def mock_answer(
     text: str, route: str = "auto", web: bool = True, history: list | None = None, cloud: dict | None = None,
-    attachments: list | None = None,
+    attachments: list | None = None, options: dict | None = None,
 ) -> AsyncIterator["str | ToolRequest"]:
     """Yield a canned reply a word at a time, the way a real model would stream.
 
@@ -37,6 +37,14 @@ async def mock_answer(
         results = outcome.get("results") or []
         first = results[0]["title"] if results else "none"
         reply = f"Search ok={outcome.get('ok')} results={len(results)} first={first} error={outcome.get('error')}"
+    elif stripped.lower().startswith("calendar:"):
+        # Test aid: ask the app to read the calendar for "calendar: START END".
+        dates = stripped[9:].split()
+        arguments = {"start": dates[0] if dates else "2026-01-01", "end": dates[-1] if dates else "2026-01-01"}
+        request = ToolRequest("calendar_events", "", asyncio.get_running_loop().create_future(), arguments)
+        yield request
+        outcome = await request.future
+        reply = f"Calendar ok={outcome.get('ok')} error={outcome.get('error')} content={outcome.get('content')}"
     elif stripped.lower() == "attachments?":
         # Test aid: report what files the app sent along, without echoing their content.
         now = attachments or []

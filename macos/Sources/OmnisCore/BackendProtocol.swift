@@ -9,13 +9,14 @@ public enum BackendProtocol {
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
     case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [],
-             cloud: CloudPermission = CloudPermission(), attachments: [Attachment] = [])
+             cloud: CloudPermission = CloudPermission(), attachments: [Attachment] = [],
+             personal: Bool = false, calendar: Bool = false)
     case cancel(id: String)
     /// Sent once after hello. Hands the Claude key to the backend in memory;
     /// an empty key means Claude stays off.
     case configure(claudeKey: String)
     /// The app's reply to a `toolRequest`: what the search found, or why it failed.
-    case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String)
+    case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String, content: String = "")
 }
 
 /// What produced an answer and what it cost. All fields are optional on the
@@ -32,12 +33,14 @@ public struct AnswerDetails: Equatable, Sendable {
     public var costUSD: Double?
     /// How many web searches were made for this answer.
     public var searches: Int?
+    /// How many times the calendar was read for this answer.
+    public var calendarReads: Int?
     /// Set when Claude was wanted but could not be used: why, in a few words.
     public var fallback: String?
 
     public init(route: String? = nil, reason: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
                 loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil, costUSD: Double? = nil,
-                searches: Int? = nil, fallback: String? = nil) {
+                searches: Int? = nil, fallback: String? = nil, calendarReads: Int? = nil) {
         self.route = route
         self.reason = reason
         self.inputTokens = inputTokens
@@ -47,6 +50,7 @@ public struct AnswerDetails: Equatable, Sendable {
         self.costUSD = costUSD
         self.searches = searches
         self.fallback = fallback
+        self.calendarReads = calendarReads
     }
 }
 
@@ -57,7 +61,7 @@ public enum ServiceMessage: Equatable, Sendable {
     /// What one Claude turn cost. Arrives as soon as the turn is billed.
     case usage(id: String, model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     /// The model wants the app to do something. Only "web_search" exists.
-    case toolRequest(id: String, callID: String, tool: String, query: String)
+    case toolRequest(id: String, callID: String, tool: String, query: String, arguments: [String: String] = [:])
     case error(id: String?, code: String, message: String)
     case bye(reason: String)
 }
@@ -75,7 +79,7 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route, let web, let history, let cloud, let attachments):
+        case .ask(let id, let text, let route, let web, let history, let cloud, let attachments, let personal, let calendar):
             object = [
                 "type": "ask", "id": id, "text": text, "route": route, "web": web,
                 "history": history.map { turn -> [String: Any] in
@@ -85,10 +89,12 @@ public enum ProtocolCodec {
                 },
                 "cloud": ["allowed": cloud.allowed, "max_usd": cloud.maxUSD, "reason": cloud.reason],
                 "attachments": attachments.map(Self.encode),
+                "personal": personal,
+                "calendar": calendar,
             ]
-        case .toolResult(let id, let callID, let ok, let results, let error):
+        case .toolResult(let id, let callID, let ok, let results, let error, let content):
             object = [
-                "type": "tool_result", "id": id, "call_id": callID, "ok": ok, "error": error,
+                "type": "tool_result", "id": id, "call_id": callID, "ok": ok, "error": error, "content": content,
                 "results": results.map { ["title": $0.title, "url": $0.url.absoluteString, "snippet": $0.snippet] },
             ]
         case .cancel(let id):
@@ -153,7 +159,8 @@ public enum ProtocolCodec {
                     totalMilliseconds: optionalInt("total_ms"),
                     costUSD: cost,
                     searches: optionalInt("searches"),
-                    fallback: optionalText("fallback").flatMap { $0.isEmpty ? nil : $0 }
+                    fallback: optionalText("fallback").flatMap { $0.isEmpty ? nil : $0 },
+                    calendarReads: optionalInt("calendar_reads")
                 )
             )
         case "usage":
@@ -165,8 +172,14 @@ public enum ProtocolCodec {
                           outputTokens: max(0, try integer("output_tokens")),
                           costUSD: cost.doubleValue.isFinite ? max(0, cost.doubleValue) : 0)
         case "tool_request":
+            // Only short text values are kept from the arguments.
+            var arguments: [String: String] = [:]
+            for (key, value) in (object["arguments"] as? [String: Any]) ?? [:] {
+                if let text = value as? String, key.count <= 40 { arguments[key] = String(text.prefix(100)) }
+            }
             return .toolRequest(id: try string("id"), callID: try string("call_id"),
-                                tool: try string("tool"), query: String(try string("query").prefix(400)))
+                                tool: try string("tool"), query: String(try string("query").prefix(400)),
+                                arguments: arguments)
         case "error":
             return .error(id: object["id"] as? String, code: try string("code"), message: try string("message"))
         case "bye":

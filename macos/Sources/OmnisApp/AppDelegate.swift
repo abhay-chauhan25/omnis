@@ -21,7 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runWebSearchCheck(web?.search)
             return
         }
-        backend = AppEnvironment.backendConfig().map { BackendService(config: $0, webSearch: web?.search) }
+        // The calendar is read by the app through EventKit. macOS asks for
+        // permission the first time a question needs it.
+        backend = AppEnvironment.backendConfig().map {
+            BackendService(config: $0, webSearch: web?.search, calendar: EventKitCalendar())
+        }
         let model = ChatModel(backend: backend, audit: audit, ledger: ledger)
         chat = ChatWindowController(model: model)
 

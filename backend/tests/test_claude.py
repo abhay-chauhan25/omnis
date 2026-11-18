@@ -108,7 +108,7 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
         call = self.claude.calls[0]
         self.assertEqual(call["effort"], "low")
         self.assertEqual(call["messages"], [{"role": "user", "content": "who won the world cup"}])
-        self.assertIn("Today's date is", call["system"])
+        self.assertIn("Today is", call["system"])
 
     async def test_hard_requests_step_up_to_a_stronger_model(self):
         engine = self.engine(["Here is the code."])

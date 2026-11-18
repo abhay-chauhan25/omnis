@@ -15,7 +15,7 @@ class DecodeClientTests(unittest.TestCase):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
         self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto", "web": True, "history": [],
                                "cloud": {"allowed": True, "max_usd": 1.0, "reason": ""},
-                               "attachments": []})
+                               "attachments": [], "options": {"personal": False, "calendar": False}})
 
     def test_cancel(self):
         self.assertEqual(
@@ -103,6 +103,19 @@ class DecodeClientTests(unittest.TestCase):
         self.assertEqual(kept[0]["attachments"], file)   # kept although the text was empty
         self.assertNotIn("attachments", kept[1])
         self.assert_bad(ask([{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "attachments": file}]))
+
+    def test_personal_and_calendar_flags_and_tool_content(self):
+        got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","personal":true,"calendar":true}')
+        self.assertEqual(got["options"], {"personal": True, "calendar": True})
+        self.assert_bad(b'{"type":"ask","id":"a","text":"x","calendar":"yes"}')
+        self.assertEqual(
+            protocol.tool_request("r", "c", "calendar_events", "", {"start": "2026-11-18", "end": "2026-11-18"}),
+            {"type": "tool_request", "id": "r", "call_id": "c", "tool": "calendar_events", "query": "",
+             "arguments": {"start": "2026-11-18", "end": "2026-11-18"}})
+        self.assertNotIn("arguments", protocol.tool_request("r", "c", "web_search", "q"))
+        result = protocol.decode_client(json.dumps({"type": "tool_result", "id": "a", "call_id": "c", "ok": True,
+                                                    "content": "x" * 50_000}).encode())
+        self.assertEqual(len(result["content"]), protocol.MAX_TOOL_CONTENT_CHARS)
 
     def test_ask_can_forbid_web_search(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","web":false}')

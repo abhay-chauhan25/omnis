@@ -28,6 +28,8 @@ class AnswerInfo:
     total_ms: int = 0
     cost_usd: float = 0.0
     searches: int = 0
+    #: How many times the calendar was read for this answer.
+    calendar_reads: int = 0
     #: Set when Claude was wanted but could not be used: why, in a few words.
     fallback: str = ""
 
@@ -47,6 +49,8 @@ class ToolRequest:
     tool: str
     query: str
     future: "asyncio.Future[dict]"
+    #: Named values for tools that take more than a search string.
+    arguments: dict | None = None
 
 
 @dataclass
