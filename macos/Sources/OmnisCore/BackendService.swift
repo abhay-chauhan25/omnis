@@ -559,7 +559,8 @@ public final class BackendService: @unchecked Sendable {
                     // The preview says which account is involved and how much would go.
                     switch change {
                     case .createCalendar(let name, _):
-                        return .proposal(.createCalendar(name: name, account: list.first(where: \.isDefault)?.account ?? ""))
+                        return .proposal(.createCalendar(name: name,
+                                                         account: try CalendarAccounts.choose(arguments["account"], from: list)))
                     case .deleteCalendar(let name, _, _, _):
                         let info = list.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
                         let count = try? await calendar.eventCount(calendarNamed: info?.name ?? name)

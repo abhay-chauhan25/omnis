@@ -833,6 +833,12 @@ class FullCalendarTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("name is missing", self.chats()[1]["messages"][-1]["content"])
 
         self.fake.requests.clear()
+        self.fake.tool_calls = [[tool_call("calendar_create_calendar", name="Gym", account="iCloud"),
+                                 tool_call("calendar_create_calendar", name="Gym", account="")]]
+        _, _, requests = await run_tools(self.engine, "make it in icloud", replies, options=WRITE)
+        self.assertEqual([r[2] for r in requests], [{"name": "Gym", "account": "iCloud"}, {"name": "Gym"}])
+
+        self.fake.requests.clear()
         self.fake.tool_calls = [tool_call("calendar_list")]
         _, _, requests = await run_tools(self.engine, "which calendars do I have",
                                          {"calendar_list": {"ok": True, "error": "", "content": "Home\nWork"}}, options=WRITE)

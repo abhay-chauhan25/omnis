@@ -108,7 +108,7 @@ CALENDAR_WRITE_PROMPT = (
     "\"this\" changes or deletes only that one day and \"future\" that day and all later ones; if the "
     "user did not say which, ask. calendar_create_calendar, calendar_rename_calendar and "
     "calendar_delete_calendar work on whole calendars; deleting a calendar deletes every event in "
-    "it. Every one of these tools only shows the user a preview to confirm, so never say a change, "
+    "it. If the user names an account for a new calendar, such as iCloud, pass it as account. Every one of these tools only shows the user a preview to confirm, so never say a change, "
     "a deletion or a new calendar has been made: say the preview is ready for them to confirm. You "
     "cannot invite or remove guests."
 )
@@ -196,6 +196,10 @@ EVENT_DETAILS_TOOL = _calendar_tool(
 CALENDAR_LIST_TOOL = _calendar_tool("calendar_list", "List the names of the user's calendars.", {})
 CREATE_CALENDAR_TOOL = _calendar_tool(
     "calendar_create_calendar", "Prepare a new, empty calendar. The user must confirm.", {"name": "Its name."})
+CREATE_CALENDAR_TOOL["function"]["parameters"]["properties"]["account"] = {
+    "type": "string",
+    "description": "The account to create it in, such as iCloud, if the user named one. Leave out otherwise.",
+}
 RENAME_CALENDAR_TOOL = _calendar_tool(
     "calendar_rename_calendar", "Prepare renaming a calendar. The user must confirm.",
     {"name": "Its present name.", "new_name": "The new name."})
@@ -981,6 +985,9 @@ def _calendar_calls(tool_calls: list[dict], offered: set[str], today: datetime.d
                      (("name", "new_name") if name == "calendar_rename_calendar" else ("name",))}
             out = names if all(names.values()) else None
             note = "" if out else "The calendar's name is missing. Call the tool again with it."
+            account = _text(arguments, "account", MAX_EVENT_TEXT)
+            if out and name == "calendar_create_calendar" and account and account.lower() != "none":
+                out["account"] = account
         found.append((name, out, call, note))
     return found
 

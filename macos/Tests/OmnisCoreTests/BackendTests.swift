@@ -455,6 +455,10 @@ import Testing
         #expect(changes(home) == [.deleteCalendar(name: "Home", account: "iCloud", events: nil, isDefault: true)])
         let made = try await trace(backend.ask("tool: calendar_create_calendar name=Gym", calendar: true, calendarWrite: true))
         #expect(changes(made) == [.createCalendar(name: "Gym", account: "iCloud")])
+        let named = try await trace(backend.ask("tool: calendar_create_calendar name=Gym; account=google", calendar: true, calendarWrite: true))
+        #expect(changes(named) == [.createCalendar(name: "Gym", account: "Google")])
+        let wrong = try await trace(backend.ask("tool: calendar_create_calendar name=Gym; account=Exchange", calendar: true, calendarWrite: true))
+        #expect(refusals(wrong).first?.hasPrefix("there is no calendar account called") == true)
         backend.stop()
     }
 

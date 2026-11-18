@@ -357,6 +357,37 @@ public struct EventDraft: Equatable, Sendable {
     }
 }
 
+/// Chooses the account for a new calendar.
+public enum CalendarAccounts {
+    /// The accounts that hold calendars the user can change, in a steady order.
+    public static func names(in calendars: [CalendarInfo]) -> [String] {
+        var seen: [String] = []
+        for info in calendars where info.writable && !info.account.isEmpty
+            && !seen.contains(where: { $0.caseInsensitiveCompare(info.account) == .orderedSame }) {
+            seen.append(info.account)
+        }
+        return seen
+    }
+
+    /// The account the user named, or the best one to use if they named none.
+    /// iCloud comes first: accounts such as Google do not let a Mac add calendars.
+    public static func choose(_ wanted: String?, from calendars: [CalendarInfo]) throws -> String {
+        let accounts = names(in: calendars)
+        let listed = accounts.isEmpty ? "" : " The accounts are: " + accounts.joined(separator: ", ") + "."
+        if let wanted = wanted?.trimmingCharacters(in: .whitespaces), !wanted.isEmpty {
+            let exact = accounts.filter { $0.caseInsensitiveCompare(wanted) == .orderedSame }
+            let loose = accounts.filter { $0.localizedCaseInsensitiveContains(wanted) || wanted.localizedCaseInsensitiveContains($0) }
+            if let only = exact.first ?? (loose.count == 1 ? loose.first : nil) { return only }
+            throw CalendarError.refused("there is no calendar account called \"\(wanted)\".\(listed)")
+        }
+        if let icloud = accounts.first(where: { $0.localizedCaseInsensitiveContains("icloud") }) { return icloud }
+        if let local = accounts.first(where: { $0.localizedCaseInsensitiveContains("on my mac") }) { return local }
+        if let standard = calendars.first(where: \.isDefault)?.account, !standard.isEmpty { return standard }
+        // No account known: the calendar app's own default is used.
+        return accounts.first ?? ""
+    }
+}
+
 /// One line of a preview: what, and its value.
 public struct ChangeRow: Equatable, Sendable {
     public let label: String
@@ -872,17 +903,28 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
                 guard describe(event).draft == snapshot.draft else { throw CalendarError.gone }
                 try store.remove(event, span: future ? .futureEvents : .thisEvent, commit: true)
                 return "Deleted"
-            case .createCalendar(let name, _):
+            case .createCalendar(let name, let account):
                 guard !store.calendars(for: .event).contains(where: { $0.title.caseInsensitiveCompare(name) == .orderedSame }) else {
                     throw CalendarError.refused("there is already a calendar called \"\(name)\"")
                 }
                 let created = EKCalendar(for: .event, eventStore: store)
                 created.title = name
-                guard let source = store.defaultCalendarForNewEvents?.source
-                        ?? store.sources.first(where: { $0.sourceType == .local }) else { throw CalendarError.noCalendar }
+                // The account shown on the preview, and no other.
+                let named = store.sources.first {
+                    $0.title.caseInsensitiveCompare(account) == .orderedSame && !$0.calendars(for: .event).isEmpty
+                }
+                guard let source = account.isEmpty
+                        ? (store.defaultCalendarForNewEvents?.source ?? store.sources.first(where: { $0.sourceType == .local }))
+                        : named else {
+                    throw CalendarError.refused("the account \"\(account)\" could not be found")
+                }
                 created.source = source
-                try store.saveCalendar(created, commit: true)
-                return "Calendar created"
+                do {
+                    try store.saveCalendar(created, commit: true)
+                } catch {
+                    throw CalendarError.refused("\(source.title) would not add the calendar (\(error.localizedDescription)) Ask for it in another account, such as iCloud")
+                }
+                return "Calendar created in \(source.title)"
             case .renameCalendar(let from, let to):
                 let target = try calendar(named: from)
                 guard !target.isImmutable else { throw CalendarError.refused("the calendar \"\(from)\" cannot be renamed") }
@@ -999,7 +1041,8 @@ public enum CalendarFormatter {
 
     public static func text(for calendars: [CalendarInfo]) -> String {
         calendars.map { info in
-            clean(info.name) + (info.isDefault ? " (default for new events)" : "") + (info.writable ? "" : " (read-only)")
+            clean(info.name) + (info.account.isEmpty ? "" : " [account: \(clean(info.account))]")
+                + (info.isDefault ? " (default for new events)" : "") + (info.writable ? "" : " (read-only)")
         }.joined(separator: "\n")
     }
 

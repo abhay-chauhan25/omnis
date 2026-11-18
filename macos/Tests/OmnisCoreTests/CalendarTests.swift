@@ -403,6 +403,25 @@ enum Zone {
         #expect(throws: CalendarError.self) { try long.applying(["end": "2027-02-01"], calendar: Zone.newYork) }
     }
 
+    @Test func aNewCalendarGoesToICloudUnlessAnotherAccountIsNamed() throws {
+        let list = [CalendarInfo(name: "Personal", isDefault: true, account: "Google"), CalendarInfo(name: "Work", account: "Google"),
+                    CalendarInfo(name: "Home", account: "iCloud"), CalendarInfo(name: "Holidays", writable: false, account: "Other")]
+        #expect(CalendarAccounts.names(in: list) == ["Google", "iCloud"])
+        #expect(try CalendarAccounts.choose(nil, from: list) == "iCloud")          // not the default's account
+        #expect(try CalendarAccounts.choose("", from: list) == "iCloud")
+        #expect(try CalendarAccounts.choose("icloud", from: list) == "iCloud")
+        #expect(try CalendarAccounts.choose("google", from: list) == "Google")      // the user may still ask for it
+        #expect(try CalendarAccounts.choose("my iCloud account", from: list) == "iCloud")
+        #expect(throws: CalendarError.refused("there is no calendar account called \"Exchange\". The accounts are: Google, iCloud.")) {
+            try CalendarAccounts.choose("Exchange", from: list)
+        }
+        // With no iCloud, the default calendar's account is used.
+        #expect(try CalendarAccounts.choose(nil, from: Array(list.prefix(2))) == "Google")
+        #expect(try CalendarAccounts.choose(nil, from: [CalendarInfo(name: "Home")]) == "")
+        #expect(CalendarFormatter.text(for: [list[0], list[3]])
+                == "Personal [account: Google] (default for new events)\nHolidays [account: Other] (read-only)")
+    }
+
     @Test func errorCodesForTheLogCarryNoNames() {
         #expect(CalendarError.refused("there is no calendar called \"Therapy\"").code == "refused")
         #expect(CalendarError.unavailable("x").code == "unavailable" && CalendarError.gone.code == "gone")
