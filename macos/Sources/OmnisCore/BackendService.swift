@@ -124,6 +124,7 @@ public final class BackendService: @unchecked Sendable {
 
     private let webSearch: (any WebSearching)?
     private let calendar: (any CalendarReading)?
+    private var personalDataHandler: (@Sendable () -> Void)?
 
     /// `webSearch` is what carries out a search when the model asks for one,
     /// and `calendar` what reads the calendar. Without one, the model is told
@@ -142,6 +143,13 @@ public final class BackendService: @unchecked Sendable {
     }
 
     // MARK: Public surface
+
+    /// Called the moment personal information (calendar events) has been
+    /// handed to the model. It does not depend on anyone still reading the
+    /// answer, so it fires even if the answer is stopped at that instant.
+    public func onPersonalDataDelivered(_ handler: @escaping @Sendable () -> Void) {
+        queue.sync { personalDataHandler = handler }
+    }
 
     public var isRunning: Bool { queue.sync { process?.isRunning ?? false } }
 
@@ -414,6 +422,7 @@ public final class BackendService: @unchecked Sendable {
                 return
             }
             if ok {
+                personalDataHandler?()
                 pending[requestID]?.continuation.yield(.calendarRead(summary: summary, events: count))
             } else {
                 pending[requestID]?.continuation.yield(.calendarFailed(error))
@@ -434,7 +443,9 @@ public final class BackendService: @unchecked Sendable {
 
         request.continuation.yield(.readingCalendar)
         let current = generation
-        // The first read may wait on the macOS permission prompt, so it is given a little longer.
+        // The first read waits on the macOS permission prompt. If that takes
+        // longer than the deadline, this answer says the calendar could not
+        // be read, and the next question works once permission is given.
         queue.asyncAfter(deadline: .now() + config.searchDeadline) { [weak self] in
             guard let self, current == self.generation else { return }
             reply(ok: false, content: "", error: "reading the calendar took too long")

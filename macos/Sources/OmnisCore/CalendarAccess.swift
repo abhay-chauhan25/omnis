@@ -124,8 +124,11 @@ public enum CalendarFormatter {
         var lines: [String] = []
         for event in sorted.prefix(maxEvents) {
             var line: String
-            let sameDay = calendar.isDate(event.start, inSameDayAs: event.end)
-                || (event.allDay && event.end.timeIntervalSince(event.start) <= 86_400)
+            // An all-day event ends at the start of the following day, so its
+            // last day is the one just before its end. Comparing days, not
+            // hours, keeps this right when the clocks change.
+            let lastMoment = event.allDay ? event.end.addingTimeInterval(-1) : event.end
+            let sameDay = calendar.isDate(event.start, inSameDayAs: lastMoment)
             if event.allDay {
                 line = sameDay ? "\(day.string(from: event.start)), all day"
                     : "\(day.string(from: event.start)) to \(day.string(from: event.end.addingTimeInterval(-1))), all day"
@@ -148,9 +151,11 @@ public enum CalendarFormatter {
     }
 
     static func clean(_ text: String) -> String {
-        let flat = text.unicodeScalars.map { scalar -> Character in
-            CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) ? " " : Character(scalar)
-        }
+        // Invisible characters that reorder text on screen are removed too.
+        let flat = text.unicodeScalars.filter { !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value) }
+            .map { scalar -> Character in
+                CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) ? " " : Character(scalar)
+            }
         let collapsed = String(flat).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
         return String(collapsed.prefix(maxFieldCharacters))
     }
@@ -159,8 +164,24 @@ public enum CalendarFormatter {
 /// Spots a question that is about the user's own schedule, so it is kept on
 /// this Mac from the start and never offered to Claude.
 public enum PersonalIntent {
+    // Deliberately wide. A wrong match only means a public question is
+    // answered by the local model. A missed one sends a question about your
+    // own day to Claude, which cannot see your calendar and cannot help.
     private static let pattern = try! NSRegularExpression(
-        pattern: #"\b(calendar|schedule|agenda|appointments?|meetings?)\b|\bam i (free|busy|available)\b|\bdo i have (anything|something|a |an |any )|\bwhat('s| is| do i have)? on (my |for )?(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this |next )|\bmy (day|week|weekend|morning|afternoon|evening)\b"#,
+        pattern: [
+            #"\b(calendar|schedule|agenda|appointments?|meetings?)\b"#,
+            #"\bam i (free|busy|available)\b"#,
+            #"\b(free|busy) (time|slot|today|tomorrow|tonight|this|next|on)\b"#,
+            #"\bis (today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday) (free|busy|clear)\b"#,
+            #"\b(do|did|will) i have\b"#,
+            #"\bwhat (am i|are we) (doing|up to)\b"#,
+            #"\bwhat do i have\b"#,
+            #"\bwhat('s| is)? on (my |for )?(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this |next |plate)"#,
+            #"\banything (on|happening|planned|scheduled|going on)\b"#,
+            #"\bmy (day|week|weekend|morning|afternoon|evening|plans|flight|call|dentist|doctor|next)\b"#,
+            #"\bwhen('s| is) my\b"#,
+            #"\bwhat time is my\b"#,
+        ].joined(separator: "|"),
         options: [.caseInsensitive]
     )
 

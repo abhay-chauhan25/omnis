@@ -51,6 +51,11 @@ final class ChatModel: ObservableObject {
             audit.record(action: "launch", kind: EntryKind.launcher.rawValue, target: url.lastPathComponent,
                          outcome: "error", detail: "exited with status \(status)")
         })
+        // Marked through its own path, not the answer stream: pressing Stop at
+        // the wrong instant must not leave a chat with calendar text unmarked.
+        backend?.onPersonalDataDelivered { [weak self] in
+            Task { @MainActor in self?.conversation.markPersonal() }
+        }
     }
 
     var editorName: String { registry.editor.name }

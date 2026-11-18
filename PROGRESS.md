@@ -16,19 +16,21 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Chat window with conversation memory | Built and reviewed 2026-11-17; user testing in progress | ADR-0010 |
 | Claude lane | Built against a stand-in and reviewed 2026-11-17; review findings fixed, fixes not yet re-reviewed; never run live | ADR-0009 |
 | Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
-| Calendar (first personal-data integration) | Not started. Approach and scope to be agreed first | — |
+| Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
+| Calendar, creating events | Not started. Plan and approval first | — |
 | Stage 2: main window | Not started. Waits for a design conversation | — |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 118. Swift: 138. Four more live tests use the real model, real search and a real picture when asked for.
+- Python: 131. Swift: 156. Five more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
 
 - [ ] User's hands-on check of the chat window (look, feel, dragging, sources, launch strip).
+- [ ] User's test of calendar questions against the real calendar (needs the macOS permission prompt).
 - [ ] Verify API credit in the Anthropic Console (expected around 2026-11-23).
 - [ ] Approval to install the `anthropic` package, then a first live Claude call.
 - [ ] A second review of the Claude lane fixes before going live.
@@ -40,7 +42,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Decisions waiting on the user
 
-1. Calendar: call Apple's EventKit directly from OMNIS (recommended) or use a third-party MCP server; and whether to start read-only.
+1. In a chat that holds a file or the calendar, whether to allow web searches built only from the words the user typed.
 2. Whether OMNIS should ask "keep this local?" when typed text looks personal, or leave that to the Local control.
 3. Whether opening a source should be recorded in the audit log by site name, as it is now.
 4. Whether an answer given locally because Claude was unavailable should keep that chat local afterwards.
@@ -63,6 +65,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | The popup becomes a movable, persistent chat window with session memory. | ADR-0010 |
 | 2026-11-17 | Nothing about the architecture is settled; better approaches are to be raised and discussed. | `CLAUDE.md` §0 rule 8 |
 | 2026-11-17 | Commit and push as work is completed, without waiting to be told. | — |
+| 2026-11-17 | Calendar through Apple's EventKit, read-only first, then creating events. | ADR-0011 |
 
 ## Things worth knowing
 
@@ -83,4 +86,4 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Next step
 
-The user tests the chat window. Then the choice of what to build next.
+The user tests calendar questions with the real calendar. Then a plan for creating events, with a preview and confirmation each time.

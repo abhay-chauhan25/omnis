@@ -310,8 +310,14 @@ class LocalEngine:
 
             if dates is not None:
                 # The calendar comes first if both were asked for: after it, no search is allowed.
-                start, end, call = dates
+                start, end, call, problem = dates
                 calendar_attempts += 1
+                if not start:
+                    # Dates that are not dates. Say so, so the model can try
+                    # again properly instead of answering without looking.
+                    messages.append({"role": "assistant", "content": turn.text, "tool_calls": [call]})
+                    messages.append({"role": "tool", "tool_name": "calendar_events", "content": problem})
+                    continue
                 request = ToolRequest("calendar_events", "", asyncio.get_running_loop().create_future(),
                                       {"start": start, "end": end})
                 yield request
@@ -323,7 +329,7 @@ class LocalEngine:
                     info.calendar_reads += 1
                 messages.append({"role": "assistant", "content": turn.text, "tool_calls": [call]})
                 messages.append({"role": "tool", "tool_name": "calendar_events",
-                                 "content": _calendar_for_model(start, end, outcome)})
+                                 "content": _calendar_for_model(start, end, outcome) + (f"\n{problem}" if problem else "")})
                 continue
 
             query, call = search
@@ -596,11 +602,14 @@ def _message(role: str, text: str, attachments: list | None) -> dict:
     return message
 
 
-def _calendar_dates(tool_calls: list[dict], today: datetime.date) -> tuple[str, str, dict] | None:
-    """The date range from the first valid calendar_events request, with that request.
+def _calendar_dates(tool_calls: list[dict], today: datetime.date) -> tuple[str, str, dict, str] | None:
+    """The date range from the first calendar_events request: (start, end, request, note).
 
-    Dates must be real calendar dates. A missing end means one day, a
-    reversed pair is put in order, and a very long range is shortened.
+    Dates must be real calendar dates. A reversed pair is put in order and a
+    very long range is shortened. If the start is not a date, start and end
+    come back empty and the note says what was wrong. If only the end is bad,
+    the start day alone is used and the note says so. Returns None when the
+    model made no calendar request at all.
     """
     for call in tool_calls:
         function = call.get("function")
@@ -611,22 +620,28 @@ def _calendar_dates(tool_calls: list[dict], today: datetime.date) -> tuple[str, 
             try:
                 arguments = json.loads(arguments)
             except ValueError:
-                continue
+                arguments = None
+        invalid = "The dates were not valid, so the calendar was not read. Give start and end as YYYY-MM-DD and ask again."
         if not isinstance(arguments, dict):
-            continue
+            return "", "", call, invalid
         try:
             start = datetime.date.fromisoformat(str(arguments.get("start", "")).strip()[:10])
         except ValueError:
-            continue
+            return "", "", call, invalid
+        note = ""
+        given_end = str(arguments.get("end") or "").strip()
         try:
-            end = datetime.date.fromisoformat(str(arguments.get("end", "")).strip()[:10])
+            # No end at all simply means one day.
+            end = datetime.date.fromisoformat(given_end[:10]) if given_end else start
         except ValueError:
             end = start
+            note = f"Note: the end date was not valid, so only {start.isoformat()} was read."
         if end < start:
             start, end = end, start
         if (end - start).days > MAX_CALENDAR_DAYS:
             end = start + datetime.timedelta(days=MAX_CALENDAR_DAYS)
-        return start.isoformat(), end.isoformat(), call
+            note = f"Note: that range was too long, so only {start.isoformat()} to {end.isoformat()} was read."
+        return start.isoformat(), end.isoformat(), call, note
     return None
 
 

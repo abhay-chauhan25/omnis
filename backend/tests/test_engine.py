@@ -521,15 +521,34 @@ class CalendarTests(unittest.IsolatedAsyncioTestCase):
         from omnis_backend.engine import _calendar_dates
         def dates(start, end=None):
             found = _calendar_dates([calendar_call(start, end)], today)
-            return found and found[:2]
+            return found and (found[0], found[1])
+        def note(start, end=None):
+            return _calendar_dates([calendar_call(start, end)], today)[3]
         self.assertEqual(dates("2026-11-18", "2026-11-20"), ("2026-11-18", "2026-11-20"))
-        self.assertEqual(dates("2026-11-18"), ("2026-11-18", "2026-11-18"))                 # no end: one day
+        self.assertEqual(note("2026-11-18", "2026-11-20"), "")
         self.assertEqual(dates("2026-11-20", "2026-11-18"), ("2026-11-18", "2026-11-20"))   # reversed: put in order
+        # A bad end: the start day alone is read, and the model is told.
         self.assertEqual(dates("2026-11-18T09:00:00", "garbage"), ("2026-11-18", "2026-11-18"))
-        self.assertEqual(dates("2026-01-01", "2027-01-01"), ("2026-01-01", "2026-03-04"))   # a year: cut to 62 days
+        self.assertIn("only 2026-11-18 was read", note("2026-11-18", "garbage"))
+        self.assertEqual((dates("2026-11-18"), note("2026-11-18")), (("2026-11-18", "2026-11-18"), ""))   # no end: one day
+        # A year: cut to the limit, and the model is told.
+        self.assertEqual(dates("2026-01-01", "2027-01-01"), ("2026-01-01", "2026-03-04"))
+        self.assertIn("too long", note("2026-01-01", "2027-01-01"))
+        # A bad start: nothing is read, and the model is told how to ask.
         for bad in ("tomorrow", "", "2026-13-45", "18/11/2026"):
-            self.assertIsNone(dates(bad))
+            self.assertEqual(dates(bad), ("", ""))
+            self.assertIn("Give start and end as YYYY-MM-DD", note(bad))
         self.assertIsNone(_calendar_dates([calendar_call("2026-11-18", name="delete_events")], today))
+
+    async def test_bad_dates_are_explained_to_the_model_which_can_then_ask_properly(self):
+        self.fake.tool_calls = [calendar_call("tomorrow", "tomorrow"), calendar_call("2026-11-18", "2026-11-18")]
+        text, info, requests = await run_tools(self.engine, "what is on tomorrow", {"calendar_events": EVENTS})
+        # Only the valid request reached the app.
+        self.assertEqual(requests, [("calendar_events", "", {"start": "2026-11-18", "end": "2026-11-18"})])
+        self.assertIn("The dates were not valid", self.chats()[1]["messages"][-1]["content"])
+        self.assertEqual((text, info.calendar_reads), ("Paris is the capital.", 1))
+        # The web was already closed after the first calendar attempt, valid or not.
+        self.assertEqual(self.tool_names(self.chats()[1]), ["calendar_events"])
 
     async def test_a_calendar_that_cannot_be_read_is_reported_not_guessed(self):
         self.fake.tool_calls = [calendar_call("2026-11-18")]

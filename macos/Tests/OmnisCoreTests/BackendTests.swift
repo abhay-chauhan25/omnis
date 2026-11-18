@@ -319,6 +319,34 @@ import Testing
         backend.stop()
     }
 
+    /// The chat must be marked through a path that does not depend on anyone
+    /// still reading the answer: here the answer is abandoned as soon as it starts.
+    @Test func personalDataIsReportedEvenIfNobodyReadsTheAnswer() async throws {
+        let stub = StubCalendar()
+        stub.events = [CalendarEvent(title: "Standup", start: Date(timeIntervalSince1970: 1_795_000_000),
+                                     end: Date(timeIntervalSince1970: 1_795_001_800), calendar: "Work")]
+        let backend = calendarService(stub)
+        let delivered = Flag()
+        backend.onPersonalDataDelivered { delivered.set(1) }
+
+        let task = Task { try await self.trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true)) }
+        #expect(await waitUntil { !stub.ranges.isEmpty })
+        // Not cancelled here: the point is that the report arrives by itself.
+        #expect(await waitUntil { delivered.value == 1 })
+        _ = try? await task.value
+
+        // A read that fails delivers nothing, so nothing is reported.
+        let failing = StubCalendar()
+        failing.failure = CalendarError.notAllowed
+        let other = calendarService(failing)
+        let reported = Flag()
+        other.onPersonalDataDelivered { reported.set(1) }
+        _ = try await trace(other.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
+        #expect(reported.value == nil)
+        backend.stop()
+        other.stop()
+    }
+
     @Test func theCalendarIsNotReadUnlessTheAppOfferedItForThatQuestion() async throws {
         let stub = StubCalendar()
         let backend = calendarService(stub)
