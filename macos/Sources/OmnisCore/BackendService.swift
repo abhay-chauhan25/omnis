@@ -81,6 +81,11 @@ public enum AnswerEvent: Equatable, Sendable {
     case calendarRead(summary: String, events: Int)
     /// The calendar could not be read; the model was told so.
     case calendarFailed(String)
+    /// The model prepared a new event. It is not saved: the app shows it and
+    /// saves it only if the user confirms.
+    case eventProposed(EventDraft)
+    /// An event the model asked for could not be prepared; the model was told so.
+    case eventRefused(String)
     /// One Claude turn was billed. Record it now: the answer may not finish.
     case usage(model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     case finished(model: String?, details: AnswerDetails)
@@ -98,6 +103,7 @@ public final class BackendService: @unchecked Sendable {
         let attachments: [Attachment]
         let personal: Bool
         let calendar: Bool
+        let calendarWrite: Bool
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -176,7 +182,8 @@ public final class BackendService: @unchecked Sendable {
         cloud: CloudPermission = CloudPermission(),
         attachments: [Attachment] = [],
         personal: Bool = false,
-        calendar: Bool = false
+        calendar: Bool = false,
+        calendarWrite: Bool = false
     ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -190,7 +197,8 @@ public final class BackendService: @unchecked Sendable {
             queue.async {
                 self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
                                            attachments: attachments, personal: personal,
-                                           calendar: calendar && self.calendar != nil, continuation: continuation)
+                                           calendar: calendar && self.calendar != nil,
+                                           calendarWrite: calendarWrite, continuation: continuation)
                 self.send(id)
             }
         }
@@ -222,7 +230,8 @@ public final class BackendService: @unchecked Sendable {
             pending[id]?.sent = true
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
                            cloud: request.cloud, attachments: request.attachments,
-                           personal: request.personal, calendar: request.calendar))
+                           personal: request.personal, calendar: request.calendar,
+                           calendarWrite: request.calendarWrite))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -334,7 +343,8 @@ public final class BackendService: @unchecked Sendable {
             guard let request = pending[id] else { continue }
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
                            cloud: request.cloud, attachments: request.attachments,
-                           personal: request.personal, calendar: request.calendar))
+                           personal: request.personal, calendar: request.calendar,
+                           calendarWrite: request.calendarWrite))
         }
     }
 
@@ -385,6 +395,8 @@ public final class BackendService: @unchecked Sendable {
         case .toolRequest(let id, let callID, let tool, let query, let arguments):
             if tool == "calendar_events" {
                 readCalendar(requestID: id, callID: callID, arguments: arguments)
+            } else if tool == "calendar_create_event" {
+                proposeEvent(requestID: id, callID: callID, arguments: arguments)
             } else {
                 runTool(requestID: id, callID: callID, tool: tool, query: query)
             }
@@ -403,6 +415,37 @@ public final class BackendService: @unchecked Sendable {
             }
         case .bye:
             break
+        }
+    }
+
+    /// Checks an event the model wants added and hands it to the window as a
+    /// preview. Nothing is saved here: this class has no way to save. The
+    /// reply to the model says only that the preview was shown.
+    private func proposeEvent(requestID: String, callID: String, arguments: [String: String]) {
+        guard let request = pending[requestID] else { return }
+        let outcome: Result<EventDraft, CalendarError>
+        if !request.calendarWrite {
+            outcome = .failure(.badEvent("adding events is not available"))
+        } else {
+            do {
+                outcome = .success(try EventDraft.parse(arguments))
+            } catch {
+                outcome = .failure((error as? CalendarError) ?? .badEvent("its details were not valid"))
+            }
+        }
+        switch outcome {
+        case .success(let draft):
+            do {
+                try write(.toolResult(id: requestID, callID: callID, ok: true, results: [], error: ""))
+            } catch {
+                request.continuation.yield(.eventRefused("the preview could not be passed on"))
+                return
+            }
+            request.continuation.yield(.eventProposed(draft))
+        case .failure(let error):
+            let why = error.localizedDescription
+            try? write(.toolResult(id: requestID, callID: callID, ok: false, results: [], error: why))
+            request.continuation.yield(.eventRefused(why))
         }
     }
 

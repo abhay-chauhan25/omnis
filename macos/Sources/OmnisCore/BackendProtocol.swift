@@ -10,7 +10,7 @@ public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
     case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [],
              cloud: CloudPermission = CloudPermission(), attachments: [Attachment] = [],
-             personal: Bool = false, calendar: Bool = false)
+             personal: Bool = false, calendar: Bool = false, calendarWrite: Bool = false)
     case cancel(id: String)
     /// Sent once after hello. Hands the Claude key to the backend in memory;
     /// an empty key means Claude stays off.
@@ -79,7 +79,7 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route, let web, let history, let cloud, let attachments, let personal, let calendar):
+        case .ask(let id, let text, let route, let web, let history, let cloud, let attachments, let personal, let calendar, let calendarWrite):
             object = [
                 "type": "ask", "id": id, "text": text, "route": route, "web": web,
                 "history": history.map { turn -> [String: Any] in
@@ -91,6 +91,7 @@ public enum ProtocolCodec {
                 "attachments": attachments.map(Self.encode),
                 "personal": personal,
                 "calendar": calendar,
+                "calendar_write": calendarWrite,
             ]
         case .toolResult(let id, let callID, let ok, let results, let error, let content):
             object = [
@@ -175,7 +176,7 @@ public enum ProtocolCodec {
             // Only short text values are kept from the arguments.
             var arguments: [String: String] = [:]
             for (key, value) in (object["arguments"] as? [String: Any]) ?? [:] {
-                if let text = value as? String, key.count <= 40 { arguments[key] = String(text.prefix(100)) }
+                if let text = value as? String, key.count <= 40 { arguments[key] = String(text.prefix(200)) }
             }
             return .toolRequest(id: try string("id"), callID: try string("call_id"),
                                 tool: try string("tool"), query: String(try string("query").prefix(400)),

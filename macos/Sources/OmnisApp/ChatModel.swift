@@ -40,11 +40,13 @@ final class ChatModel: ObservableObject {
     private let audit: AuditLog
     private let ledger: UsageLedger
     private let performer: LaunchPerforming
+    private let calendarWriter: (any CalendarWriting)?
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
-    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger) {
+    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil) {
         self.backend = backend
+        self.calendarWriter = calendarWriter
         self.audit = audit
         self.ledger = ledger
         self.performer = SystemLaunchPerformer(onLateFailure: { url, status in
@@ -299,7 +301,8 @@ final class ChatModel: ObservableObject {
         askTask = Task { [weak self] in
             do {
                 for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
-                                                   attachments: attachments, personal: personal, calendar: true) {
+                                                   attachments: attachments, personal: personal, calendar: true,
+                                                   calendarWrite: self?.calendarWriter != nil) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -328,6 +331,20 @@ final class ChatModel: ObservableObject {
                     case .calendarFailed(let why):
                         self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarProblem = why }
                         audit.record(action: "calendar_read", outcome: "error", detail: why)
+                    case .eventProposed(let draft):
+                        // Shown as a preview only. Saving happens in `confirm`,
+                        // which nothing but the user's click calls.
+                        let proposal = EventProposal(draft: draft)
+                        self.conversation.add(proposal, to: answerID)
+                        // Follow-ups such as "make it 2pm" must reach the local
+                        // model, which is the one that can prepare events.
+                        self.conversation.keepLocal()
+                        audit.record(action: "calendar_propose", outcome: "ok")
+                        self.announce("Event ready to check")
+                        self.fillCalendarName(for: proposal.id)
+                    case .eventRefused(let why):
+                        self.conversation.update(answerID) { $0.proposalProblem = why }
+                        audit.record(action: "calendar_propose", outcome: "error", detail: why)
                     case .usage(let model, let inputTokens, let outputTokens, let costUSD):
                         // Recorded turn by turn, so a stopped, failed or fallen-back
                         // answer still counts towards the month.
@@ -364,6 +381,46 @@ final class ChatModel: ObservableObject {
         askTask = nil
         conversation.update(last.id) { $0.state = .stopped; $0.searching = false; $0.readingCalendar = false }
         audit.record(action: "ask", outcome: "stopped")
+    }
+
+    // MARK: Calendar events
+
+    /// Adds a previewed event to the calendar. Called only by the user's
+    /// click on the preview. It works once per preview, and only while that
+    /// preview is still waiting.
+    func confirm(_ proposalID: UUID) {
+        guard let calendarWriter, let proposal = conversation.proposal(proposalID), proposal.state == .waiting else { return }
+        conversation.updateProposal(proposalID) { $0.state = .saving }
+        let audit = self.audit
+        Task { [weak self] in
+            do {
+                let name = try await calendarWriter.create(proposal.draft)
+                // The outcome only. The event's title, time and place are not logged.
+                audit.record(action: "calendar_create", outcome: "ok")
+                self?.conversation.updateProposal(proposalID) { $0.state = .added(calendar: name) }
+                self?.announce("Added to your calendar")
+            } catch {
+                audit.record(action: "calendar_create", outcome: "error", detail: error.localizedDescription)
+                self?.conversation.updateProposal(proposalID) { $0.state = .failed(error.localizedDescription) }
+                self?.announce("Could not add the event")
+            }
+        }
+    }
+
+    /// The user chose not to add a previewed event.
+    func decline(_ proposalID: UUID) {
+        guard conversation.proposal(proposalID)?.state == .waiting else { return }
+        conversation.updateProposal(proposalID) { $0.state = .declined }
+        audit.record(action: "calendar_create", outcome: "declined")
+    }
+
+    /// Looks up which calendar the event would go into, to show on the preview.
+    private func fillCalendarName(for proposalID: UUID) {
+        guard let calendarWriter else { return }
+        Task { [weak self] in
+            guard let name = try? await calendarWriter.defaultCalendarName() else { return }
+            self?.conversation.updateProposal(proposalID) { $0.calendarName = name }
+        }
     }
 
     /// Opens a search source in the browser. Only ordinary web pages, and

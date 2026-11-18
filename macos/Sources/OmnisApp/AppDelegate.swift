@@ -23,10 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The calendar is read by the app through EventKit. macOS asks for
         // permission the first time a question needs it.
+        let calendar = EventKitCalendar()
         backend = AppEnvironment.backendConfig().map {
-            BackendService(config: $0, webSearch: web?.search, calendar: EventKitCalendar())
+            BackendService(config: $0, webSearch: web?.search, calendar: calendar)
         }
-        let model = ChatModel(backend: backend, audit: audit, ledger: ledger)
+        // Adding an event goes through the chat model, on the user's click.
+        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar)
         chat = ChatWindowController(model: model)
 
         buildMainMenu()

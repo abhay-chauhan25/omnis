@@ -598,6 +598,118 @@ class CalendarTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tool_names(self.chats()[0]), ["calendar_events"])   # no web tool at all
 
 
+def event_call(**arguments):
+    return {"id": "e1", "function": {"name": "calendar_create_event", "arguments": arguments}}
+
+
+SHOWN = {"ok": True, "error": "", "results": [], "content": ""}
+WRITE = {"calendar": True, "calendar_write": True}
+
+
+class CreateEventTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.fake = await FakeOllama().start()
+        self.engine = LocalEngine(OllamaClient(port=self.fake.port), search_timeout=0.3)
+
+    async def asyncTearDown(self):
+        await self.fake.stop()
+
+    def chats(self):
+        return [body for _, path, body in self.fake.requests if path == "/api/chat"]
+
+    def tool_names(self, body):
+        return [tool["function"]["name"] for tool in body.get("tools", [])]
+
+    async def test_an_event_is_only_proposed_to_the_app_and_the_model_is_told_it_is_not_saved(self):
+        self.fake.tool_calls = [event_call(title="Lunch  with Sam", start="2026-11-18T13:00", location="Cafe Rio")]
+        text, info, requests = await run_tools(self.engine, "add lunch with Sam tomorrow at 1",
+                                               {"calendar_create_event": SHOWN}, options=WRITE)
+        self.assertEqual(requests, [("calendar_create_event", "", {
+            "title": "Lunch with Sam", "start": "2026-11-18T13:00", "end": "2026-11-18T14:00",
+            "all_day": "false", "location": "Cafe Rio"})])
+        first, second = self.chats()
+        self.assertIn("calendar_create_event", self.tool_names(first))
+        system = first["messages"][0]["content"]
+        self.assertIn("only their click saves it", system)
+        self.assertNotIn("You can only read the calendar", system)
+        tool = second["messages"][-1]
+        self.assertEqual(tool["tool_name"], "calendar_create_event")
+        self.assertIn("It has NOT been added", tool["content"])
+        self.assertEqual(text, "Paris is the capital.")
+
+    async def test_without_write_the_tool_is_not_offered_and_the_model_is_told_it_is_read_only(self):
+        self.fake.tool_calls = [event_call(title="Lunch", start="2026-11-18T13:00")]
+        _, _, requests = await run_tools(self.engine, "add lunch", {"calendar_create_event": SHOWN},
+                                         options={"calendar": True})
+        self.assertEqual(requests, [])
+        self.assertNotIn("calendar_create_event", self.tool_names(self.chats()[0]))
+        self.assertIn("You can only read the calendar", self.chats()[0]["messages"][0]["content"])
+
+    async def test_drafts_are_checked_and_tidied(self):
+        from omnis_backend.engine import _event_draft
+        def draft(**arguments):
+            return _event_draft(arguments)[0]
+        self.assertEqual(draft(title="X", start="2026-11-18 09:30", end="2026-11-18T10:00"),
+                         {"title": "X", "start": "2026-11-18T09:30", "end": "2026-11-18T10:00", "all_day": "false", "location": ""})
+        # A zone the model added is dropped: the time is the user's local time.
+        self.assertEqual(draft(title="X", start="2026-11-18T09:30:00Z")["start"], "2026-11-18T09:30")
+        self.assertEqual(draft(title="X", start="2026-11-18T09:30+05:00")["end"], "2026-11-18T10:30")
+        # All day: by flag or by a date with no time.
+        self.assertEqual(draft(title="Trip", start="2026-11-18", end="2026-11-20"),
+                         {"title": "Trip", "start": "2026-11-18", "end": "2026-11-20", "all_day": "true", "location": ""})
+        self.assertEqual(draft(title="Day off", start="2026-11-18T00:00", all_day=True)["end"], "2026-11-18")
+        # An end before the start: one hour, with a note.
+        arguments, note = _event_draft({"title": "X", "start": "2026-11-18T09:00", "end": "2026-11-18T08:00"})
+        self.assertEqual(arguments["end"], "2026-11-18T10:00")
+        self.assertIn("one hour was used", note)
+        self.assertIn("end was not valid", _event_draft({"title": "X", "start": "2026-11-18T09:00", "end": "later"})[1])
+        # Refused outright, each with a reason for the model.
+        for bad in ({"title": "", "start": "2026-11-18T09:00"}, {"title": "X", "start": "tomorrow at 9"},
+                    {"title": "X"}, {"title": "X", "start": "1999-01-01T09:00"},
+                    {"title": "X", "start": "2026-11-18", "end": "2027-11-18"},
+                    {"title": "X", "start": "2026-11-18T09:00", "end": "2027-01-18T09:00"}):
+            arguments, note = _event_draft(bad)
+            self.assertIsNone(arguments, bad)
+            self.assertIn("was not prepared", note)
+        self.assertIsNone(_event_draft("nonsense")[0])
+        self.assertEqual(len(draft(title="t" * 500, start="2026-11-18T09:00", location="l" * 500)["title"]), 160)
+
+    async def test_a_bad_draft_is_explained_and_never_reaches_the_app(self):
+        self.fake.tool_calls = [event_call(title="Lunch", start="tomorrow at one"),
+                                event_call(title="Lunch", start="2026-11-18T13:00")]
+        _, _, requests = await run_tools(self.engine, "add lunch tomorrow at 1", {"calendar_create_event": SHOWN},
+                                         options=WRITE)
+        self.assertEqual(len(requests), 1)
+        self.assertIn("the start was not a valid date and time", self.chats()[1]["messages"][-1]["content"])
+
+    async def test_several_events_in_one_reply_are_each_proposed_up_to_the_limit(self):
+        self.fake.tool_calls = [[event_call(title=f"E{n}", start=f"2026-11-{10 + n}T09:00") for n in range(7)]]
+        _, _, requests = await run_tools(self.engine, "add these", {"calendar_create_event": SHOWN}, options=WRITE)
+        self.assertEqual([r[2]["title"] for r in requests], ["E0", "E1", "E2", "E3", "E4"])
+        results = [m for m in self.chats()[1]["messages"] if m.get("role") == "tool"]
+        self.assertEqual(len(results), 7)                       # every request gets a reply
+        self.assertIn("Too many events", results[-1]["content"])
+        self.assertNotIn("calendar_create_event", self.tool_names(self.chats()[1]))
+
+    async def test_a_preview_that_cannot_be_shown_is_reported_as_nothing_added(self):
+        self.fake.tool_calls = [event_call(title="Lunch", start="2026-11-18T13:00")]
+        refused = {"ok": False, "error": "the calendar is not available", "results": [], "content": ""}
+        await run_tools(self.engine, "add lunch", {"calendar_create_event": refused}, options=WRITE)
+        self.assertIn("could not be prepared: the calendar is not available. Nothing was added",
+                      self.chats()[1]["messages"][-1]["content"])
+        self.fake.requests.clear()
+        self.fake.tool_calls = [event_call(title="Lunch", start="2026-11-18T13:00")]
+        await asyncio.wait_for(run_tools(self.engine, "add lunch", {"calendar_create_event": None}, options=WRITE), 5)
+        self.assertIn("could not be shown in time", self.chats()[1]["messages"][-1]["content"])
+
+    async def test_reading_comes_before_proposing_when_both_are_asked_for(self):
+        self.fake.tool_calls = [[event_call(title="Lunch", start="2026-11-18T13:00"), calendar_call("2026-11-18")],
+                                event_call(title="Lunch", start="2026-11-18T13:00")]
+        _, _, requests = await run_tools(self.engine, "if I am free at 1 tomorrow add lunch",
+                                         {"calendar_events": EVENTS, "calendar_create_event": SHOWN}, options=WRITE)
+        self.assertEqual([r[0] for r in requests], ["calendar_events", "calendar_create_event"])
+
+
 class ClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_this_machine_is_allowed(self):
         for host in ("example.com", "192.168.1.5", "0.0.0.0", ""):

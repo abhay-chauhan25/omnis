@@ -45,6 +45,15 @@ async def mock_answer(
         yield request
         outcome = await request.future
         reply = f"Calendar ok={outcome.get('ok')} error={outcome.get('error')} content={outcome.get('content')}"
+    elif stripped.lower().startswith("event:"):
+        # Test aid: propose "event: TITLE | START | END".
+        parts = [part.strip() for part in stripped[6:].split("|")] + ["", ""]
+        arguments = {"title": parts[0], "start": parts[1], "end": parts[2],
+                     "all_day": "true" if len(parts[1]) == 10 else "false", "location": ""}
+        request = ToolRequest("calendar_create_event", "", asyncio.get_running_loop().create_future(), arguments)
+        yield request
+        outcome = await request.future
+        reply = f"Event ok={outcome.get('ok')} error={outcome.get('error')}"
     elif stripped.lower() == "attachments?":
         # Test aid: report what files the app sent along, without echoing their content.
         now = attachments or []

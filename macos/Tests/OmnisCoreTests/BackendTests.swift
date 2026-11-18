@@ -88,6 +88,8 @@ import Testing
         let calendarAsk = try json(.ask(id: "q", text: "t", personal: true, calendar: true))
         #expect(calendarAsk["personal"] as? Bool == true)
         #expect(calendarAsk["calendar"] as? Bool == true)
+        #expect(calendarAsk["calendar_write"] as? Bool == false)
+        #expect(try json(.ask(id: "q", text: "t", calendarWrite: true))["calendar_write"] as? Bool == true)
         #expect(ask["personal"] as? Bool == false)
         #expect(ask["calendar"] as? Bool == false)
         let calendarResult = try json(.toolResult(id: "q", callID: "c", ok: true, results: [], error: "", content: "Wed 18 Nov: Standup"))
@@ -316,6 +318,91 @@ import Testing
         #expect(run.events.prefix(2) == [.readingCalendar, .calendarRead(summary: "18 Nov to 19 Nov", events: 1)])
         #expect(run.text.hasPrefix("Calendar ok=True error= content="))
         #expect(run.text.contains("Standup (Work)"))
+        backend.stop()
+    }
+
+    // The mock backend proposes an event when a question starts with "event:".
+
+    @Test func aProposedEventIsCheckedAndHandedOverAsAPreviewOnly() async throws {
+        let stub = StubCalendar()
+        let backend = calendarService(stub)
+        let run = try await trace(backend.ask("event: Lunch with Sam | 2026-11-18T13:00 | 2026-11-18T14:00",
+                                              calendar: true, calendarWrite: true))
+        let expected = try EventDraft.parse(["title": "Lunch with Sam", "start": "2026-11-18T13:00",
+                                             "end": "2026-11-18T14:00", "all_day": "false"])
+        #expect(run.events.first == .eventProposed(expected))
+        #expect(run.text == "Event ok=True error=")
+        #expect(stub.ranges.isEmpty)        // proposing reads nothing
+        backend.stop()
+    }
+
+    @Test func anEventIsRefusedUnlessTheAppOfferedThatAndItsDetailsAreValid() async throws {
+        let backend = calendarService(StubCalendar())
+        let notOffered = try await trace(backend.ask("event: Lunch | 2026-11-18T13:00 | 2026-11-18T14:00", calendar: true))
+        #expect(notOffered.events.first == .eventRefused("the event could not be prepared: adding events is not available"))
+        #expect(notOffered.text.hasPrefix("Event ok=False"))
+
+        let bad = try await trace(backend.ask("event: Lunch | tomorrow | later", calendar: true, calendarWrite: true))
+        #expect(bad.events.first == .eventRefused("the event could not be prepared: its date or time was not valid"))
+        let backwards = try await trace(backend.ask("event: Lunch | 2026-11-18T13:00 | 2026-11-18T12:00",
+                                                    calendar: true, calendarWrite: true))
+        #expect(backwards.events.first == .eventRefused("the event could not be prepared: it ends before it starts"))
+        backend.stop()
+    }
+
+    /// Real model: it must prepare the right event and must not claim it was added.
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter liveEvent
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveEventRequestBecomesTheRightPreview() async throws {
+        let ollama = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+        let backend = BackendService(config: config, webSearch: StubSearch(), calendar: StubCalendar())
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
+
+        func drafts(_ run: (text: String, events: [AnswerEvent])) -> [EventDraft] {
+            run.events.compactMap { if case .eventProposed(let draft) = $0 { return draft } else { return nil } }
+        }
+
+        let run = try await trace(backend.ask("Add lunch with Sam tomorrow at 1pm at Cafe Rio",
+                                              personal: true, calendar: true, calendarWrite: true))
+        print("LIVE_EVENT timed: \(drafts(run)) answer: \(run.text)")
+        #expect(drafts(run).count == 1)
+        if let draft = drafts(run).first {
+            #expect(draft.start == tomorrow.addingTimeInterval(13 * 3600))
+            #expect(draft.end == tomorrow.addingTimeInterval(14 * 3600))
+            #expect(!draft.allDay)
+            #expect(draft.title.localizedCaseInsensitiveContains("lunch"))
+            #expect(draft.location?.localizedCaseInsensitiveContains("Cafe Rio") == true)
+        }
+        // It must not say the event is on the calendar already.
+        #expect(!run.text.localizedCaseInsensitiveContains("has been added"))
+        #expect(!run.text.localizedCaseInsensitiveContains("I've added"))
+        #expect(!run.text.localizedCaseInsensitiveContains("I have added"))
+
+        let ranged = try await trace(backend.ask("Put a dentist appointment on my calendar for tomorrow from 9:30 to 10:15 in the morning",
+                                                 personal: true, calendar: true, calendarWrite: true))
+        print("LIVE_EVENT range: \(drafts(ranged)) answer: \(ranged.text)")
+        #expect(drafts(ranged).first?.start == tomorrow.addingTimeInterval(9.5 * 3600))
+        #expect(drafts(ranged).first?.end == tomorrow.addingTimeInterval(10.25 * 3600))
+
+        let allDay = try await trace(backend.ask("Create an all-day event called Mum's birthday tomorrow",
+                                                 personal: true, calendar: true, calendarWrite: true))
+        print("LIVE_EVENT all day: \(drafts(allDay)) answer: \(allDay.text)")
+        #expect(drafts(allDay).first?.allDay == true)
+        #expect(drafts(allDay).first?.start == tomorrow)
+
+        // No day or time given: it should ask, not invent one.
+        let vague = try await trace(backend.ask("Add a meeting with Priya to my calendar",
+                                                personal: true, calendar: true, calendarWrite: true))
+        print("LIVE_EVENT vague: \(drafts(vague)) answer: \(vague.text)")
+        #expect(drafts(vague).isEmpty)
+
+        // An ordinary question prepares nothing.
+        let other = try await trace(backend.ask("What is the capital of France?", calendar: true, calendarWrite: true))
+        #expect(drafts(other).isEmpty)
         backend.stop()
     }
 
@@ -600,7 +687,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .eventProposed, .eventRefused: break
             }
         }
         return (text, model, chunks)
@@ -809,7 +896,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .eventProposed, .eventRefused: break
             }
         }
         #expect(text.contains("Paris"))

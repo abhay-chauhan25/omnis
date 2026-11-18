@@ -89,7 +89,7 @@ struct ChatView: View {
                         emptyState
                     }
                     ForEach(model.conversation.messages) { message in
-                        MessageView(message: message, open: model.open)
+                        MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline)
                     }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -261,6 +261,8 @@ struct ChatView: View {
 private struct MessageView: View {
     let message: ChatMessage
     let open: (SearchResult) -> Void
+    let confirm: (UUID) -> Void
+    let decline: (UUID) -> Void
 
     var body: some View {
         switch message.role {
@@ -298,6 +300,15 @@ private struct MessageView: View {
             if case .failed(let reason) = message.state {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            ForEach(message.proposals) { proposal in
+                EventCard(proposal: proposal, confirm: { confirm(proposal.id) }, decline: { decline(proposal.id) })
+            }
+            if let problem = message.proposalProblem {
+                Label(problem.prefix(1).uppercased() + problem.dropFirst(), systemImage: "calendar.badge.exclamationmark")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
@@ -377,6 +388,89 @@ private struct MessageView: View {
                 .help(source.url.absoluteString)
                 .accessibilityLabel("Source \(index + 1): \(source.title), \(source.host). Opens in your browser.")
             }
+        }
+    }
+}
+
+/// A new event, shown for the user to check. Nothing is on the calendar
+/// until "Add to Calendar" is clicked.
+private struct EventCard: View {
+    let proposal: EventProposal
+    let confirm: () -> Void
+    let decline: () -> Void
+
+    private var isLive: Bool { proposal.state == .waiting || proposal.state == .saving }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "calendar.badge.plus")
+                    .font(.system(size: 18))
+                    .foregroundStyle(isLive ? Color.accentColor : Color.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(proposal.draft.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(2)
+                    Text(proposal.draft.when())
+                        .font(.system(size: 13))
+                    if let place = proposal.draft.location {
+                        Label(place, systemImage: "mappin.and.ellipse")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if isLive {
+                        Text("Calendar: \(proposal.calendarName ?? "your default calendar")")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if proposal.draft.start < Date() {
+                            Label("This time is in the past", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            footer
+        }
+        .padding(12)
+        .frame(maxWidth: 420, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("New event: \(proposal.draft.title), \(proposal.draft.when())")
+    }
+
+    @ViewBuilder private var footer: some View {
+        switch proposal.state {
+        case .waiting:
+            HStack(spacing: 8) {
+                Text("Not added yet").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Button("Don't Add", action: decline)
+                Button("Add to Calendar", action: confirm)
+                    .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        case .saving:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Adding").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        case .added(let calendar):
+            Label("Added to \(calendar)", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12)).foregroundStyle(.green)
+        case .declined:
+            Text("Not added").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .replaced:
+            Text("Not added. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .failed(let why):
+            Label("Could not add it: \(why)", systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
 }

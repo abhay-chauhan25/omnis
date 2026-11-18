@@ -21,7 +21,8 @@ App to service:
                          {"kind": "text", "name": "...", "text": "..."}], files the user
          attached. A history entry from the user may carry "attachments" too.
          "personal": true marks the question as touching personal data, and
-         "calendar": true says the app will read the calendar if asked.)
+         "calendar": true says the app will read the calendar if asked, and
+         "calendar_write": true that it can show the user a new event to confirm.)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -33,6 +34,10 @@ Service to app:
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "web_search", "query": "..."}
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "calendar_events", "query": "",
      "arguments": {"start": "2026-11-18", "end": "2026-11-18"}}
+    {"type": "tool_request", "id": "...", "call_id": "...", "tool": "calendar_create_event", "query": "",
+     "arguments": {"title": "Lunch", "start": "2026-11-18T13:00", "end": "2026-11-18T14:00",
+                   "all_day": "false", "location": "Cafe Rio"}}
+    (The app only shows this to the user. Nothing is saved unless the user confirms.)
     {"type": "usage", "id": "...", "model": "...", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
         (after every Claude turn, so cost is recorded even if the answer does not finish)
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
@@ -130,7 +135,8 @@ def decode_client(line: bytes) -> dict[str, Any]:
         "history": _decode_history(obj.get("history", []), request_id),
         "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
         "attachments": _decode_attachments(obj.get("attachments", []), request_id),
-        "options": {"personal": _flag(obj, "personal", request_id), "calendar": _flag(obj, "calendar", request_id)},
+        "options": {"personal": _flag(obj, "personal", request_id), "calendar": _flag(obj, "calendar", request_id),
+                    "calendar_write": _flag(obj, "calendar_write", request_id)},
     }
 
 

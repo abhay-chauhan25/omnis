@@ -15,6 +15,34 @@ public struct ChatTurn: Equatable, Sendable {
     }
 }
 
+/// A new calendar event shown to the user for confirmation.
+public struct EventProposal: Equatable, Identifiable, Sendable {
+    public enum State: Equatable, Sendable {
+        /// Shown, and waiting for the user to add it or not.
+        case waiting
+        case saving
+        case added(calendar: String)
+        /// The user chose not to add it.
+        case declined
+        /// A later answer proposed something else before this was confirmed.
+        case replaced
+        case failed(String)
+    }
+
+    public let id: UUID
+    public let draft: EventDraft
+    public var state: State
+    /// The calendar it would go into, once known.
+    public var calendarName: String?
+
+    public init(id: UUID = UUID(), draft: EventDraft, state: State = .waiting, calendarName: String? = nil) {
+        self.id = id
+        self.draft = draft
+        self.state = state
+        self.calendarName = calendarName
+    }
+}
+
 /// One message shown in the chat window.
 public struct ChatMessage: Equatable, Identifiable, Sendable {
     public enum Role: Sendable { case user, assistant }
@@ -45,6 +73,10 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var calendarNotes: [String] = []
     /// Why the calendar could not be read, if a read failed.
     public var calendarProblem: String?
+    /// New events proposed in this answer, each waiting for the user's decision.
+    public var proposals: [EventProposal] = []
+    /// Why an event could not be prepared, if one failed.
+    public var proposalProblem: String?
     /// The "which model answered" line.
     public var sourceLine: String?
     /// Files the user attached to this message.
@@ -110,6 +142,49 @@ public struct Conversation: Equatable, Sendable {
         change(&messages[index])
     }
 
+    /// Adds a proposed event to an answer. Proposals still waiting under
+    /// earlier answers are withdrawn: the new one is taken to replace them,
+    /// so "make it 2pm instead" cannot leave two live previews.
+    public mutating func add(_ proposal: EventProposal, to answerID: UUID) {
+        guard let target = messages.firstIndex(where: { $0.id == answerID }) else { return }
+        for index in messages.indices where index != target {
+            for position in messages[index].proposals.indices where messages[index].proposals[position].state == .waiting {
+                messages[index].proposals[position].state = .replaced
+            }
+        }
+        messages[target].proposals.append(proposal)
+    }
+
+    public func proposal(_ id: UUID) -> EventProposal? {
+        messages.lazy.flatMap(\.proposals).first { $0.id == id }
+    }
+
+    /// Changes one proposal in place. Does nothing if it is no longer there.
+    public mutating func updateProposal(_ id: UUID, _ change: (inout EventProposal) -> Void) {
+        for index in messages.indices {
+            if let position = messages[index].proposals.firstIndex(where: { $0.id == id }) {
+                change(&messages[index].proposals[position])
+                return
+            }
+        }
+    }
+
+    /// What became of the proposals in an answer, for the model to read in
+    /// later turns, so it knows what was and was not added.
+    static func proposalNotes(_ proposals: [EventProposal]) -> String {
+        proposals.map { proposal in
+            let outcome: String
+            switch proposal.state {
+            case .waiting, .saving: outcome = "preview shown, not yet confirmed by the user, NOT on the calendar"
+            case .added: outcome = "the user confirmed it and it was added to the calendar"
+            case .declined: outcome = "the user chose not to add it"
+            case .replaced: outcome = "replaced by a later preview, not added"
+            case .failed: outcome = "it could not be added"
+            }
+            return "\n[Event preview: \(proposal.draft.line()). Status: \(outcome).]"
+        }.joined()
+    }
+
     public mutating func clear() {
         messages.removeAll()
         staysLocal = false
@@ -159,7 +234,7 @@ public struct Conversation: Equatable, Sendable {
                     && !answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 if usable {
                     turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
-                    turns.append(ChatTurn(role: .assistant, content: answer.text))
+                    turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)))
                 }
                 index += 2
             } else {
