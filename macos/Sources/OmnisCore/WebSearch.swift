@@ -154,8 +154,9 @@ public struct SearXNGContainer: ContainerControlling {
         _ = await Self.run(docker, stopArguments)
     }
 
-    /// For use while the app is quitting, when nothing can be awaited.
-    public func stopNow() {
+    /// For use while the app is quitting, when nothing can be awaited. Gives
+    /// up after a few seconds so a stuck Docker cannot stop OMNIS from quitting.
+    public func stopNow(timeout: TimeInterval = 4) {
         guard FileManager.default.isExecutableFile(atPath: docker.path) else { return }
         let process = Process()
         process.executableURL = docker
@@ -163,8 +164,12 @@ public struct SearXNGContainer: ContainerControlling {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         guard (try? process.run()) != nil else { return }
-        process.waitUntilExit()
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+        }
     }
 
     /// Bumped whenever the settings below change, so an older file is replaced.
@@ -182,8 +187,12 @@ public struct SearXNGContainer: ContainerControlling {
     public static func writeSettingsIfNeeded(in directory: URL) throws {
         let fileManager = FileManager.default
         let file = directory.appendingPathComponent("settings.yml")
-        if let existing = try? String(contentsOf: file, encoding: .utf8), existing.contains(settingsMarker) {
-            return
+        if let existing = try? String(contentsOf: file, encoding: .utf8) {
+            if existing.contains(settingsMarker) { return }
+            // An older or hand-edited file is about to be replaced: keep a copy.
+            let backup = directory.appendingPathComponent("settings.yml.bak")
+            try? fileManager.removeItem(at: backup)
+            try? fileManager.copyItem(at: file, to: backup)
         }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o700])
@@ -271,21 +280,18 @@ public actor SearXNGSearch: WebSearching {
         guard !terms.isEmpty else { throw WebSearchError.failed("empty search") }
 
         if !(await isHealthy()) {
-            try await container.start()
+            // Set before starting, so quitting mid-start still stops the container.
             mayBeRunning = true
+            try await container.start()
             try await waitUntilHealthy()
         }
         mayBeRunning = true
         lastUse = Date()
         scheduleIdleStop()
 
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = "127.0.0.1"
-        components.port = port
-        components.path = "/search"
-        components.queryItems = [URLQueryItem(name: "q", value: terms), URLQueryItem(name: "format", value: "json")]
-        guard let url = components.url else { throw WebSearchError.failed("bad search address") }
+        guard let url = Self.searchURL(terms: terms, port: port) else {
+            throw WebSearchError.failed("bad search address")
+        }
 
         let data: Data
         let status: Int
@@ -298,6 +304,22 @@ public actor SearXNGSearch: WebSearching {
         let results = try SearXNGResults.parse(data)
         if results.isEmpty && SearXNGResults.enginesRefused(data) { throw WebSearchError.enginesRefusing }
         return results
+    }
+
+    /// The address of one search. Everything but the terms is fixed, and the
+    /// terms are encoded so no character in them can add a parameter or be
+    /// read as something else ("+" would otherwise arrive as a space).
+    static func searchURL(terms: String, port: Int) -> URL? {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        guard let encoded = terms.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = port
+        components.path = "/search"
+        components.percentEncodedQuery = "q=\(encoded)&format=json"
+        return components.url
     }
 
     public func shutdown() async {
@@ -347,9 +369,18 @@ public actor SearXNGSearch: WebSearching {
         configuration.timeoutIntervalForRequest = 20
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
-        let session = URLSession(configuration: configuration)
+        // Redirects are refused: a reply may not send the request anywhere else.
+        let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let (data, response) = try await session.data(from: url)
         return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+}
+
+/// Refuses every HTTP redirect.
+private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        nil
     }
 }

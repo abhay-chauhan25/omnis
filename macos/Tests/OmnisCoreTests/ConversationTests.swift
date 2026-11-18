@@ -49,6 +49,35 @@ import Testing
         }
     }
 
+    @Test func aLongChatSendsOnlyTheMostRecentWholeExchanges() {
+        var chat = Conversation()
+        for index in 0..<40 {
+            let id = chat.begin(question: "q\(index)")
+            chat.update(id) { $0.text = "a\(index)"; $0.state = .done }
+        }
+        let history = chat.history()
+        #expect(history.count == Conversation.maxHistoryMessages)
+        #expect(history.first == ChatTurn(role: .user, content: "q28"))
+        #expect(history.last == ChatTurn(role: .assistant, content: "a39"))
+
+        // Size is limited too, and an exchange is kept whole or not at all.
+        var big = Conversation()
+        for index in 0..<6 {
+            let id = big.begin(question: "question \(index)")
+            big.update(id) { $0.text = String(repeating: "x", count: 5_000); $0.state = .done }
+        }
+        let trimmed = big.history()
+        #expect(trimmed.count == 4)
+        #expect(trimmed.first?.content == "question 4")
+        #expect(trimmed.map(\.content.count).reduce(0, +) <= Conversation.maxHistoryCharacters)
+
+        // One exchange too big to send leaves nothing, never half an exchange.
+        var huge = Conversation()
+        let id = huge.begin(question: String(repeating: "y", count: 30_000))
+        huge.update(id) { $0.text = "short"; $0.state = .done }
+        #expect(huge.history().isEmpty)
+    }
+
     @Test func aNewChatForgetsEverythingAndLateUpdatesAreIgnored() {
         var chat = Conversation()
         let id = chat.begin(question: "private thing")

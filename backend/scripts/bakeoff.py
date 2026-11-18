@@ -109,9 +109,10 @@ async def answer(client, model, question, web, think, today):
         text += turn["text"]
         if turn["first_visible"] is not None and first_visible is None:
             first_visible = time.monotonic() - started - turn["seconds"] + turn["first_visible"]
-        query = _search_query(turn["calls"]) if tools else None
-        if query is None:
+        found = _search_query(turn["calls"]) if tools else None
+        if found is None:
             break
+        query = found[0]
         searches += 1
         queries.append(query)
         outcome = await asyncio.to_thread(web_search, query)

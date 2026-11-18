@@ -34,6 +34,9 @@ public struct ParsedQuery: Equatable, Sendable {
 public enum QueryParser {
     static let verbs: Set<String> = ["open", "launch", "start", "run"]
     static let articles: Set<String> = ["the", "my"]
+    /// Words people put around a request that say nothing about the target.
+    static let politeLead: Set<String> = ["please", "can", "could", "would", "you", "hey", "omnis", "just"]
+    static let politeTail: Set<String> = ["please", "now", "thanks"]
     static let appWords: Set<String> = ["app", "application"]
     static let projectWords: Set<String> = ["project", "repo", "folder"]
     static let editorPhrases: [[String]] = [
@@ -58,8 +61,17 @@ public enum QueryParser {
             }
         }
 
+        // "can you open safari", "open safari please", "open up safari".
+        if let verbAt = tokens.firstIndex(where: { verbs.contains($0) }), verbAt > 0, verbAt < tokens.count - 1,
+           tokens[..<verbAt].allSatisfy({ politeLead.contains($0) }) {
+            tokens.removeFirst(verbAt)
+        }
+        while tokens.count > 2, let last = tokens.last, politeTail.contains(last) {
+            tokens.removeLast()
+        }
         if tokens.count > 1, let first = tokens.first, verbs.contains(first) {
             tokens.removeFirst()
+            if tokens.count > 1, tokens.first == "up" { tokens.removeFirst() }
         }
         if tokens.count > 1, let first = tokens.first, articles.contains(first) {
             tokens.removeFirst()
@@ -179,7 +191,11 @@ public struct LaunchSuggestion: Equatable, Sendable {
             .prefix(limit)
         guard let top = matches.first else { return .none }
         let tokens = TextNormalizer.normalize(trimmed).split(separator: " ")
-        let startsWithVerb = tokens.count > 1 && QueryParser.verbs.contains(String(tokens[0]))
+        let words = tokens.map(String.init)
+        let verbAt = words.firstIndex(where: { QueryParser.verbs.contains($0) })
+        let startsWithVerb = verbAt.map { index in
+            index < words.count - 1 && words[..<index].allSatisfy { QueryParser.politeLead.contains($0) }
+        } ?? false
         return LaunchSuggestion(
             entries: matches.map(\.entry),
             preselect: startsWithVerb || top.score >= Matcher.exact

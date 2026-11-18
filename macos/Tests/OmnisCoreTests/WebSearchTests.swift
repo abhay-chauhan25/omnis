@@ -129,6 +129,10 @@ let twoGood: [[String: Any]] = [
         try SearXNGContainer.writeSettingsIfNeeded(in: directory)
         #expect(try String(contentsOf: file, encoding: .utf8).contains("- name: bing"))
 
+        // The file it replaced is kept beside it.
+        #expect(try String(contentsOf: directory.appendingPathComponent("settings.yml.bak"), encoding: .utf8)
+            == "# old\nuse_default_settings: true\n")
+
         // Each install gets its own secret.
         let other = scratch.url.appendingPathComponent("other")
         try SearXNGContainer.writeSettingsIfNeeded(in: other)
@@ -197,6 +201,37 @@ let twoGood: [[String: Any]] = [
         let items = URLComponents(url: searchURL, resolvingAgainstBaseURL: false)?.queryItems
         #expect(items == [URLQueryItem(name: "q", value: "claude max plan"), URLQueryItem(name: "format", value: "json")])
         #expect(urls.all.allSatisfy { $0.host == "127.0.0.1" })
+    }
+
+    @Test func everyCharacterInASearchIsSentAsTyped() throws {
+        func terms(_ text: String) throws -> String? {
+            let url = try #require(SearXNGSearch.searchURL(terms: text, port: 18888))
+            #expect(url.host == "127.0.0.1")
+            #expect(url.port == 18888)
+            #expect(url.path == "/search")
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(items.map(\.name) == ["q", "format"])     // nothing can add a parameter
+            #expect(items.last?.value == "json")
+            return items.first?.value
+        }
+        // "+" used to arrive as a space, so "C++" searched for "C".
+        #expect(try terms("C++ 1+1") == "C++ 1+1")
+        #expect(SearXNGSearch.searchURL(terms: "C++", port: 18888)?.absoluteString.contains("C%2B%2B") == true)
+        for tricky in ["a&format=html&b=c", "x#fragment", "50% off; now", "caf\u{00E9} \u{1F600}", "q=1?y=2", "//evil.example/@x"] {
+            #expect(try terms(tricky) == tricky)
+        }
+    }
+
+    @Test func quittingWhileTheContainerIsStartingStillStopsIt() async {
+        let container = FakeContainer()
+        container.becomesHealthy = false
+        let search = SearXNGSearch(container: container, readyTimeout: 3, fetch: fetcher(container))
+        let attempt = Task { try? await search.search("x") }
+        #expect(await waitUntil { container.starts == 1 })
+        await search.shutdown()
+        #expect(container.stops == 1)
+        attempt.cancel()
+        _ = await attempt.value
     }
 
     @Test func anAlreadyRunningServiceIsNotStartedAgain() async throws {

@@ -99,9 +99,13 @@ class FakeOllama:
         body = self.requests[-1][2] or {}
         if body.get("tools") and self.tool_calls:
             call = self.tool_calls.pop(0)
-            if not isinstance(call, dict):
-                call = {"id": "call_1", "function": {"index": 0, "name": "web_search", "arguments": {"query": call}}}
-            await self._chunk(writer, {"message": {"role": "assistant", "content": "", "tool_calls": [call]}, "done": False})
+            if isinstance(call, list):
+                calls = call  # several requests in one reply
+            elif isinstance(call, dict):
+                calls = [call]
+            else:
+                calls = [{"id": "call_1", "function": {"index": 0, "name": "web_search", "arguments": {"query": call}}}]
+            await self._chunk(writer, {"message": {"role": "assistant", "content": "", "tool_calls": calls}, "done": False})
             await self._chunk(writer, {"message": {"role": "assistant", "content": ""}, "done": True,
                                        "prompt_eval_count": 5, "eval_count": 7})
             writer.write(b"0\r\n\r\n")

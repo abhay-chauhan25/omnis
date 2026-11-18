@@ -30,6 +30,8 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var state: State
     /// True while a web search for this answer is running.
     public var searching = false
+    /// What was searched for, as the model worded it.
+    public var searchQueries: [String] = []
     /// The pages the model was given, numbered as it cites them.
     public var sources: [SearchResult] = []
     /// Why a web search could not be done, if one failed.
@@ -75,12 +77,32 @@ public struct Conversation: Equatable, Sendable {
         messages.removeAll()
     }
 
+    /// The most history sent with one question, matching what the backend accepts.
+    public static let maxHistoryMessages = 24
+    public static let maxHistoryCharacters = 12_000
+
     /// The earlier turns to send with the next question, oldest first.
     ///
     /// Only finished exchanges are included: a failed or empty answer, and the
     /// question that led to it, are left out so the model is not shown its
-    /// own errors as if they were things it said.
+    /// own errors as if they were things it said. Only the most recent
+    /// exchanges that fit the limits are kept, whole.
     public func history() -> [ChatTurn] {
+        let all = allFinishedTurns()
+        var kept: [ChatTurn] = []
+        var characters = 0
+        var index = all.count
+        while index >= 2 {
+            let question = all[index - 2], answer = all[index - 1]
+            characters += question.content.count + answer.content.count
+            if kept.count + 2 > Self.maxHistoryMessages || characters > Self.maxHistoryCharacters { break }
+            kept.insert(contentsOf: [question, answer], at: 0)
+            index -= 2
+        }
+        return kept
+    }
+
+    private func allFinishedTurns() -> [ChatTurn] {
         var turns: [ChatTurn] = []
         var index = 0
         while index + 1 < messages.count {

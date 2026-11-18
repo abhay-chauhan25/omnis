@@ -267,6 +267,22 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("did not work: Docker is not running", content)
         self.assertIn("could not check the web", content)
 
+    async def test_only_searches_that_worked_are_counted(self):
+        self.fake.tool_calls = ["one", "two"]
+        failed = {"ok": False, "results": [], "error": "Docker is not running"}
+        _, info, queries = await run_with_search(self.engine, "news", reply=failed)
+        self.assertEqual(len(queries), 2)   # it tried twice, the limit
+        self.assertEqual(info.searches, 0)  # and neither counts as having searched
+
+    async def test_the_result_is_attached_to_the_search_request_not_to_another_one(self):
+        bogus = {"id": "b", "function": {"name": "run_shell", "arguments": {"command": "ls"}}}
+        real = {"id": "r", "function": {"name": "web_search", "arguments": {"query": "real one"}}}
+        self.fake.tool_calls = [[bogus, real]]
+        _, _, queries = await run_with_search(self.engine, "x")
+        self.assertEqual(queries, [("web_search", "real one")])
+        echoed = self.chats()[-1]["messages"][-2]["tool_calls"]
+        self.assertEqual(echoed, [real])
+
     async def test_no_results_counts_as_a_failed_search(self):
         self.fake.tool_calls = ["anything"]
         await run_with_search(self.engine, "news", reply={"ok": True, "results": [], "error": ""})

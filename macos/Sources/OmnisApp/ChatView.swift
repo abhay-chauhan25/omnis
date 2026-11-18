@@ -262,7 +262,9 @@ private struct MessageView: View {
         case .streaming:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(message.searching ? "Searching the web" : message.text.isEmpty ? "Thinking" : "Answering")
+                Text(message.searching ? "Searching the web for \u{201C}\(message.searchQueries.last ?? "")\u{201D}"
+                     : message.text.isEmpty ? "Thinking" : "Answering")
+                    .lineLimit(1)
             }
             .font(.system(size: 12))
             .foregroundStyle(.secondary)
@@ -282,6 +284,11 @@ private struct MessageView: View {
     private var sources: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Sources").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            if !message.searchQueries.isEmpty {
+                // Shown so you can always see what was sent to the search engines.
+                Text("Searched for: " + message.searchQueries.joined(separator: "; "))
+                    .font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(2)
+            }
             ForEach(Array(message.sources.enumerated()), id: \.element.id) { index, source in
                 Button {
                     open(source)

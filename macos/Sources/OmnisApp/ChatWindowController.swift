@@ -63,6 +63,10 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         model.prepareForOpen()
+        // If the screen it was on has gone (a monitor unplugged), bring it back into view.
+        if !Self.isReachable(panel.frame) {
+            panel.setFrame(Self.centredFrame(size: panel.frame.size), display: false)
+        }
         if !panel.isVisible {
             let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             panel.alphaValue = reduceMotion ? 1 : 0
@@ -100,20 +104,30 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     private static func startingFrame() -> NSRect {
         if let saved = UserDefaults.standard.string(forKey: frameKey) {
             let frame = NSRectFromString(saved)
-            let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersection(frame).width >= 120
-                && $0.visibleFrame.intersection(frame).height >= 120 }
-            if frame.width >= minimumSize.width, frame.height >= minimumSize.height, onScreen {
+            if frame.width >= minimumSize.width, frame.height >= minimumSize.height, isReachable(frame) {
                 return frame
             }
         }
+        return centredFrame(size: defaultSize)
+    }
+
+    /// True if enough of the window is on a connected screen to grab and use.
+    private static func isReachable(_ frame: NSRect) -> Bool {
+        NSScreen.screens.contains {
+            let overlap = $0.visibleFrame.intersection(frame)
+            return overlap.width >= 120 && overlap.height >= 120
+        }
+    }
+
+    private static func centredFrame(size: NSSize) -> NSRect {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens.first
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         return NSRect(
-            x: (visible.midX - defaultSize.width / 2).rounded(),
-            y: (visible.midY - defaultSize.height / 2).rounded(),
-            width: defaultSize.width,
-            height: defaultSize.height
+            x: (visible.midX - size.width / 2).rounded(),
+            y: (visible.midY - size.height / 2).rounded(),
+            width: size.width,
+            height: size.height
         )
     }
 

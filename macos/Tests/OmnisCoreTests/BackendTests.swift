@@ -216,6 +216,33 @@ import Testing
         backend.stop()
     }
 
+    /// The search outlasts the app's deadline. The model must be told it
+    /// failed, and the late results must never be shown as sources.
+    @Test func aSearchThatOutlastsTheDeadlineShowsNoSources() async throws {
+        let stub = StubSearch()
+        stub.delay = 1.5
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMNIS_MOCK_DELAY_MS"] = "1"
+        var config = BackendConfig(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0"],
+            workingDirectory: Self.backendDirectory, environment: environment
+        )
+        config.searchDeadline = 0.3
+        let backend = BackendService(config: config, webSearch: stub)
+        let run = try await trace(backend.ask("search: slow thing"))
+        #expect(run.events.contains(.searchFailed("the search took too long")))
+        #expect(!run.events.contains { if case .sources = $0 { return true } else { return false } })
+        #expect(run.text.contains("ok=False"))
+
+        // Wait past the slow search finishing: still nothing appears for the old request.
+        try await Task.sleep(nanoseconds: 1_600_000_000)
+        stub.delay = 0
+        let next = try await trace(backend.ask("search: quick thing"))
+        #expect(next.events.contains(.sources(stub.results)))
+        backend.stop()
+    }
+
     @Test func cancellingDuringASearchLeavesTheServiceUsable() async throws {
         let stub = StubSearch()
         stub.delay = 2

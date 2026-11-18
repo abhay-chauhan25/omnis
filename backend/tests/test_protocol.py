@@ -34,7 +34,13 @@ class DecodeClientTests(unittest.TestCase):
         self.assertEqual(len(kept), protocol.MAX_HISTORY_MESSAGES)
         self.assertEqual(kept[-1]["content"], "m99")
 
-        big = [{"role": "user", "content": "x" * 10_000} for _ in range(5)] + [{"role": "user", "content": "newest"}]
+        # A long question that no longer fits must not leave its answer behind on its own.
+        orphan = [{"role": "user", "content": "x" * 30_000}, {"role": "assistant", "content": "short reply"},
+                  {"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}]
+        kept = protocol.decode_client(ask(orphan))["history"]
+        self.assertEqual([t["content"] for t in kept], ["q2", "a2"])
+
+        big = [{"role": "user", "content": "x" * 5_000} for _ in range(5)] + [{"role": "user", "content": "newest"}]
         kept = protocol.decode_client(ask(big))["history"]
         self.assertEqual(kept[-1]["content"], "newest")
         self.assertLessEqual(sum(len(t["content"]) for t in kept), protocol.MAX_HISTORY_CHARS)

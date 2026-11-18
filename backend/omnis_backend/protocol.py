@@ -39,7 +39,7 @@ MAX_ID_CHARS = 128
 
 CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result")
 MAX_HISTORY_MESSAGES = 24
-MAX_HISTORY_CHARS = 24_000
+MAX_HISTORY_CHARS = 12_000
 MAX_RESULTS = 8
 MAX_RESULT_FIELD_CHARS = 2000
 ROUTES = ("auto", "local", "claude")
@@ -126,7 +126,11 @@ def _decode_history(raw: Any, request_id: str) -> list[dict[str, str]]:
         if total > MAX_HISTORY_CHARS:
             break
         kept.append(turn)
-    return list(reversed(kept))
+    kept.reverse()
+    # Never begin with an answer whose question was cut off.
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    return kept
 
 
 def _decode_tool_result(obj: dict[str, Any], request_id: str) -> dict[str, Any]:

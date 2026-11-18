@@ -82,7 +82,7 @@ class LocalEngine:
         first_piece_timeout: float = 180.0,
         next_piece_timeout: float = 60.0,
         whole_answer_timeout: float = 600.0,
-        search_timeout: float = 45.0,
+        search_timeout: float = 70.0,
         think: bool | None = False,
     ):
         self._client = client
@@ -140,11 +140,12 @@ class LocalEngine:
         messages.append({"role": "user", "content": text})
         info = AnswerInfo(model=model, route="local", reason=decision.reason)
         shown = False
+        attempts = 0  # searches asked for; info.searches counts only the ones that worked
 
         while True:
             # Offer the tool only while searches remain, so the last round
             # has to be an answer.
-            tools = [WEB_SEARCH_TOOL] if web and info.searches < MAX_SEARCHES else None
+            tools = [WEB_SEARCH_TOOL] if web and attempts < MAX_SEARCHES else None
             turn = _Turn()
             async for piece in self._one_turn(model, messages, tools, started, turn):
                 shown = True
@@ -153,18 +154,23 @@ class LocalEngine:
             info.output_tokens += turn.output_tokens
             info.load_ms = max(info.load_ms, turn.load_ms)
 
-            query = _search_query(turn.tool_calls) if tools else None
-            if query is None:
+            found = _search_query(turn.tool_calls) if tools else None
+            if found is None:
                 break
+            query, call = found
 
-            info.searches += 1
+            attempts += 1
             request = ToolRequest("web_search", query, asyncio.get_running_loop().create_future())
             yield request
             try:
                 outcome = await asyncio.wait_for(request.future, self._search_timeout)
             except asyncio.TimeoutError:
                 outcome = {"ok": False, "results": [], "error": "the search took too long"}
-            messages.append({"role": "assistant", "content": turn.text, "tool_calls": turn.tool_calls[:1]})
+            if outcome.get("ok") and outcome.get("results"):
+                info.searches += 1
+            # Echo back the call that was actually carried out, so the result
+            # is never attached to some other request the model made.
+            messages.append({"role": "assistant", "content": turn.text, "tool_calls": [call]})
             messages.append({"role": "tool", "tool_name": "web_search", "content": _results_for_model(query, outcome)})
 
         if not shown:
@@ -249,8 +255,8 @@ class _Turn:
         self.load_ms = 0
 
 
-def _search_query(tool_calls: list[dict]) -> str | None:
-    """The search terms from the first valid web_search request, if any.
+def _search_query(tool_calls: list[dict]) -> tuple[str, dict] | None:
+    """The search terms from the first valid web_search request, with that request, if any.
 
     Anything else the model asks for is ignored: web_search is the only tool
     that exists.
@@ -269,7 +275,7 @@ def _search_query(tool_calls: list[dict]) -> str | None:
             continue
         query = arguments.get("query")
         if isinstance(query, str) and query.strip():
-            return " ".join(query.split())[:MAX_QUERY_CHARS]
+            return " ".join(query.split())[:MAX_QUERY_CHARS], call
     return None
 
 

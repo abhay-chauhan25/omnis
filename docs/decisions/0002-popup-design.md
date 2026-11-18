@@ -1,6 +1,6 @@
 # ADR-0002 — Popup design
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by ADR-0010 (position, closing behaviour, one question at a time)
 - **Date:** 2026-11-16
 
 ## Problem / context

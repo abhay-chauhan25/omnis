@@ -9,6 +9,9 @@ public struct BackendConfig: Sendable {
     /// How long a freshly started backend has to say hello before it is
     /// treated as broken and stopped.
     public var helloTimeout: TimeInterval
+    /// How long a web search may take before the app gives up on it. Kept
+    /// shorter than the backend's own wait (70 s).
+    public var searchDeadline: TimeInterval = 50
 
     public init(
         executable: URL,
@@ -350,9 +353,18 @@ public final class BackendService: @unchecked Sendable {
     private func runTool(requestID: String, callID: String, tool: String, query: String) {
         guard let request = pending[requestID] else { return }  // cancelled meanwhile
 
+        var replied = false
         func reply(ok: Bool, results: [SearchResult], error: String) {
-            guard pending[requestID] != nil else { return }
-            try? write(.toolResult(id: requestID, callID: callID, ok: ok, results: results, error: error))
+            // One reply per request: whichever of the search and its deadline comes first.
+            guard !replied, pending[requestID] != nil else { return }
+            replied = true
+            do {
+                try write(.toolResult(id: requestID, callID: callID, ok: ok, results: results, error: error))
+            } catch {
+                // The backend never received it, so the model has no results: say so.
+                pending[requestID]?.continuation.yield(.searchFailed("the search results could not be passed on"))
+                return
+            }
             if ok {
                 pending[requestID]?.continuation.yield(.sources(results))
             } else {
@@ -377,6 +389,12 @@ public final class BackendService: @unchecked Sendable {
 
         request.continuation.yield(.searching(query: query))
         let current = generation
+        // The backend stops waiting after a while and answers without results.
+        // Give up first, so sources are never shown for an answer that did not use them.
+        queue.asyncAfter(deadline: .now() + config.searchDeadline) { [weak self] in
+            guard let self, current == self.generation else { return }
+            reply(ok: false, results: [], error: "the search took too long")
+        }
         Task { [weak self] in
             let outcome: Result<[SearchResult], Error>
             do {

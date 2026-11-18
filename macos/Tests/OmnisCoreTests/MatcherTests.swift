@@ -109,6 +109,21 @@ import Testing
         #expect(suggest("open Voyager project in vs code").entries.first?.id == "project:VoyagerAI")
     }
 
+    @Test func politeWordingStillCountsAsALaunch() {
+        for text in ["can you open safari", "please open safari", "open safari please", "open up safari",
+                     "could you please launch xcode", "hey omnis open ghidra now"] {
+            let suggestion = suggest(text)
+            #expect(suggestion.preselect, "\(text) should launch on Enter")
+            #expect(suggestion.entries.first != nil)
+        }
+        #expect(suggest("can you open safari").entries.first?.name == "Safari")
+        #expect(suggest("open up safari").entries.first?.name == "Safari")
+        // A request that asks for more than a launch is still a message.
+        for text in ["open xcode and explain swift", "can you explain safari", "please help"] {
+            #expect(!suggest(text).preselect, "\(text) should be sent as a message")
+        }
+    }
+
     @Test func partialNamesAreOfferedButEnterStillSendsAMessage() {
         for text in ["voy", "chat", "sys", "calc", "x"] {
             let suggestion = suggest(text)

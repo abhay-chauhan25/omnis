@@ -167,8 +167,8 @@ final class ChatModel: ObservableObject {
                     switch event {
                     case .chunk(let piece):
                         self.conversation.update(answerID) { $0.text += piece }
-                    case .searching:
-                        self.conversation.update(answerID) { $0.searching = true }
+                    case .searching(let query):
+                        self.conversation.update(answerID) { $0.searching = true; $0.searchQueries.append(query) }
                         self.announce("Searching the web")
                     case .sources(let results):
                         self.conversation.update(answerID) { $0.searching = false; $0.sources = results }
