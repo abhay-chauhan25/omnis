@@ -456,7 +456,7 @@ import Testing
         let backend = calendarService(stub)
         let denied = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
         #expect(denied.events.contains { event in
-            if case .calendarFailed(let why) = event { return why.contains("has not been allowed to read your calendar") }
+            if case .calendarFailed(let why) = event { return why.contains("has not been allowed to use your calendar") }
             return false
         })
         #expect(denied.text.contains("ok=False"))

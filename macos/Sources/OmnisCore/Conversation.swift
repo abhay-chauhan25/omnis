@@ -145,14 +145,58 @@ public struct Conversation: Equatable, Sendable {
     /// Adds a proposed event to an answer. Proposals still waiting under
     /// earlier answers are withdrawn: the new one is taken to replace them,
     /// so "make it 2pm instead" cannot leave two live previews.
+    ///
+    /// Within one answer, the same event twice is shown once, and there is a
+    /// limit on how many previews one answer can carry.
     public mutating func add(_ proposal: EventProposal, to answerID: UUID) {
         guard let target = messages.firstIndex(where: { $0.id == answerID }) else { return }
+        guard messages[target].proposals.count < Self.maxProposalsPerAnswer,
+              !messages[target].proposals.contains(where: { $0.draft == proposal.draft }) else { return }
+        offerEventsNext = true
         for index in messages.indices where index != target {
             for position in messages[index].proposals.indices where messages[index].proposals[position].state == .waiting {
                 messages[index].proposals[position].state = .replaced
             }
         }
         messages[target].proposals.append(proposal)
+    }
+
+    public static let maxProposalsPerAnswer = 5
+
+    /// True when the last exchange was about adding an event, so a follow-up
+    /// such as "make it 2pm" or "tomorrow at 3" may still prepare one.
+    private var offerEventsNext = false
+
+    /// Whether the model may prepare an event for this message. Only when the
+    /// user's own words ask for one, or follow straight on from asking, and
+    /// never on a message that carries a file.
+    public mutating func offersEvents(for text: String, hasAttachments: Bool) -> Bool {
+        let asks = PersonalIntent.asksToAddEvent(text)
+        let offered = !hasAttachments && (asks || offerEventsNext)
+        offerEventsNext = asks && !hasAttachments
+        return offered
+    }
+
+    /// The user clicked to add a preview. Returns the event to save and marks
+    /// it as being saved, or returns nil if it may not be saved: already
+    /// saved or being saved, declined, replaced, or gone. A failed save may
+    /// be tried again.
+    public mutating func beginSaving(_ id: UUID) -> EventDraft? {
+        guard let found = proposal(id) else { return nil }
+        switch found.state {
+        case .waiting, .failed:
+            updateProposal(id) { $0.state = .saving }
+            return found.draft
+        case .saving, .added, .declined, .replaced:
+            return nil
+        }
+    }
+
+    /// The user chose not to add a preview. True if that changed anything.
+    public mutating func declineProposal(_ id: UUID) -> Bool {
+        guard let state = proposal(id)?.state, state == .waiting || { if case .failed = state { return true } else { return false } }() else { return false }
+        updateProposal(id) { $0.state = .declined }
+        return true
     }
 
     public func proposal(_ id: UUID) -> EventProposal? {
@@ -175,7 +219,8 @@ public struct Conversation: Equatable, Sendable {
         proposals.map { proposal in
             let outcome: String
             switch proposal.state {
-            case .waiting, .saving: outcome = "preview shown, not yet confirmed by the user, NOT on the calendar"
+            case .waiting: outcome = "preview shown, not yet confirmed by the user, NOT on the calendar"
+            case .saving: outcome = "the user confirmed it and it is being added now"
             case .added: outcome = "the user confirmed it and it was added to the calendar"
             case .declined: outcome = "the user chose not to add it"
             case .replaced: outcome = "replaced by a later preview, not added"
@@ -189,6 +234,7 @@ public struct Conversation: Equatable, Sendable {
         messages.removeAll()
         staysLocal = false
         hasPersonalData = false
+        offerEventsNext = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.
@@ -231,7 +277,7 @@ public struct Conversation: Equatable, Sendable {
             let answer = messages[index + 1]
             if question.role == .user, answer.role == .assistant {
                 let usable = (answer.state == .done || answer.state == .stopped)
-                    && !answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && (!answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !answer.proposals.isEmpty)
                 if usable {
                     turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
                     turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)))

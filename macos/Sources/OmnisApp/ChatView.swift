@@ -411,14 +411,15 @@ private struct EventCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(proposal.draft.title)
                         .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(2)
+                        // Shown in full: what you see is exactly what is saved.
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(proposal.draft.when())
                         .font(.system(size: 13))
                     if let place = proposal.draft.location {
                         Label(place, systemImage: "mappin.and.ellipse")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if isLive {
                         Text("Calendar: \(proposal.calendarName ?? "your default calendar")")
@@ -469,8 +470,17 @@ private struct EventCard: View {
         case .replaced:
             Text("Not added. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
         case .failed(let why):
-            Label("Could not add it: \(why)", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Could not add it: \(why)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button("Don't Add", action: decline)
+                    Button("Try Again", action: confirm)
+                }
+                .controlSize(.small)
+            }
         }
     }
 }

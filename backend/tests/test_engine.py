@@ -552,10 +552,10 @@ class CalendarTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_calendar_that_cannot_be_read_is_reported_not_guessed(self):
         self.fake.tool_calls = [calendar_call("2026-11-18")]
-        denied = {"ok": False, "content": "", "results": [], "error": "OMNIS has not been allowed to read your calendar"}
+        denied = {"ok": False, "content": "", "results": [], "error": "OMNIS has not been allowed to use your calendar"}
         _, info, _ = await run_tools(self.engine, "what is on tomorrow", {"calendar_events": denied})
         content = self.chats()[1]["messages"][-1]["content"]
-        self.assertIn("could not be read: OMNIS has not been allowed to read your calendar", content)
+        self.assertIn("could not be read: OMNIS has not been allowed to use your calendar", content)
         self.assertIn("Do not guess", content)
         self.assertEqual(info.calendar_reads, 0)
 

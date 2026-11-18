@@ -30,7 +30,7 @@ public enum CalendarError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notAllowed:
-            return "OMNIS has not been allowed to read your calendar. You can allow it in System Settings, under Privacy & Security, Calendars"
+            return "OMNIS has not been allowed to use your calendar. You can allow it in System Settings, under Privacy & Security, Calendars"
         case .badDates: return "the dates asked for were not valid"
         case .unavailable(let why): return "the calendar could not be used (\(why))"
         case .badEvent(let why): return "the event could not be prepared: \(why)"
@@ -278,7 +278,8 @@ public enum CalendarFormatter {
 
     static func clean(_ text: String) -> String {
         // Invisible characters that reorder text on screen are removed too.
-        let flat = text.unicodeScalars.filter { !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value) }
+        let hidden: [ClosedRange<UInt32>] = [0x200B...0x200F, 0x202A...0x202E, 0x2060...0x2069, 0x061C...0x061C, 0xFEFF...0xFEFF]
+        let flat = text.unicodeScalars.filter { scalar in !hidden.contains { $0.contains(scalar.value) } }
             .map { scalar -> Character in
                 CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) ? " " : Character(scalar)
             }
@@ -307,14 +308,26 @@ public enum PersonalIntent {
             #"\bmy (day|week|weekend|morning|afternoon|evening|plans|flight|call|dentist|doctor|next)\b"#,
             #"\bwhen('s| is) my\b"#,
             #"\bwhat time is my\b"#,
-            // Asking for something to be put on the calendar.
-            #"\b(add|create|make|set up|new) (an? |the )?(calendar )?event\b"#,
-            #"\b(add|put|book|pencil|block)\b.{0,80}\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|at \d{1,2}(:\d\d)? ?(am|pm)?)\b"#,
         ].joined(separator: "|"),
         options: [.caseInsensitive]
     )
 
     public static func mentionsCalendar(_ text: String) -> Bool {
-        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil || asksToAddEvent(text)
+    }
+
+    private static let days = "today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week"
+    private static let months = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    private static let addPattern = try! NSRegularExpression(
+        pattern: #"\b(add|create|make|set up|put|book|pencil|block|schedule|plan|new)\b.{0,80}?\b(event|appointment|meeting|calendar|"#
+            + days + #"|at \d{1,2}|\d{1,2}(st|nd|rd|th)? (of )?("# + months + #")|("# + months + #")[a-z]* \d{1,2})"#,
+        options: [.caseInsensitive]
+    )
+
+    /// True when the user's own words ask for something to be put on the
+    /// calendar. The tool that prepares events is offered to the model only
+    /// then, so text in a file or a web page cannot bring up a preview.
+    public static func asksToAddEvent(_ text: String) -> Bool {
+        addPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }

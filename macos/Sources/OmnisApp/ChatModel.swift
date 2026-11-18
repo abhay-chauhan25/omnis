@@ -284,6 +284,9 @@ final class ChatModel: ObservableObject {
             route = "local"
         }
         let cloud = ledger.permission()
+        // The model may prepare an event only when your own message asks for one.
+        let offerEvents = calendarWriter != nil
+            && conversation.offersEvents(for: options.text, hasAttachments: !attachments.isEmpty)
 
         let history = conversation.history()
         let answerID = conversation.begin(question: text, attachments: attachments)
@@ -302,7 +305,7 @@ final class ChatModel: ObservableObject {
             do {
                 for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
                                                    attachments: attachments, personal: personal, calendar: true,
-                                                   calendarWrite: self?.calendarWriter != nil) {
+                                                   calendarWrite: offerEvents) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -389,12 +392,11 @@ final class ChatModel: ObservableObject {
     /// click on the preview. It works once per preview, and only while that
     /// preview is still waiting.
     func confirm(_ proposalID: UUID) {
-        guard let calendarWriter, let proposal = conversation.proposal(proposalID), proposal.state == .waiting else { return }
-        conversation.updateProposal(proposalID) { $0.state = .saving }
+        guard let calendarWriter, let draft = conversation.beginSaving(proposalID) else { return }
         let audit = self.audit
         Task { [weak self] in
             do {
-                let name = try await calendarWriter.create(proposal.draft)
+                let name = try await calendarWriter.create(draft)
                 // The outcome only. The event's title, time and place are not logged.
                 audit.record(action: "calendar_create", outcome: "ok")
                 self?.conversation.updateProposal(proposalID) { $0.state = .added(calendar: name) }
@@ -409,8 +411,7 @@ final class ChatModel: ObservableObject {
 
     /// The user chose not to add a previewed event.
     func decline(_ proposalID: UUID) {
-        guard conversation.proposal(proposalID)?.state == .waiting else { return }
-        conversation.updateProposal(proposalID) { $0.state = .declined }
+        guard conversation.declineProposal(proposalID) else { return }
         audit.record(action: "calendar_create", outcome: "declined")
     }
 

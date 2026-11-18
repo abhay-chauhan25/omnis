@@ -102,6 +102,7 @@ enum Zone {
         let text = CalendarFormatter.text(for: [event], calendar: Zone.newYork)
         #expect(!text.unicodeScalars.contains { (0x202A...0x202E).contains($0.value) || (0x2066...0x2069).contains($0.value) })
         #expect(text.hasSuffix("Paytnemyap now! (X)"))
+        #expect(CalendarFormatter.clean("a\u{200B}b\u{200F}c\u{FEFF}d\u{061C}e\u{2060}f") == "abcdef")
     }
 
     @Test func textWrittenByOthersIsFlattenedAndShortened() {
@@ -197,13 +198,14 @@ enum Zone {
     @Test func aNewerPreviewReplacesOnesStillWaitingUnderEarlierAnswers() {
         var chat = Conversation()
         let first = chat.begin(question: "add lunch at 1")
-        let old = EventProposal(draft: draft), added = EventProposal(draft: draft, state: .added(calendar: "Home"))
+        let other = EventDraft(title: "Dinner", start: draft.start, end: draft.end)
+        let old = EventProposal(draft: draft), added = EventProposal(draft: other, state: .added(calendar: "Home"))
         chat.add(old, to: first)
         chat.add(added, to: first)
         chat.update(first) { $0.text = "Ready."; $0.state = .done }
 
         let second = chat.begin(question: "make it 2")
-        let a = EventProposal(draft: draft), b = EventProposal(draft: draft)
+        let a = EventProposal(draft: draft), b = EventProposal(draft: other)
         chat.add(a, to: second)
         chat.add(b, to: second)      // two in the same answer do not replace each other
 
@@ -221,6 +223,74 @@ enum Zone {
         #expect(chat.proposal(a.id) == nil)
     }
 
+    @Test func onlyAWaitingOrFailedPreviewCanBeSavedAndOnlyOnce() {
+        var chat = Conversation()
+        let answer = chat.begin(question: "add lunch tomorrow at 1")
+        let proposal = EventProposal(draft: draft)
+        chat.add(proposal, to: answer)
+
+        do { let got = chat.beginSaving(proposal.id); #expect(got == draft) }
+        #expect(chat.proposal(proposal.id)?.state == .saving)
+        do { let got = chat.beginSaving(proposal.id); #expect(got == nil) }   // a second click does nothing
+        do { let got = chat.declineProposal(proposal.id); #expect(!got) }   // nor can it be declined mid-save
+
+        chat.updateProposal(proposal.id) { $0.state = .added(calendar: "Home") }
+        do { let got = chat.beginSaving(proposal.id); #expect(got == nil) }   // never saved twice
+
+        chat.updateProposal(proposal.id) { $0.state = .failed("no access") }
+        do { let got = chat.beginSaving(proposal.id); #expect(got == draft) }   // a failed save can be tried again
+        chat.updateProposal(proposal.id) { $0.state = .failed("no access") }
+        do { let got = chat.declineProposal(proposal.id); #expect(got) }
+
+        for state in [EventProposal.State.declined, .replaced] {
+            chat.updateProposal(proposal.id) { $0.state = state }
+            do { let got = chat.beginSaving(proposal.id); #expect(got == nil) }
+            do { let got = chat.declineProposal(proposal.id); #expect(!got) }
+        }
+        do { let got = chat.beginSaving(UUID()); #expect(got == nil) }
+    }
+
+    @Test func theSameEventTwiceInOneAnswerIsShownOnceAndAnswersHaveALimit() {
+        var chat = Conversation()
+        let answer = chat.begin(question: "add lunch tomorrow at 1")
+        chat.add(EventProposal(draft: draft), to: answer)
+        chat.add(EventProposal(draft: draft), to: answer)
+        #expect(chat.messages.last?.proposals.count == 1)
+        for index in 0..<10 {
+            chat.add(EventProposal(draft: EventDraft(title: "E\(index)", start: draft.start, end: draft.end)), to: answer)
+        }
+        #expect(chat.messages.last?.proposals.count == Conversation.maxProposalsPerAnswer)
+    }
+
+    @Test func eventsAreOfferedOnlyWhenTheUsersOwnWordsAskOrFollowOn() {
+        var chat = Conversation()
+        do { let got = chat.offersEvents(for: "summarise this", hasAttachments: false); #expect(!got) }
+        do { let got = chat.offersEvents(for: "what is the capital of France", hasAttachments: false); #expect(!got) }
+        // Asking, then answering the model's "what day and time?".
+        do { let got = chat.offersEvents(for: "add a meeting with Priya to my calendar", hasAttachments: false); #expect(got) }
+        do { let got = chat.offersEvents(for: "thursday at 3", hasAttachments: false); #expect(got) }
+        do { let got = chat.offersEvents(for: "thanks", hasAttachments: false); #expect(!got) }   // the follow-on lasts one message
+        // A preview keeps the next message open for "make it 2pm instead".
+        let answer = chat.begin(question: "add lunch tomorrow at 1")
+        chat.add(EventProposal(draft: draft), to: answer)
+        do { let got = chat.offersEvents(for: "make it 2pm instead", hasAttachments: false); #expect(got) }
+        // Never on a message that carries a file, whatever it says.
+        do { let got = chat.offersEvents(for: "add the meeting in this PDF to my calendar", hasAttachments: true); #expect(!got) }
+        do { let got = chat.offersEvents(for: "ok", hasAttachments: false); #expect(!got) }
+        chat.add(EventProposal(draft: EventDraft(title: "Other", start: draft.start, end: draft.end)), to: answer)
+        chat.clear()
+        do { let got = chat.offersEvents(for: "ok", hasAttachments: false); #expect(!got) }
+    }
+
+    @Test func aPreviewUnderAnAnswerWithNoWordsStillReachesLaterTurns() {
+        var chat = Conversation()
+        let answer = chat.begin(question: "add lunch tomorrow at 1")
+        chat.add(EventProposal(draft: draft), to: answer)
+        chat.update(answer) { $0.state = .done }
+        #expect(chat.history().count == 2)
+        #expect(chat.history().last?.content.contains("[Event preview: ") == true)
+    }
+
     @Test func laterTurnsTellTheModelWhatBecameOfEachPreview() {
         var chat = Conversation()
         let first = chat.begin(question: "add lunch at 1")
@@ -232,6 +302,8 @@ enum Zone {
 
         chat.updateProposal(proposal.id) { $0.state = .added(calendar: "Home") }
         #expect(chat.history().last?.content.contains("the user confirmed it and it was added to the calendar") == true)
+        chat.updateProposal(proposal.id) { $0.state = .saving }
+        #expect(chat.history().last?.content.contains("it is being added now") == true)
         chat.updateProposal(proposal.id) { $0.state = .declined }
         #expect(chat.history().last?.content.contains("the user chose not to add it") == true)
         // What is shown in the window is unchanged.
@@ -255,6 +327,21 @@ enum Zone {
                      "put gym on Friday at 6", "book the dentist for next week", "block two hours tomorrow for writing",
                      "add a call with Priya at 3:30pm", "set up a new event for the launch"] {
             #expect(PersonalIntent.mentionsCalendar(text), "\(text) should be kept on this Mac")
+        }
+    }
+
+    @Test func askingToAddAnEventIsRecognisedFromTheUsersWords() {
+        for text in ["add lunch with Sam tomorrow at 1pm", "create an event called Mum's birthday on 3 December",
+                     "put gym on Friday at 6", "book the dentist for next week", "schedule lunch at 1pm",
+                     "add dentist on 20 Nov", "add a meeting with Priya to my calendar", "set up a new event for the launch",
+                     "block two hours tomorrow for writing", "plan dinner on December 4"] {
+            #expect(PersonalIntent.asksToAddEvent(text), "\(text) asks for an event")
+            #expect(PersonalIntent.mentionsCalendar(text), "\(text) stays on this Mac")
+        }
+        for text in ["what's on my calendar tomorrow", "am I free at 3pm", "summarise this document",
+                     "who won the world cup", "what is 12 times 12", "explain event loops in JavaScript",
+                     "when is my next appointment"] {
+            #expect(!PersonalIntent.asksToAddEvent(text), "\(text) does not ask for an event")
         }
     }
 

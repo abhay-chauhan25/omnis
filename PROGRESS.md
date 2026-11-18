@@ -17,20 +17,23 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Claude lane | Built against a stand-in and reviewed 2026-11-17; review findings fixed, fixes not yet re-reviewed; never run live | ADR-0009 |
 | Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
 | Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
-| Calendar, creating events | Not started. Plan and approval first | — |
+| Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
+| Calendar, changing and deleting events | Not started. Plan and approval first | — |
 | Stage 2: main window | Not started. Waits for a design conversation | — |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 131. Swift: 156. Five more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 138. Swift: 171. Six more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
 
 - [ ] User's hands-on check of the chat window (look, feel, dragging, sources, launch strip).
 - [ ] User's test of calendar questions against the real calendar (needs the macOS permission prompt).
+- [ ] User's test of adding events, including the first real save and an all-day event.
+- [ ] User's feedback on the look of the event preview card.
 - [ ] Verify API credit in the Anthropic Console (expected around 2026-11-23).
 - [ ] Approval to install the `anthropic` package, then a first live Claude call.
 - [ ] A second review of the Claude lane fixes before going live.
@@ -46,6 +49,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 2. Whether OMNIS should ask "keep this local?" when typed text looks personal, or leave that to the Local control.
 3. Whether opening a source should be recorded in the audit log by site name, as it is now.
 4. Whether an answer given locally because Claude was unavailable should keep that chat local afterwards.
+
+5. Whether a new event preview should withdraw an unrelated one still waiting, as it does now.
 
 ## Approved decisions
 
@@ -66,6 +71,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | Nothing about the architecture is settled; better approaches are to be raised and discussed. | `CLAUDE.md` §0 rule 8 |
 | 2026-11-17 | Commit and push as work is completed, without waiting to be told. | — |
 | 2026-11-17 | Calendar through Apple's EventKit, read-only first, then creating events. | ADR-0011 |
+| 2026-11-17 | Events: create only; preview and a click every time; default calendar, shown on the preview. | `docs/stages/calendar-events.md` |
 
 ## Things worth knowing
 
@@ -86,4 +92,4 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Next step
 
-The user tests calendar questions with the real calendar. Then a plan for creating events, with a preview and confirmation each time.
+The user tests reading the calendar and adding events. Then the choice of what comes next: changing and deleting events, email, or the main window design conversation.
