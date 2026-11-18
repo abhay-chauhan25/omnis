@@ -229,9 +229,11 @@ final class ChatModel: ObservableObject {
 
         // A file is personal: it is read by the model on this Mac, the chat
         // stays here, and nothing from it is put into a web search.
-        if !attachments.isEmpty {
+        if !attachments.isEmpty || conversation.hasFiles {
             route = "local"
             web = false
+        }
+        if !attachments.isEmpty {
             let images = attachments.filter { $0.kind == .image }.count
             audit.record(action: "attach", outcome: "ok",
                          detail: "\(images) image, \(attachments.count - images) document")

@@ -193,6 +193,33 @@ enum Make {
         #expect(history[0].content == "what is this?")   // the words stay, the file does not
     }
 
+    @Test func aChatThatHasHadAFileStaysLocalAndOfflineEvenAfterTheFileLeavesTheHistory() {
+        var chat = Conversation()
+        #expect(!chat.hasFiles && !chat.staysLocal)
+        var id = chat.begin(question: "read this", attachments: [notes])
+        #expect(chat.hasFiles && chat.staysLocal)   // set at once, even before any answer
+        chat.update(id) { $0.text = "It says: body."; $0.state = .done }
+
+        // Enough later turns to push the file's turn out of what is sent along.
+        for index in 0..<15 {
+            id = chat.begin(question: "follow-up \(index)")
+            chat.update(id) { $0.text = "answer \(index)"; $0.state = .done }
+        }
+        #expect(chat.history().allSatisfy { $0.attachments.isEmpty })
+        #expect(chat.hasFiles && chat.staysLocal)   // the app still remembers
+
+        chat.clear()
+        #expect(!chat.hasFiles && !chat.staysLocal)
+    }
+
+    @Test func aFileOnAFailedQuestionStillMarksTheChat() {
+        var chat = Conversation()
+        let id = chat.begin(question: "read this", attachments: [notes])
+        chat.update(id) { $0.state = .failed("model stopped") }
+        #expect(chat.history().isEmpty)
+        #expect(chat.hasFiles && chat.staysLocal)
+    }
+
     @Test func aFileOnAFailedQuestionIsNotSentAgain() {
         var chat = Conversation()
         let id = chat.begin(question: "read this", attachments: [notes])

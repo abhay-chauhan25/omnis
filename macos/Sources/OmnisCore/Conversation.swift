@@ -60,6 +60,11 @@ public struct Conversation: Equatable, Sendable {
     /// then on the whole chat stays local, so a later question cannot carry
     /// those turns to Claude as history. A new chat clears it.
     public private(set) var staysLocal = false
+    /// True once a file has been attached in this chat. From then on nothing
+    /// in the chat is used for a web search, even after the file itself has
+    /// dropped out of the history that is sent along: the model's answers
+    /// about the file are still there. A new chat clears it.
+    public private(set) var hasFiles = false
 
     public init() {}
 
@@ -75,6 +80,10 @@ public struct Conversation: Equatable, Sendable {
     public mutating func begin(question: String, attachments: [Attachment] = []) -> UUID {
         var message = ChatMessage(role: .user, text: question)
         message.attachments = attachments
+        if !attachments.isEmpty {
+            hasFiles = true
+            staysLocal = true
+        }
         messages.append(message)
         let answer = ChatMessage(role: .assistant, text: "", state: .streaming)
         messages.append(answer)
@@ -91,6 +100,7 @@ public struct Conversation: Equatable, Sendable {
     public mutating func clear() {
         messages.removeAll()
         staysLocal = false
+        hasFiles = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.
