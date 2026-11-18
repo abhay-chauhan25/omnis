@@ -44,10 +44,14 @@ def worst_case_cost(model: str, input_characters: int, turns: int = 3) -> float:
     return cost_usd(model, input_tokens * turns, MAX_OUTPUT_TOKENS * turns)
 
 
-_ASKED_FOR_OPUS = re.compile(r"\b(use|ask|with|via|using)\s+(claude\s+)?opus\b", re.IGNORECASE)
+_ASKED_FOR_OPUS = re.compile(r"\bclaude\s+opus\b|\b(use|ask|with|via|using)\s+opus\b", re.IGNORECASE)
+# "Opus" is also an audio format; a question about that is not a request for the model.
+_OPUS_THE_CODEC = re.compile(r"\b(codec|audio|aac|mp3|ogg|bitrate|flac)\b", re.IGNORECASE)
+# Kept to wording that reliably means code or formal reasoning. Broad words
+# such as "architecture" or "proof" pulled in everyday questions.
 _HARD = re.compile(
-    r"\bleetcode\b|\balgorithm\b|\bdynamic programming\b|\btime complexity\b|\bprove\b|\bproof\b"
-    r"|\bdebug\b|\brefactor\b|\bstep[- ]by[- ]step\b|\barchitecture\b|\btrade-?offs?\b|```"
+    r"\bleetcode\b|\balgorithm\b|\bdynamic programming\b|\btime complexity\b|\bprove that\b"
+    r"|\bproof of correctness\b|\bdebug\b|\brefactor\b|\bstep[- ]by[- ]step\b|```"
     r"|\bwrite (a|an|some|the)?\s*(code|function|script|program|class|query)\b",
     re.IGNORECASE,
 )
@@ -56,7 +60,7 @@ LONG_REQUEST_WORDS = 300
 
 def choose_model(text: str) -> tuple[str, str]:
     """Pick the cheapest Claude model likely to do the job. Returns (model, why)."""
-    if _ASKED_FOR_OPUS.search(text):
+    if _ASKED_FOR_OPUS.search(text) and not _OPUS_THE_CODEC.search(text):
         return OPUS, "you asked for Opus"
     if _HARD.search(text):
         return SONNET, "it looks like coding or careful reasoning"
@@ -93,16 +97,22 @@ class ClaudeTurn:
 
 class ClaudeClient(Protocol):
     def turn(
-        self, model: str, system: str, messages: list[dict], tools: list[dict], effort: str
+        self, model: str, system: str, messages: list[dict], tools: list[dict], effort: str,
+        allow_tools: bool = True,
     ) -> AsyncIterator["str | ClaudeTurn"]:
-        """Yields pieces of text as they arrive, then one ClaudeTurn."""
+        """Yields pieces of text as they arrive, then one ClaudeTurn.
+
+        `tools` must be given on every turn of a conversation that has used a
+        tool, or the API rejects the request. `allow_tools=False` keeps the
+        definitions but tells Claude it may not call them, which is how a
+        final answer is forced after the last permitted search."""
         ...
 
 
 class AnthropicClaudeClient:
     """Talks to the real Claude API through Anthropic's official library."""
 
-    def __init__(self) -> None:
+    def __init__(self, api_key: str) -> None:
         try:
             import anthropic
         except ImportError:
@@ -110,10 +120,11 @@ class AnthropicClaudeClient:
                 "not_installed", "the Anthropic library is not installed"
             ) from None
         self._anthropic = anthropic
-        # Reads the key from the environment the app supplied. It is never logged.
-        self._client = anthropic.AsyncAnthropic(max_retries=1, timeout=120.0)
+        # The key is handed over by the app in memory. It is never read from
+        # the environment, written to disk, or logged.
+        self._client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=1, timeout=120.0)
 
-    async def turn(self, model, system, messages, tools, effort) -> AsyncIterator["str | ClaudeTurn"]:
+    async def turn(self, model, system, messages, tools, effort, allow_tools=True) -> AsyncIterator["str | ClaudeTurn"]:
         anthropic = self._anthropic
         request: dict[str, Any] = {
             "model": model,
@@ -124,6 +135,8 @@ class AnthropicClaudeClient:
         }
         if tools:
             request["tools"] = tools
+            if not allow_tools:
+                request["tool_choice"] = {"type": "none"}
         try:
             async with self._client.messages.stream(**request) as stream:
                 async for event in stream:
@@ -146,6 +159,9 @@ class AnthropicClaudeClient:
             raise ClaudeUnavailable("rejected", "Claude rejected the request") from None
         except anthropic.APIConnectionError:
             raise ClaudeUnavailable("network", "Claude could not be reached") from None
+        except TypeError:
+            # The installed library does not accept a setting used here.
+            raise ClaudeUnavailable("not_installed", "the Anthropic library is too old") from None
 
         turn = ClaudeTurn(
             content=final.content,
@@ -174,12 +190,24 @@ class MockClaudeClient:
         self.script = list(script) if script is not None else None
         self.calls: list[dict] = []
 
-    async def turn(self, model, system, messages, tools, effort) -> AsyncIterator["str | ClaudeTurn"]:
-        self.calls.append({"model": model, "system": system, "messages": messages, "tools": tools, "effort": effort})
+    async def turn(self, model, system, messages, tools, effort, allow_tools=True) -> AsyncIterator["str | ClaudeTurn"]:
+        self.calls.append({"model": model, "system": system, "messages": messages, "tools": tools,
+                           "effort": effort, "allow_tools": allow_tools})
+        # The real API rejects a request whose history uses a tool that the
+        # request does not define. Refuse it here too, so tests catch it.
+        uses_tools = any(
+            isinstance(m.get("content"), list)
+            and any(isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in m["content"])
+            for m in messages
+        )
+        if uses_tools and not tools:
+            raise ClaudeUnavailable("rejected", "the request used a tool it did not define")
         if self.script is not None:
             step = self.script.pop(0) if self.script else "No more scripted replies."
         else:
-            step = self._default(messages, tools)
+            step = self._default(messages, tools if allow_tools else [])
+        if isinstance(step, dict) and not (tools and allow_tools):
+            step = "I was not allowed to search, so this is a mock answer without one."
         if isinstance(step, Exception):
             raise step
 
@@ -212,16 +240,18 @@ class MockClaudeClient:
         return f"Mock Claude reply. No API call was made. You asked: {question}"
 
 
-def load_client() -> ClaudeClient | None:
-    """The client to use, or None when the Claude lane is off.
+def make_client(api_key: str | None) -> tuple[ClaudeClient | None, str]:
+    """The client to use, and when there is none, why not.
 
-    OMNIS_CLAUDE=mock gives the stand-in. Otherwise a key must be present.
+    The reason is empty when Claude was simply never set up, so that case
+    stays quiet. It is set when a key was supplied but cannot be used, so the
+    user is told why their answers are still local.
     """
     if os.environ.get("OMNIS_CLAUDE") == "mock":
-        return MockClaudeClient()
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return None
+        return MockClaudeClient(), ""
+    if not api_key:
+        return None, ""
     try:
-        return AnthropicClaudeClient()
-    except ClaudeUnavailable:
-        return None
+        return AnthropicClaudeClient(api_key), ""
+    except ClaudeUnavailable as error:
+        return None, error.message

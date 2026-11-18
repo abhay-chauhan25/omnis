@@ -78,11 +78,12 @@ cd macos && OMNIS_LIVE_TESTS=1 swift test --filter live     # real model, real s
 
 Verified:
 
-- 100 Python and 115 Swift tests.
+- 109 Python and 118 Swift tests.
 - Live runs with the real model: a plain answer, a web search answer with sources, a follow-up that needs the earlier turn.
 - The built app starting the search container, searching, and stopping it.
 - The empty chat window, by screenshot.
 - Independent review of the search, model switch and chat window: pass with warnings, findings fixed (see below).
+- Independent review of the Claude lane: acceptable while it runs against a stand-in, not yet a pass for live use. Its findings are fixed (see below) but the fixes have not been reviewed again.
 
 Not verified:
 
@@ -107,6 +108,28 @@ Not verified:
 | The window could be stranded off-screen after a monitor was unplugged | Fixed |
 | A redirect from the search service could send a query elsewhere | Fixed. Redirects are refused |
 | What was searched for was never shown | Changed. The search terms are shown while searching and under the sources |
+
+Claude lane review:
+
+| Finding | Action |
+|---|---|
+| After two searches, the follow-up request left out the tool definition, which the real service rejects | Fixed. The tool stays defined and Claude is told it may not call it again. The stand-in now rejects the bad shape too |
+| Cost was recorded only when an answer finished normally | Fixed. Cost is reported and recorded after every Claude turn, so a stopped, refused, failed or fallen-back answer still counts |
+| A request already billed could be sent again after a backend restart | Fixed. A billed request is never resent automatically |
+| Deleting or damaging the usage file reset the month's spending | Fixed. The total is kept in a second place and the larger figure is used. If the file cannot be written, Claude is not allowed |
+| The key was passed in the environment, where other programs of the same user can read it | Fixed. It is sent as a message over the pipe and held in memory. Nothing Anthropic-related is inherited from the environment |
+| With a key saved but the library missing, answers were local with no explanation | Fixed. The line under the answer says why |
+| An answer cut off at the length limit looked complete | Fixed. It says it was cut off |
+| Saving a new key deleted the old one first | Fixed. The old key survives a failed save, and the failure is shown |
+| Everyday questions containing "architecture" or "proof", or about the Opus audio format, chose a dearer model | Fixed |
+| "with Claude Code" was read as a request for Claude | Fixed |
+
+Open after the Claude lane review:
+
+- The real connection is still unrun. The library's handling of the effort setting, of replayed reasoning blocks, and of a low-credit error can only be confirmed by a live call.
+- The cost of a turn that is stopped mid-way is not known to OMNIS until the service reports it, which it does not for an interrupted stream. Such a turn is not counted.
+- Prices are built in and dated. They must be checked against the live list before going live.
+- An answer given locally because Claude was unavailable does not mark the chat as local. Its text can be sent to Claude as history later. This matches ADR-0009 (it was a public question), and it needs the user's confirmation.
 
 Left as they are, with reasons:
 

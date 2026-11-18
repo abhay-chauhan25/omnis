@@ -47,3 +47,15 @@ class ToolRequest:
     tool: str
     query: str
     future: "asyncio.Future[dict]"
+
+
+@dataclass
+class UsageEvent:
+    """What one Claude turn cost. Sent to the app as soon as the turn ends, so
+    spending is recorded even if the answer is then stopped, fails, or falls
+    back to the local model."""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float

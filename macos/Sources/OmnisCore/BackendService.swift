@@ -12,9 +12,11 @@ public struct BackendConfig: Sendable {
     /// How long a web search may take before the app gives up on it. Kept
     /// shorter than the backend's own wait (70 s).
     public var searchDeadline: TimeInterval = 50
-    /// Extra environment for the backend, read each time it starts. Used to
-    /// hand over the Claude key from the Keychain without storing it anywhere.
-    public var secrets: (@Sendable () -> [String: String])?
+    /// Supplies the Claude key each time the backend starts (from the
+    /// Keychain, in the app). It is sent to the backend as a message over the
+    /// pipe and held there in memory. It is never put in the environment,
+    /// where other programs could read it.
+    public var claudeKey: (@Sendable () -> String?)?
 
     public init(
         executable: URL,
@@ -73,6 +75,8 @@ public enum AnswerEvent: Equatable, Sendable {
     case sources([SearchResult])
     /// The search could not be done; the model was told so.
     case searchFailed(String)
+    /// One Claude turn was billed. Record it now: the answer may not finish.
+    case usage(model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     case finished(model: String?, details: AnswerDetails)
 }
 
@@ -230,12 +234,12 @@ public final class BackendService: @unchecked Sendable {
         child.executableURL = config.executable
         child.arguments = config.arguments
         child.currentDirectoryURL = config.workingDirectory
+        // Nothing Anthropic-related is inherited: not a stray key, and not a
+        // setting that could redirect requests or switch on logging.
         var environment = config.environment ?? ProcessInfo.processInfo.environment
-        // A key in the app's own environment is not passed on; only the Keychain supplies one.
-        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] where config.secrets != nil {
+        for name in environment.keys where name.hasPrefix("ANTHROPIC_") {
             environment.removeValue(forKey: name)
         }
-        for (name, value) in config.secrets?() ?? [:] { environment[name] = value }
         child.environment = environment
 
         let toChild = Pipe()
@@ -297,6 +301,9 @@ public final class BackendService: @unchecked Sendable {
         // so a failed write cannot leave them unowned.
         for id in resend { pending[id]?.sent = true }
         try write(.hello(protocolVersion: BackendProtocol.version))
+        if let key = config.claudeKey?(), !key.isEmpty {
+            try write(.configure(claudeKey: key))
+        }
         for id in resend {
             guard let request = pending[id] else { continue }
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
@@ -341,6 +348,13 @@ public final class BackendService: @unchecked Sendable {
             guard let request = pending.removeValue(forKey: id) else { return }
             request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }, details: details))
             request.continuation.finish()
+        case .usage(let id, let model, let inputTokens, let outputTokens, let costUSD):
+            guard pending[id] != nil else { return }
+            // Something was billed for this request, so it must not be sent
+            // again automatically if the backend then stops.
+            pending[id]?.receivedAny = true
+            pending[id]?.continuation.yield(.usage(model: model, inputTokens: inputTokens,
+                                                    outputTokens: outputTokens, costUSD: costUSD))
         case .toolRequest(let id, let callID, let tool, let query):
             runTool(requestID: id, callID: callID, tool: tool, query: query)
         case .error(let id, let code, let message):

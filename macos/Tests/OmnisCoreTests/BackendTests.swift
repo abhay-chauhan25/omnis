@@ -84,6 +84,10 @@ import Testing
         let sent = try #require((result["results"] as? [[String: String]])?.first)
         #expect(sent == ["title": "T", "url": "https://example.com/a?b=1", "snippet": "S"])
 
+        let configure = try json(.configure(claudeKey: "sk-test"))
+        #expect(configure["type"] as? String == "configure")
+        #expect(configure["claude_key"] as? String == "sk-test")
+
         let cancel = try json(.cancel(id: "q1"))
         #expect(cancel["type"] as? String == "cancel")
         #expect(cancel["id"] as? String == "q1")
@@ -115,6 +119,11 @@ import Testing
         #expect(try decode(#"{"type":"error","id":"q","code":"internal","message":"m"}"#)
             == .error(id: "q", code: "internal", message: "m"))
         #expect(try decode(#"{"type":"bye","reason":"idle"}"#) == .bye(reason: "idle"))
+        #expect(try decode(#"{"type":"usage","id":"q","model":"claude-haiku-5-5","input_tokens":900,"output_tokens":40,"cost_usd":0.00011}"#)
+            == .usage(id: "q", model: "claude-haiku-5-5", inputTokens: 900, outputTokens: 40, costUSD: 0.00011))
+        // Negative or absurd figures cannot reduce what is recorded.
+        #expect(try decode(#"{"type":"usage","id":"q","model":"m","input_tokens":-5,"output_tokens":3,"cost_usd":-2}"#)
+            == .usage(id: "q", model: "m", inputTokens: 0, outputTokens: 3, costUSD: 0))
         #expect(try decode(#"{"type":"tool_request","id":"q","call_id":"c","tool":"web_search","query":"max plan"}"#)
             == .toolRequest(id: "q", callID: "c", tool: "web_search", query: "max plan"))
     }
@@ -175,7 +184,7 @@ import Testing
     }
 
     /// The backend with a stand-in for Claude (no network, no key, no model).
-    func cloudService(secrets: (@Sendable () -> [String: String])? = nil) -> BackendService {
+    func cloudService() -> BackendService {
         var environment = ProcessInfo.processInfo.environment
         environment["OMNIS_CLAUDE"] = "mock"
         var config = BackendConfig(
@@ -183,7 +192,6 @@ import Testing
             arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0", "--engine", "local"],
             workingDirectory: Self.backendDirectory, environment: environment
         )
-        config.secrets = secrets
         return BackendService(config: config, webSearch: StubSearch())
     }
 
@@ -198,6 +206,12 @@ import Testing
         #expect(details.1.route == "cloud")
         #expect((details.1.costUSD ?? 0) > 0)
         #expect(details.1.fallback == nil)
+        // The cost also arrives as its own event, as soon as the turn is billed.
+        let billed = run.events.compactMap { event -> Double? in
+            if case .usage(let model, _, _, let cost) = event, model == "claude-haiku-5-5" { return cost } else { return nil }
+        }
+        #expect(billed.count == 1)
+        #expect(abs((billed.first ?? 0) - (details.1.costUSD ?? -1)) < 1e-6)
         backend.stop()
     }
 
@@ -221,37 +235,48 @@ import Testing
         backend.stop()
     }
 
-    /// The key reaches the backend only through `secrets` (the Keychain in the
-    /// app), never from the app's own environment.
-    @Test func theClaudeKeyComesOnlyFromTheSuppliedSecrets() async throws {
+    /// The key reaches the backend as a message over the pipe, never through
+    /// the environment, where other programs could read it.
+    @Test(.timeLimit(.minutes(1))) func theClaudeKeyIsHandedOverInAMessageNotTheEnvironment() async throws {
         let script = #"""
         echo '{"type":"hello","protocol":2,"service":"fake","version":"0"}'
+        got=none
         while read -r line; do
           case "$line" in
+            *'"type":"configure"'*)
+              case "$line" in *'from-the-keychain'*) got=key ;; *) got=other ;; esac ;;
             *'"type":"ask"'*)
               id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"key=${ANTHROPIC_API_KEY:-none} token=${ANTHROPIC_AUTH_TOKEN:-none}\"}"
+              leaked=$(env | grep -c '^ANTHROPIC_')
+              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"configure=$got anthropic_env_vars=$leaked\"}"
               echo "{\"type\":\"answer_done\",\"id\":\"$id\",\"model\":\"fake\",\"cancelled\":false}" ;;
           esac
         done
         """#
-        func backend(secrets: (@Sendable () -> [String: String])?) -> BackendService {
+        func backend(key: (@Sendable () -> String?)?) -> BackendService {
             var config = BackendConfig(
                 executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
                 workingDirectory: URL(fileURLWithPath: "/tmp"),
                 environment: ["PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": "from-the-app-environment",
-                              "ANTHROPIC_AUTH_TOKEN": "stray-token"]
+                              "ANTHROPIC_AUTH_TOKEN": "stray-token", "ANTHROPIC_BASE_URL": "https://elsewhere.example",
+                              "ANTHROPIC_LOG": "debug"]
             )
-            config.secrets = secrets
+            config.claudeKey = key
             return BackendService(config: config)
         }
-        let withKey = backend(secrets: { ["ANTHROPIC_API_KEY": "from-the-keychain"] })
-        #expect(try await trace(withKey.ask("x")).text == "key=from-the-keychain token=none")
+        let withKey = backend(key: { "from-the-keychain" })
+        #expect(try await trace(withKey.ask("x")).text == "configure=key anthropic_env_vars=0")
         withKey.stop()
 
-        let noKey = backend(secrets: { [:] })
-        #expect(try await trace(noKey.ask("x")).text == "key=none token=none")
+        // No key saved: no configure message, and still nothing inherited.
+        let noKey = backend(key: { nil })
+        #expect(try await trace(noKey.ask("x")).text == "configure=none anthropic_env_vars=0")
         noKey.stop()
+
+        // Even a setup with no key provider at all inherits nothing.
+        let bare = backend(key: nil)
+        #expect(try await trace(bare.ask("x")).text == "configure=none anthropic_env_vars=0")
+        bare.stop()
     }
 
     // The mock backend reports the history it was sent when asked "history?".
@@ -395,7 +420,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
-            case .searching, .sources, .searchFailed: break
+            case .searching, .sources, .searchFailed, .usage: break
             }
         }
         return (text, model, chunks)
@@ -604,7 +629,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
-            case .searching, .sources, .searchFailed: break
+            case .searching, .sources, .searchFailed, .usage: break
             }
         }
         #expect(text.contains("Paris"))

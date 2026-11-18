@@ -3,7 +3,7 @@ import unittest
 from omnis_backend import claude as lane
 from omnis_backend.claude import ClaudeUnavailable, MockClaudeClient
 from omnis_backend.engine import LocalEngine
-from omnis_backend.models import AnswerError, AnswerInfo, ToolRequest
+from omnis_backend.models import AnswerError, AnswerInfo, ToolRequest, UsageEvent
 from omnis_backend.ollama import OllamaClient
 
 from .fake_ollama import FakeOllama
@@ -13,10 +13,16 @@ GOOD = {"ok": True, "error": "", "results": [
 ALLOWED = {"allowed": True, "max_usd": 1.0, "reason": ""}
 
 
+USAGE: list[UsageEvent] = []  # the usage events of the most recent run()
+
+
 async def run(engine, text, route="auto", web=True, history=None, cloud=ALLOWED, reply=GOOD):
     out, info, queries = "", None, []
+    USAGE.clear()
     async for item in engine.answer(text, route, web, history, cloud):
-        if isinstance(item, ToolRequest):
+        if isinstance(item, UsageEvent):
+            USAGE.append(item)
+        elif isinstance(item, ToolRequest):
             queries.append(item.query)
             if reply is not None:
                 item.future.set_result(reply)
@@ -36,6 +42,11 @@ class ModelChoiceAndCostTests(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(lane.choose_model(text)[0], lane.SONNET)
         self.assertEqual(lane.choose_model("use opus to review my design")[0], lane.OPUS)
+        # Everyday questions that merely contain a loaded word stay on the cheapest model.
+        for text in ("should I use Opus or AAC for audio", "architecture of Notre Dame",
+                     "what counts as proof of address", "I need to prove my identity"):
+            with self.subTest(text=text):
+                self.assertEqual(lane.choose_model(text)[0], lane.HAIKU)
         self.assertEqual(lane.choose_model("ask Claude Opus about this")[0], lane.OPUS)
         self.assertTrue(all(lane.choose_model(t)[1] for t in ("hi", "debug this", "use opus")))
 
@@ -56,9 +67,15 @@ class ModelChoiceAndCostTests(unittest.TestCase):
         import os
         saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "OMNIS_CLAUDE")}
         try:
-            self.assertIsNone(lane.load_client())
+            # Never set up: no client, and nothing to tell the user.
+            self.assertEqual(lane.make_client(None), (None, ""))
+            self.assertEqual(lane.make_client(""), (None, ""))
+            # A key in the environment is not used: only one handed over by the app counts.
+            os.environ["ANTHROPIC_API_KEY"] = "from-the-environment"
+            self.assertEqual(lane.make_client(None), (None, ""))
+            os.environ.pop("ANTHROPIC_API_KEY")
             os.environ["OMNIS_CLAUDE"] = "mock"
-            self.assertIsInstance(lane.load_client(), MockClaudeClient)
+            self.assertIsInstance(lane.make_client(None)[0], MockClaudeClient)
         finally:
             for key, value in saved.items():
                 os.environ.pop(key, None)
@@ -124,7 +141,10 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
         engine = self.engine([{"search": "one"}, {"search": "two"}, "Done."])
         _, info, queries = await run(engine, "keep looking")
         self.assertEqual(queries, ["one", "two"])
-        self.assertEqual(self.claude.calls[2]["tools"], [])
+        # The tool stays defined (the API requires it once it has been used)
+        # but Claude is told it may not call it again.
+        self.assertEqual(self.claude.calls[2]["tools"][0]["name"], "web_search")
+        self.assertEqual([c["allow_tools"] for c in self.claude.calls], [True, True, False])
 
     async def test_history_goes_to_claude_in_order(self):
         engine = self.engine(["Verstappen."])
@@ -185,7 +205,7 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
         class HalfThenFail:
             calls = []
 
-            async def turn(self, model, system, messages, tools, effort):
+            async def turn(self, model, system, messages, tools, effort, allow_tools=True):
                 yield "Half an "
                 raise ClaudeUnavailable("network", "Claude could not be reached")
 
@@ -198,9 +218,76 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.code, "claude_failed")
         self.assertEqual(self.local_chats(), [])
 
+    async def test_every_turn_is_reported_as_it_is_billed(self):
+        engine = self.engine([{"search": "one"}, "Answer [1]."])
+        _, info, _ = await run(engine, "who won")
+        self.assertEqual(len(USAGE), 2)
+        self.assertTrue(all(u.model == lane.HAIKU and u.cost_usd > 0 for u in USAGE))
+        self.assertAlmostEqual(sum(u.cost_usd for u in USAGE), info.cost_usd, places=5)
+
+    async def test_a_turn_billed_before_a_failure_is_still_reported(self):
+        # Claude searches (billed), then fails; the local model answers.
+        engine = self.engine([{"search": "one"}, ClaudeUnavailable("network", "Claude could not be reached")])
+        text, info, _ = await run(engine, "who won")
+        self.assertEqual((info.route, text), ("local", "Paris is the capital."))
+        self.assertEqual(len(USAGE), 1)
+        self.assertGreater(USAGE[0].cost_usd, 0)
+
+    async def test_a_refused_request_is_still_reported_as_billed(self):
+        class Refuses:
+            async def turn(self, model, system, messages, tools, effort, allow_tools=True):
+                yield lane.ClaudeTurn(stop_reason="refusal", input_tokens=900, output_tokens=5)
+
+        engine = LocalEngine(OllamaClient(port=self.fake.port), claude=Refuses())
+        seen = []
+        with self.assertRaises(AnswerError):
+            async for item in engine.answer("q", "auto", True, [], ALLOWED):
+                seen.append(item)
+        self.assertEqual([type(i) for i in seen], [UsageEvent])
+        self.assertEqual(seen[0].input_tokens, 900)
+
+    async def test_an_answer_cut_off_at_the_limit_says_so(self):
+        class CutOff:
+            async def turn(self, model, system, messages, tools, effort, allow_tools=True):
+                yield "A long answer that"
+                yield lane.ClaudeTurn(text="A long answer that", stop_reason="max_tokens", input_tokens=5, output_tokens=4096)
+
+        engine = LocalEngine(OllamaClient(port=self.fake.port), claude=CutOff())
+        text, _, _ = await run(engine, "q")
+        self.assertTrue(text.startswith("A long answer that"))
+        self.assertIn("cut off at the length limit", text)
+
+    async def test_a_key_that_cannot_be_used_is_explained_not_ignored(self):
+        engine = LocalEngine(OllamaClient(port=self.fake.port))
+        engine._claude_missing = "the Anthropic library is not installed"
+        _, info, _ = await run(engine, "an ordinary question")
+        self.assertEqual(info.route, "local")
+        self.assertEqual(info.fallback, "Claude could not be used (the Anthropic library is not installed)")
+        # Choosing local is still quiet.
+        _, quiet, _ = await run(engine, "an ordinary question", route="local")
+        self.assertEqual(quiet.fallback, "")
+
+    async def test_the_key_arrives_by_configure_and_a_new_one_clears_the_rest(self):
+        import os
+        engine = LocalEngine(OllamaClient(port=self.fake.port))
+        engine.configure({})                       # no key: Claude stays off, quietly
+        self.assertIsNone(engine._claude)
+        self.assertEqual(engine._claude_missing, "")
+        engine._cloud_rest_until = 1e18            # pretend it is resting after a failure
+        saved = os.environ.pop("OMNIS_CLAUDE", None)
+        try:
+            engine.configure({"claude_key": "sk-test-not-a-real-key"})
+        finally:
+            if saved is not None:
+                os.environ["OMNIS_CLAUDE"] = saved
+        self.assertEqual(engine._cloud_rest_until, 0.0)
+        # The library is not installed here, so the key cannot be used, and that is recorded.
+        if engine._claude is None:
+            self.assertEqual(engine._claude_missing, "the Anthropic library is not installed")
+
     async def test_a_refusal_is_reported_as_one(self):
         class Refuses:
-            async def turn(self, model, system, messages, tools, effort):
+            async def turn(self, model, system, messages, tools, effort, allow_tools=True):
                 yield lane.ClaudeTurn(stop_reason="refusal", input_tokens=10)
 
         engine = LocalEngine(OllamaClient(port=self.fake.port), claude=Refuses())
@@ -210,7 +297,7 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_a_web_search_is_carried_out_and_every_request_gets_a_reply(self):
         class TwoRequests(MockClaudeClient):
-            async def turn(self, model, system, messages, tools, effort):
+            async def turn(self, model, system, messages, tools, effort, allow_tools=True):
                 self.calls.append({"messages": messages, "tools": tools})
                 if len(self.calls) == 1:
                     uses = [{"id": "a", "name": "run_shell", "input": {"command": "rm -rf ~"}},

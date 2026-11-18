@@ -7,7 +7,6 @@ import asyncio
 import signal
 import sys
 
-from . import claude as claude_lane
 from .engine import DEFAULT_MODEL, LocalEngine
 from .handlers import mock_answer
 from .ollama import DEFAULT_PORT, OllamaClient
@@ -35,12 +34,13 @@ async def _serve(args: argparse.Namespace) -> int:
             light_model=args.light_model,
             moderate_model=args.moderate_model,
             keep_alive_seconds=int(args.keep_alive_seconds),
-            # None unless the app supplied a Claude key: then everything is local.
-            claude=claude_lane.load_client(),
         )
+        # Claude stays off until the app hands over a key (or the test stand-in is asked for).
+        engine.configure({})
         handler = engine.answer
 
-    service = Service(reader, write, handler, idle_seconds=args.idle_seconds)
+    service = Service(reader, write, handler, idle_seconds=args.idle_seconds,
+                      on_configure=engine.configure if engine is not None else None)
     # The app stops this process with a terminate signal; finish cleanly so the
     # model server we started is stopped too.
     for sig in (signal.SIGTERM, signal.SIGINT):

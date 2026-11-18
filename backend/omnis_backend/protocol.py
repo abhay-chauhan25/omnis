@@ -7,6 +7,8 @@ App to service:
     {"type": "ask",    "id": "<request id>", "text": "<question>", "route": "auto"}
         ("route" is optional: "auto", "local" or "claude")
     {"type": "cancel", "id": "<request id>"}
+    {"type": "configure", "claude_key": "<key or empty>"}
+        (sent once after hello; the key is held in memory only)
     {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
      "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "..."}
         ("ask" may also carry "web": false to forbid web search for that question,
@@ -23,6 +25,8 @@ Service to app:
      "load_ms": 0, "total_ms": 0, "cost_usd": 0.0}
         (everything after "cancelled" is optional)
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "web_search", "query": "..."}
+    {"type": "usage", "id": "...", "model": "...", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        (after every Claude turn, so cost is recorded even if the answer does not finish)
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
     {"type": "bye", "reason": "idle"}
 """
@@ -39,7 +43,8 @@ SERVICE_NAME = "omnis-backend"
 MAX_TEXT_CHARS = 100_000
 MAX_ID_CHARS = 128
 
-CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result")
+CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result", "configure")
+MAX_KEY_CHARS = 500
 MAX_HISTORY_MESSAGES = 24
 MAX_HISTORY_CHARS = 12_000
 MAX_RESULTS = 8
@@ -83,6 +88,12 @@ def decode_client(line: bytes) -> dict[str, Any]:
             raise ProtocolError("bad_request", "'protocol' must be an integer")
         return {"type": "hello", "protocol": version}
 
+    if kind == "configure":
+        key = obj.get("claude_key", "")
+        if not isinstance(key, str) or len(key) > MAX_KEY_CHARS:
+            raise ProtocolError("bad_request", "'claude_key' must be a short string")
+        return {"type": "configure", "claude_key": key.strip()}
+
     request_id = _require_id(obj)
     if kind == "cancel":
         return {"type": "cancel", "id": request_id}
@@ -108,8 +119,8 @@ def decode_client(line: bytes) -> dict[str, Any]:
 
 
 def _decode_cloud(raw: Any, request_id: str) -> dict[str, Any]:
-    """The app's permission for Claude. Anything missing means the safe choice:
-    not allowed when the field is malformed, the default limit otherwise."""
+    """The app's permission for Claude. A malformed field is refused outright;
+    a missing one means allowed at the default limit (the app always sends it)."""
     if not isinstance(raw, dict):
         raise ProtocolError("bad_request", "'cloud' must be an object", request_id)
     allowed = raw.get("allowed", True)
@@ -208,6 +219,11 @@ def answer_done(
     for key, value in (details or {}).items():
         out.setdefault(key, value)
     return out
+
+
+def usage(request_id: str, model: str, input_tokens: int, output_tokens: int, cost_usd: float) -> dict[str, Any]:
+    return {"type": "usage", "id": request_id, "model": model, "input_tokens": input_tokens,
+            "output_tokens": output_tokens, "cost_usd": cost_usd}
 
 
 def tool_request(request_id: str, call_id: str, tool: str, query: str) -> dict[str, Any]:

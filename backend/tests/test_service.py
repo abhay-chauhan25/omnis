@@ -207,6 +207,30 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[1], [])
         await h.close()
 
+    async def test_usage_is_sent_as_it_happens_and_the_key_is_never_echoed(self):
+        from omnis_backend.models import UsageEvent
+        configured = []
+
+        async def billed(text, route="auto", web=True, history=None, cloud=None):
+            yield UsageEvent("claude-haiku-5-5", 100, 20, 0.00002)
+            raise RuntimeError("fails after being billed")
+
+        reader = asyncio.StreamReader()
+        out = []
+        service = Service(reader, lambda data: out.extend(json.loads(l) for l in data.splitlines()),
+                          billed, idle_seconds=0, on_configure=configured.append)
+        task = asyncio.create_task(service.run())
+        reader.feed_data(HELLO + b'{"type":"configure","claude_key":"sk-secret-value"}\n' + ask("r1"))
+        while not any(m["type"] == "error" for m in out):
+            await asyncio.sleep(0.005)
+        self.assertEqual(configured, [{"claude_key": "sk-secret-value"}])
+        usage = [m for m in out if m["type"] == "usage"]
+        self.assertEqual(usage, [{"type": "usage", "id": "r1", "model": "claude-haiku-5-5",
+                                  "input_tokens": 100, "output_tokens": 20, "cost_usd": 0.00002}])
+        self.assertNotIn("sk-secret-value", json.dumps(out))
+        reader.feed_eof()
+        await asyncio.wait_for(task, 2)
+
     async def test_stops_itself_when_idle(self):
         h = Harness(three_words, idle_seconds=0.15)
         h.feed(HELLO + ask("r1"))

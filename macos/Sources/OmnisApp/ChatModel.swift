@@ -191,11 +191,14 @@ final class ChatModel: ObservableObject {
                     case .searchFailed(let why):
                         self.conversation.update(answerID) { $0.searching = false; $0.searchProblem = why }
                         audit.record(action: "web_search", outcome: "error", detail: why)
-                    case .finished(let model, let details):
-                        if details.route == "cloud", let model {
-                            self.ledger.record(model: model, inputTokens: details.inputTokens ?? 0,
-                                               outputTokens: details.outputTokens ?? 0, costUSD: details.costUSD ?? 0)
+                    case .usage(let model, let inputTokens, let outputTokens, let costUSD):
+                        // Recorded turn by turn, so a stopped, failed or fallen-back
+                        // answer still counts towards the month.
+                        if !self.ledger.record(model: model, inputTokens: inputTokens,
+                                               outputTokens: outputTokens, costUSD: costUSD) {
+                            audit.record(action: "claude_usage", outcome: "error", detail: "usage record not written")
                         }
+                    case .finished(let model, let details):
                         let warning = details.route == "cloud" ? self.ledger.warning() : nil
                         self.conversation.update(answerID) {
                             $0.state = .done

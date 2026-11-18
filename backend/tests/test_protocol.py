@@ -53,6 +53,18 @@ class DecodeClientTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assert_bad(ask(bad))
 
+    def test_configure_carries_the_key_and_nothing_else(self):
+        got = protocol.decode_client(b'{"type":"configure","claude_key":"  sk-test  ","other":"dropped"}')
+        self.assertEqual(got, {"type": "configure", "claude_key": "sk-test"})
+        self.assertEqual(protocol.decode_client(b'{"type":"configure"}'), {"type": "configure", "claude_key": ""})
+        self.assert_bad(b'{"type":"configure","claude_key":5}')
+        self.assert_bad(json.dumps({"type": "configure", "claude_key": "k" * 600}).encode())
+
+    def test_usage_message_shape(self):
+        self.assertEqual(protocol.usage("r", "claude-haiku-5-5", 10, 5, 0.000004), {
+            "type": "usage", "id": "r", "model": "claude-haiku-5-5",
+            "input_tokens": 10, "output_tokens": 5, "cost_usd": 0.000004})
+
     def test_ask_can_forbid_web_search(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","web":false}')
         self.assertIs(got["web"], False)

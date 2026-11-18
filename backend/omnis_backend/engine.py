@@ -12,7 +12,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 
-from .models import AnswerError, AnswerInfo, ToolRequest
+from .models import AnswerError, AnswerInfo, ToolRequest, UsageEvent
 from .ollama import OllamaClient
 from . import claude as claude_lane
 from .claude import ClaudeClient, ClaudeUnavailable
@@ -111,8 +111,17 @@ class LocalEngine:
         self._used: set[str] = set()
         # The Claude lane. None means it is off and everything is answered locally.
         self._claude = claude
+        # Set when a key was supplied but Claude still cannot be used.
+        self._claude_missing = ""
         self._cloud_rest_until = 0.0
         self._cloud_rest_reason = ""
+
+    def configure(self, settings: dict) -> None:
+        """Settings handed over by the app after start-up. The Claude key
+        arrives this way, in memory, and is kept nowhere else."""
+        key = settings.get("claude_key")
+        self._claude, self._claude_missing = claude_lane.make_client(key if isinstance(key, str) else None)
+        self._cloud_rest_until = 0.0
 
     async def answer(
         self,
@@ -121,7 +130,7 @@ class LocalEngine:
         web: bool = True,
         history: list | None = None,
         cloud: dict | None = None,
-    ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
+    ) -> AsyncIterator[str | AnswerInfo | ToolRequest | UsageEvent]:
         """`cloud` is the app's say on Claude for this request:
         {"allowed": bool, "max_usd": float, "reason": str}. The app, not this
         process, owns the spending limits."""
@@ -131,7 +140,8 @@ class LocalEngine:
         decision = decide(text, route, cloud_ready=ready)
         # Say that Claude was passed over only when the user would expect it:
         # they asked for it, or it is set up but cannot be used right now.
-        expected = wants_claude(text, route) or (self._claude is not None and route != "local")
+        configured = self._claude is not None or bool(self._claude_missing)
+        expected = wants_claude(text, route) or (configured and route != "local")
         fallback = f"Claude could not be used ({why_not})" if expected and not ready else ""
 
         async with self._lock:
@@ -161,7 +171,7 @@ class LocalEngine:
     def _cloud_ready(self, cloud: dict) -> tuple[bool, str]:
         """Whether Claude can be used for this request, and if not, why."""
         if self._claude is None:
-            return False, "it is not set up"
+            return False, self._claude_missing or "it is not set up"
         if not cloud.get("allowed", True):
             return False, str(cloud.get("reason") or "it is not allowed right now")
         if time.monotonic() < self._cloud_rest_until:
@@ -310,10 +320,14 @@ class LocalEngine:
         shown = False
         attempts = 0
 
+        # The tool is defined on every turn of a web-enabled answer: the API
+        # rejects a request whose history uses a tool it does not define. Once
+        # the searches are used up, Claude is told it may not call it again.
+        tools = [CLAUDE_WEB_SEARCH_TOOL] if web else []
         while True:
-            tools = [CLAUDE_WEB_SEARCH_TOOL] if web and attempts < MAX_SEARCHES else []
+            may_search = bool(tools) and attempts < MAX_SEARCHES
             turn = None
-            async for item in self._claude.turn(model, system, messages, tools, effort):
+            async for item in self._claude.turn(model, system, messages, tools, effort, allow_tools=may_search):
                 if isinstance(item, claude_lane.ClaudeTurn):
                     turn = item
                 else:
@@ -323,11 +337,17 @@ class LocalEngine:
                 raise ClaudeUnavailable("server", "Claude sent no reply")
             info.input_tokens += turn.input_tokens
             info.output_tokens += turn.output_tokens
+            # Reported at once: this turn is billed whatever happens next.
+            yield UsageEvent(model, turn.input_tokens, turn.output_tokens,
+                             round(claude_lane.cost_usd(model, turn.input_tokens, turn.output_tokens), 6))
             if turn.stop_reason == "refusal":
                 raise AnswerError("refused", "Claude declined to answer this.")
+            if turn.stop_reason == "max_tokens" and turn.text:
+                note = "\n\n(The answer was cut off at the length limit.)"
+                yield note
 
             call = None
-            if tools and turn.stop_reason != "max_tokens":  # a cut-off request is not carried out
+            if may_search and turn.stop_reason != "max_tokens":  # a cut-off request is not carried out
                 for use in turn.tool_uses:
                     arguments = use.get("input")
                     query = arguments.get("query") if isinstance(arguments, dict) else None

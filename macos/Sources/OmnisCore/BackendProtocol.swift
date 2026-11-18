@@ -11,6 +11,9 @@ public enum ClientMessage: Equatable, Sendable {
     case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [],
              cloud: CloudPermission = CloudPermission())
     case cancel(id: String)
+    /// Sent once after hello. Hands the Claude key to the backend in memory;
+    /// an empty key means Claude stays off.
+    case configure(claudeKey: String)
     /// The app's reply to a `toolRequest`: what the search found, or why it failed.
     case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String)
 }
@@ -51,6 +54,8 @@ public enum ServiceMessage: Equatable, Sendable {
     case hello(protocolVersion: Int, service: String, version: String)
     case answerChunk(id: String, text: String)
     case answerDone(id: String, model: String?, cancelled: Bool, details: AnswerDetails)
+    /// What one Claude turn cost. Arrives as soon as the turn is billed.
+    case usage(id: String, model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     /// The model wants the app to do something. Only "web_search" exists.
     case toolRequest(id: String, callID: String, tool: String, query: String)
     case error(id: String?, code: String, message: String)
@@ -83,6 +88,8 @@ public enum ProtocolCodec {
             ]
         case .cancel(let id):
             object = ["type": "cancel", "id": id]
+        case .configure(let claudeKey):
+            object = ["type": "configure", "claude_key": claudeKey]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
@@ -134,6 +141,14 @@ public enum ProtocolCodec {
                     fallback: optionalText("fallback").flatMap { $0.isEmpty ? nil : $0 }
                 )
             )
+        case "usage":
+            guard let cost = object["cost_usd"] as? NSNumber, CFGetTypeID(cost) != CFBooleanGetTypeID() else {
+                throw ProtocolCodecError.missingField("cost_usd")
+            }
+            return .usage(id: try string("id"), model: String(try string("model").prefix(80)),
+                          inputTokens: max(0, try integer("input_tokens")),
+                          outputTokens: max(0, try integer("output_tokens")),
+                          costUSD: cost.doubleValue.isFinite ? max(0, cost.doubleValue) : 0)
         case "tool_request":
             return .toolRequest(id: try string("id"), callID: try string("call_id"),
                                 tool: try string("tool"), query: String(try string("query").prefix(400)))

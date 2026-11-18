@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backend: BackendService?
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
-    private let ledger = UsageLedger(url: OmnisPaths.usageLedger)
+    private let ledger = UsageLedger(url: OmnisPaths.usageLedger, mirror: .standard)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A backend that has just exited must give a write error, not end the app.
@@ -96,6 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             let saved = KeychainStore.claudeKey.save(field.stringValue)
             audit.record(action: "claude_key", outcome: saved ? "saved" : "error")
+            if !saved {
+                let failure = NSAlert()
+                failure.messageText = "The key could not be saved"
+                failure.informativeText = "The macOS Keychain refused it. Any key saved earlier is unchanged."
+                failure.runModal()
+                return
+            }
         case .alertThirdButtonReturn:
             KeychainStore.claudeKey.delete()
             audit.record(action: "claude_key", outcome: "removed")

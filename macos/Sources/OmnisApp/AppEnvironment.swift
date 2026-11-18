@@ -28,9 +28,7 @@ enum AppEnvironment {
         )
         // The Claude key comes from the Keychain each time the backend starts.
         // With no key saved, the backend runs with Claude off and answers locally.
-        config.secrets = {
-            KeychainStore.claudeKey.read().map { ["ANTHROPIC_API_KEY": $0] } ?? [:]
-        }
+        config.claudeKey = { KeychainStore.claudeKey.read() }
         return config
     }
 

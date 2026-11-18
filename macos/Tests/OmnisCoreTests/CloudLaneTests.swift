@@ -11,8 +11,15 @@ final class Clock: @unchecked Sendable {
 }
 
 @Suite struct UsageLedgerTests {
-    func ledger(_ scratch: Scratch, _ clock: Clock) -> UsageLedger {
-        UsageLedger(url: scratch.url.appendingPathComponent("OMNIS/claude-usage.csv"), now: { clock.now })
+    func ledger(_ scratch: Scratch, _ clock: Clock, mirror: UserDefaults? = nil) -> UsageLedger {
+        UsageLedger(url: scratch.url.appendingPathComponent("OMNIS/claude-usage.csv"), mirror: mirror,
+                    calendar: utc, now: { clock.now })
+    }
+
+    /// A private, empty preferences store for one test.
+    func scratchDefaults() -> (UserDefaults, String) {
+        let name = "local.omnis.tests.\(UUID().uuidString)"
+        return (UserDefaults(suiteName: name)!, name)
     }
 
     var utc: Calendar {
@@ -60,10 +67,10 @@ final class Clock: @unchecked Sendable {
         ledger.record(model: "claude-haiku-5-5", inputTokens: 1, outputTokens: 1, costUSD: 2.0)
         clock.set("2026-11-17T12:00:00Z")
         ledger.record(model: "claude-haiku-5-5", inputTokens: 1, outputTokens: 1, costUSD: 1.5)
-        #expect(abs(ledger.monthTotal(calendar: utc) - 3.5) < 1e-9)
-        #expect(abs(ledger.monthTotal(containing: ISO8601DateFormatter().date(from: "2026-10-15T00:00:00Z")!, calendar: utc) - 5.0) < 1e-9)
+        #expect(abs(ledger.monthTotal() - 3.5) < 1e-9)
+        #expect(abs(ledger.monthTotal(containing: ISO8601DateFormatter().date(from: "2026-10-15T00:00:00Z")!) - 5.0) < 1e-9)
         clock.set("2026-12-01T12:00:00Z")
-        #expect(ledger.monthTotal(calendar: utc) == 0)   // a new month starts from nothing
+        #expect(ledger.monthTotal() == 0)   // a new month starts from nothing
     }
 
     @Test func theMonthlyLimitIsAHardStopAndWarningsComeFirst() throws {
@@ -91,6 +98,50 @@ final class Clock: @unchecked Sendable {
             == CloudPermission(allowed: false, maxUSD: 0, reason: "this month's Claude budget is used up"))
     }
 
+    @Test func deletingTheFileDoesNotResetTheMonth() throws {
+        let scratch = try Scratch()
+        let (defaults, name) = scratchDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let clock = Clock("2026-11-17T12:00:00Z")
+        let ledger = ledger(scratch, clock, mirror: defaults)
+        ledger.record(model: "claude-opus-5-5", inputTokens: 1, outputTokens: 1, costUSD: 19.5)
+        ledger.record(model: "claude-opus-5-5", inputTokens: 1, outputTokens: 1, costUSD: 0.6)
+        #expect(!ledger.permission().allowed)
+
+        try FileManager.default.removeItem(at: scratch.url.appendingPathComponent("OMNIS/claude-usage.csv"))
+        #expect(abs(ledger.monthTotal() - 20.1) < 1e-9)
+        #expect(ledger.permission() == CloudPermission(allowed: false, maxUSD: 0, reason: "this month's Claude budget is used up"))
+
+        // A fresh ledger object (the app restarted) still knows.
+        let restarted = self.ledger(scratch, clock, mirror: defaults)
+        #expect(!restarted.permission().allowed)
+        // And next month starts from nothing.
+        clock.set("2026-12-02T12:00:00Z")
+        #expect(restarted.permission().allowed)
+    }
+
+    @Test func ifTheRecordCannotBeWrittenClaudeIsNotAllowed() throws {
+        let scratch = try Scratch()
+        // A folder where the file should be: every write fails.
+        try scratch.folder("OMNIS/claude-usage.csv")
+        let (defaults, name) = scratchDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let ledger = ledger(scratch, Clock("2026-11-17T12:00:00Z"), mirror: defaults)
+        #expect(ledger.permission().allowed)   // nothing has gone wrong yet
+        #expect(!ledger.record(model: "claude-haiku-5-5", inputTokens: 1, outputTokens: 1, costUSD: 0.25))
+        #expect(ledger.permission() == CloudPermission(allowed: false, maxUSD: 0, reason: "its usage record cannot be written"))
+        #expect(abs(ledger.monthTotal() - 0.25) < 1e-9)   // the second copy still counted it
+    }
+
+    @Test func aLineCutShortByACrashDoesNotSwallowTheNextOne() throws {
+        let scratch = try Scratch()
+        let file = try scratch.file("OMNIS/claude-usage.csv",
+                                    contents: "time,model,input_tokens,output_tokens,cost_usd\n2026-11-17T12:00:00Z,claude-hai")
+        let ledger = UsageLedger(url: file, calendar: utc, now: { ISO8601DateFormatter().date(from: "2026-11-17T13:00:00Z")! })
+        #expect(ledger.record(model: "claude-haiku-5-5", inputTokens: 10, outputTokens: 5, costUSD: 0.5))
+        #expect(ledger.entries().map(\.costUSD) == [0.5])
+    }
+
     @Test func aDamagedFileIsReadAsFarAsItMakesSense() throws {
         let scratch = try Scratch()
         let file = try scratch.file("OMNIS/claude-usage.csv", contents: """
@@ -103,9 +154,10 @@ final class Clock: @unchecked Sendable {
         2026-11-17T13:00:00Z,claude-haiku-5-5,10,5,0.50
 
         """)
-        let ledger = UsageLedger(url: file, now: { ISO8601DateFormatter().date(from: "2026-11-17T14:00:00Z")! })
+        let ledger = UsageLedger(url: file, calendar: utc,
+                                 now: { ISO8601DateFormatter().date(from: "2026-11-17T14:00:00Z")! })
         #expect(ledger.entries().count == 2)
-        #expect(abs(ledger.monthTotal(calendar: utc) - 0.75) < 1e-9)
+        #expect(abs(ledger.monthTotal() - 0.75) < 1e-9)
     }
 }
 

@@ -43,7 +43,8 @@ class RouterTests(unittest.TestCase):
                 self.assertTrue(wants_claude(text))
         # Naming a person called Claude, or just mentioning the name, is not a request for it.
         for text in ("who is Claude Shannon?", "use claude shannon's work in a sentence",
-                     "tell me about using Claude Monet", "Is Claude down today"):
+                     "tell me about using Claude Monet", "Is Claude down today",
+                     "how do I work with Claude Code hooks"):
             with self.subTest(text=text):
                 self.assertFalse(wants_claude(text))
         self.assertTrue(wants_claude("hi", "claude"))

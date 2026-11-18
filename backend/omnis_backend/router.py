@@ -31,6 +31,8 @@ OVERRIDES = ("auto", "local", "claude")
 _SURNAMES = (
     "shannon", "monet", "debussy", "bernard", "rains", "lorrain", "chabrol",
     "lelouch", "cahun", "makelele", "giroux", "levi", "van",
+    # Not a person: "with Claude Code" names a product, not a request for this lane.
+    "code",
 )
 _ASKED_FOR_CLAUDE = re.compile(
     r"\b(use|ask|with|via|using)\s+claude\b(?!\s+(" + "|".join(_SURNAMES) + r")\b)", re.IGNORECASE
