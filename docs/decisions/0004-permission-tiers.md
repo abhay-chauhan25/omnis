@@ -1,6 +1,6 @@
 # ADR-0004 — Permission tiers for actions
 
-- **Status:** Accepted
+- **Status:** Accepted; changed for the calendar by ADR-0012 (deleting is allowed there, with confirmation)
 - **Date:** 2026-11-16
 
 ## Problem / context

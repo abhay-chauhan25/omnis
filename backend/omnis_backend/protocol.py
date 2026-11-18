@@ -22,7 +22,9 @@ App to service:
          attached. A history entry from the user may carry "attachments" too.
          "personal": true marks the question as touching personal data, and
          "calendar": true says the app will read the calendar if asked, and
-         "calendar_write": true that it can show the user a new event to confirm.)
+         "calendar_write": true that it can show the user a change to confirm.
+         "calendar_delete" says how far deleting may go for this question:
+         "none", "events", or "all" (events and whole calendars).)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -136,8 +138,16 @@ def decode_client(line: bytes) -> dict[str, Any]:
         "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
         "attachments": _decode_attachments(obj.get("attachments", []), request_id),
         "options": {"personal": _flag(obj, "personal", request_id), "calendar": _flag(obj, "calendar", request_id),
-                    "calendar_write": _flag(obj, "calendar_write", request_id)},
+                    "calendar_write": _flag(obj, "calendar_write", request_id),
+                    "calendar_delete": _delete_level(obj, request_id)},
     }
+
+
+def _delete_level(obj: dict[str, Any], request_id: str) -> str:
+    value = obj.get("calendar_delete", "none")
+    if value not in ("none", "events", "all"):
+        raise ProtocolError("bad_request", "'calendar_delete' must be none, events or all", request_id)
+    return value
 
 
 def _flag(obj: dict[str, Any], name: str, request_id: str) -> bool:

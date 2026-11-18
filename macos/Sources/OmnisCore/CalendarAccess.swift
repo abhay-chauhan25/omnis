@@ -48,6 +48,20 @@ public enum CalendarError: Error, Equatable, LocalizedError {
         case .refused(let why): return why
         }
     }
+
+    /// A fixed word for the audit log. Unlike the description, it never
+    /// carries a calendar's name or anything else from the calendar.
+    public var code: String {
+        switch self {
+        case .notAllowed: return "not_allowed"
+        case .badDates: return "bad_dates"
+        case .unavailable: return "unavailable"
+        case .badEvent: return "bad_event"
+        case .noCalendar: return "no_calendar"
+        case .gone: return "gone"
+        case .refused: return "refused"
+        }
+    }
 }
 
 /// How an event repeats. `custom` stands for a rule OMNIS can show but not
@@ -61,11 +75,14 @@ public struct CalendarInfo: Equatable, Sendable {
     public let name: String
     public let writable: Bool
     public let isDefault: Bool
+    /// The account it belongs to, such as "iCloud".
+    public let account: String
 
-    public init(name: String, writable: Bool = true, isDefault: Bool = false) {
+    public init(name: String, writable: Bool = true, isDefault: Bool = false, account: String = "") {
         self.name = name
         self.writable = writable
         self.isDefault = isDefault
+        self.account = account
     }
 }
 
@@ -76,12 +93,20 @@ public struct EventSnapshot: Equatable, Sendable {
     public let draft: EventDraft
     public let guests: [String]
     public let recurring: Bool
+    /// True when it has more than one alert, or an alert at a fixed time.
+    /// OMNIS shows only one alert, so it will not change the alerts of such an event.
+    public let complexAlerts: Bool
+    /// True when its notes are longer than OMNIS shows. It will not change them.
+    public let longNotes: Bool
 
-    public init(key: String, draft: EventDraft, guests: [String] = [], recurring: Bool = false) {
+    public init(key: String, draft: EventDraft, guests: [String] = [], recurring: Bool = false,
+                complexAlerts: Bool = false, longNotes: Bool = false) {
         self.key = key
         self.draft = draft
         self.guests = guests
         self.recurring = recurring
+        self.complexAlerts = complexAlerts
+        self.longNotes = longNotes
     }
 }
 
@@ -91,6 +116,8 @@ public protocol CalendarReading: Sendable {
     /// One event in full, by the key it was listed with.
     func snapshot(key: String) async throws -> EventSnapshot
     func calendars() async throws -> [CalendarInfo]
+    /// How many events a calendar holds, as far as can be counted. Nil if unknown.
+    func eventCount(calendarNamed name: String) async throws -> Int?
 }
 
 /// The details of an event: a new one being proposed, or an existing one.
@@ -230,10 +257,15 @@ public struct EventDraft: Equatable, Sendable {
             }
             if let given = givenEnd {
                 guard !given.dateOnly else { throw CalendarError.badEvent("its new end needs a time") }
-                end = given.date
+                // Models often send the old end along with a new start. An end
+                // that is not after the new start is ignored, and the length
+                // is kept; the preview shows the result either way.
+                if givenStart == nil || given.date > start { end = given.date }
             }
         }
-        try Self.checkLength(start, end, calendar)
+        // An event that is already very long, or has no length, can still
+        // have its other details changed.
+        if start != self.start || end != self.end || allDay != self.allDay { try Self.checkLength(start, end, calendar) }
 
         var location = self.location
         if let wanted = arguments["location"].map(CalendarFormatter.clean) { location = wanted.isEmpty ? nil : wanted }
@@ -343,9 +375,10 @@ public enum CalendarChange: Equatable, Sendable {
     /// `future` applies to a repeating event: this day and all later ones.
     case update(original: EventSnapshot, after: EventDraft, future: Bool)
     case delete(EventSnapshot, future: Bool)
-    case createCalendar(name: String)
+    case createCalendar(name: String, account: String = "")
     case renameCalendar(from: String, to: String)
-    case deleteCalendar(name: String)
+    /// `events` is how many events it holds, where that could be counted.
+    case deleteCalendar(name: String, account: String = "", events: Int? = nil, isDefault: Bool = false)
 
     /// A short word for the audit log. It carries no details of the change.
     public var kind: String {
@@ -376,7 +409,8 @@ public enum CalendarChange: Equatable, Sendable {
         case .create(let draft): return draft.title
         case .update(let original, _, _): return original.draft.title
         case .delete(let snapshot, _): return snapshot.draft.title
-        case .createCalendar(let name), .deleteCalendar(let name): return name
+        case .createCalendar(let name, _): return name
+        case .deleteCalendar(let name, _, _, _): return name
         case .renameCalendar(let from, _): return from
         }
     }
@@ -412,7 +446,11 @@ public enum CalendarChange: Equatable, Sendable {
         case .delete(let snapshot, let future):
             if snapshot.recurring && future { return "Deletes this day and every later repeat. This cannot be undone." }
             return "This cannot be undone."
-        case .deleteCalendar: return "Deletes this calendar and every event in it. This cannot be undone."
+        case .deleteCalendar(_, let account, _, let isDefault):
+            return "Deletes this calendar and every event in it"
+                + (account.isEmpty ? "" : ", on every device that uses \(account)")
+                + ". This cannot be undone."
+                + (isDefault ? " It is your default calendar for new events." : "")
         default: return nil
         }
     }
@@ -424,6 +462,13 @@ public enum CalendarChange: Equatable, Sendable {
         case .update(_, let after, _): return after.start
         default: return nil
         }
+    }
+
+    /// Changing or deleting an event with guests can send them a notice.
+    private static func guests(_ snapshot: EventSnapshot) -> [ChangeRow] {
+        guard !snapshot.guests.isEmpty else { return [] }
+        let count = snapshot.guests.count == 1 ? "1 guest" : "\(snapshot.guests.count) guests"
+        return [ChangeRow("Guests", "\(count), who may be told about this")]
     }
 
     private static func scope(_ future: Bool) -> ChangeRow {
@@ -449,6 +494,7 @@ public enum CalendarChange: Equatable, Sendable {
             return Self.details(draft, calendar: calendar, now: now)
         case .delete(let snapshot, let future):
             var rows = Self.details(snapshot.draft, calendar: calendar, now: now).filter { ["When", "Place", "Calendar", "Repeats"].contains($0.label) }
+            rows += Self.guests(snapshot)
             if snapshot.recurring { rows.append(Self.scope(future)) }
             return rows
         case .update(let original, let after, let future):
@@ -471,14 +517,20 @@ public enum CalendarChange: Equatable, Sendable {
             }
             if before.url != after.url { changed("Link", before.url ?? "none", after.url ?? "none") }
             if before.notes != after.notes { changed("Notes", before.notes ?? "none", after.notes ?? "none") }
+            rows += Self.guests(original)
             if original.recurring { rows.append(Self.scope(future)) }
             return rows
-        case .createCalendar:
-            return []
+        case .createCalendar(_, let account):
+            return account.isEmpty ? [] : [ChangeRow("Account", account)]
         case .renameCalendar(_, let to):
             return [ChangeRow("New name", to)]
-        case .deleteCalendar:
-            return []
+        case .deleteCalendar(_, let account, let events, _):
+            var rows: [ChangeRow] = []
+            if !account.isEmpty { rows.append(ChangeRow("Account", account)) }
+            if let events {
+                rows.append(ChangeRow("Events", events == 1 ? "1 event will be deleted" : "\(events) events will be deleted"))
+            }
+            return rows
         }
     }
 
@@ -489,9 +541,9 @@ public enum CalendarChange: Equatable, Sendable {
         case .update(let original, let after, _):
             return "change \(original.draft.line(calendar: calendar)) to \(after.line(calendar: calendar))"
         case .delete(let snapshot, _): return "delete \(snapshot.draft.line(calendar: calendar))"
-        case .createCalendar(let name): return "new calendar \"\(name)\""
+        case .createCalendar(let name, _): return "new calendar \"\(name)\""
         case .renameCalendar(let from, let to): return "rename calendar \"\(from)\" to \"\(to)\""
-        case .deleteCalendar(let name): return "delete calendar \"\(name)\" and all its events"
+        case .deleteCalendar(let name, _, _, _): return "delete calendar \"\(name)\" and all its events"
         }
     }
 
@@ -515,8 +567,23 @@ public enum CalendarChange: Equatable, Sendable {
         switch self {
         case .create(let draft):
             if let name = draft.calendarName { _ = try existing(name) }
-        case .update(let original, let after, _):
-            if after == original.draft { throw CalendarError.refused("that would not change anything about the event") }
+        case .update(let original, let after, let future):
+            let before = original.draft
+            if after == before { throw CalendarError.refused("that would not change anything about the event") }
+            // Details OMNIS cannot show in full are never rewritten.
+            if original.complexAlerts && after.alertMinutes != before.alertMinutes {
+                throw CalendarError.refused("that event has more than one alert, or an alert at a fixed time. Change its alerts in the Calendar app")
+            }
+            if original.longNotes && after.notes != before.notes {
+                throw CalendarError.refused("that event's notes are too long to change here. Change them in the Calendar app")
+            }
+            let repeatChanges = after.repeats != before.repeats || after.repeatUntil != before.repeatUntil
+            if repeatChanges && before.repeats == .custom {
+                throw CalendarError.refused("that event repeats on a pattern OMNIS cannot set. Change how it repeats in the Calendar app")
+            }
+            if repeatChanges && original.recurring && !future {
+                throw CalendarError.refused("how an event repeats can only be changed for this day and all later ones together. Ask the user whether that is what they want, then use scope future")
+            }
             if let name = after.calendarName, name != original.draft.calendarName { _ = try existing(name) }
             if let name = original.draft.calendarName, let home = matching(name).first, !home.writable {
                 throw CalendarError.refused("that event is in the calendar \"\(name)\", which cannot be changed")
@@ -525,14 +592,30 @@ public enum CalendarChange: Equatable, Sendable {
             if let name = snapshot.draft.calendarName, let home = matching(name).first, !home.writable {
                 throw CalendarError.refused("that event is in the calendar \"\(name)\", which cannot be changed")
             }
-        case .createCalendar(let name):
+        case .createCalendar(let name, _):
             try unused(name)
         case .renameCalendar(let from, let to):
             _ = try existing(from)
             try unused(to)
-        case .deleteCalendar(let name):
+        case .deleteCalendar(let name, _, _, _):
             _ = try existing(name)
         }
+    }
+}
+
+/// How far deleting may go for one question.
+public enum DeleteLevel: String, Equatable, Sendable {
+    case none, events, all
+}
+
+/// Which calendar changes the model may prepare for one message.
+public struct ChangeOffer: Equatable, Sendable {
+    public let changes: Bool
+    public let deletes: DeleteLevel
+
+    public init(changes: Bool = false, deletes: DeleteLevel = .none) {
+        self.changes = changes
+        self.deletes = deletes
     }
 }
 
@@ -644,7 +727,13 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
         var repeats = Repeat.none
         var until: Date?
         if let rule = event.recurrenceRules?.first {
-            let simple = rule.interval == 1 && (rule.daysOfTheWeek?.count ?? 0) <= 1 && (rule.setPositions?.isEmpty ?? true)
+            // Anything beyond "every day, week, month or year, with or without
+            // a last day" is called custom, and is then never rewritten.
+            let days = rule.daysOfTheWeek ?? []
+            let simple = rule.interval == 1 && days.count <= 1 && days.allSatisfy { $0.weekNumber == 0 }
+                && (rule.setPositions?.isEmpty ?? true) && (rule.daysOfTheMonth?.isEmpty ?? true)
+                && (rule.monthsOfTheYear?.isEmpty ?? true) && (rule.daysOfTheYear?.isEmpty ?? true)
+                && (rule.weeksOfTheYear?.isEmpty ?? true) && (rule.recurrenceEnd?.occurrenceCount ?? 0) == 0
                 && (event.recurrenceRules?.count ?? 0) == 1
             switch rule.frequency {
             case .daily: repeats = simple ? .daily : .custom
@@ -655,16 +744,26 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
             }
             until = rule.recurrenceEnd?.endDate
         }
-        let alert = event.alarms?.first.map { max(0, Int((-$0.relativeOffset / 60).rounded())) }
+        let alarms = event.alarms ?? []
+        let alert = alarms.first.map { max(0, Int((-$0.relativeOffset / 60).rounded())) }
+        let complexAlerts = alarms.count > 1 || alarms.contains { $0.absoluteDate != nil || $0.relativeOffset > 0 }
+        // Text is cleaned for display. A detail that is not being changed is
+        // never written back, so the calendar keeps its own copy as it was.
+        func text(_ value: String?) -> String? {
+            let cleaned = CalendarFormatter.clean(value ?? "")
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        let rawNotes = event.notes ?? ""
+        let notes = CalendarFormatter.cleanNotes(rawNotes)
         let draft = EventDraft(
-            title: event.title ?? "", start: event.startDate, end: end, allDay: event.isAllDay,
-            location: (event.location ?? "").isEmpty ? nil : event.location,
-            notes: (event.notes ?? "").isEmpty ? nil : event.notes,
-            url: event.url?.absoluteString, calendarName: event.calendar?.title, alertMinutes: alert,
+            title: CalendarFormatter.clean(event.title ?? ""), start: event.startDate, end: end, allDay: event.isAllDay,
+            location: text(event.location), notes: notes.isEmpty ? nil : notes,
+            url: text(event.url?.absoluteString), calendarName: text(event.calendar?.title), alertMinutes: alert,
             repeats: repeats, repeatUntil: until
         )
         return EventSnapshot(key: Self.key(for: event), draft: draft,
-                             guests: (event.attendees ?? []).compactMap(\.name), recurring: event.hasRecurrenceRules)
+                             guests: (event.attendees ?? []).compactMap(\.name), recurring: event.hasRecurrenceRules,
+                             complexAlerts: complexAlerts, longNotes: rawNotes.count > EventDraft.maxNotesCharacters)
     }
 
     public func snapshot(key: String) async throws -> EventSnapshot {
@@ -677,8 +776,18 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
         let standard = store.defaultCalendarForNewEvents?.calendarIdentifier
         return store.calendars(for: .event).map {
             CalendarInfo(name: $0.title, writable: $0.allowsContentModifications && !$0.isImmutable,
-                         isDefault: $0.calendarIdentifier == standard)
+                         isDefault: $0.calendarIdentifier == standard, account: $0.source?.title ?? "")
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Counts the events in a calendar from two years back to two years
+    /// ahead, which is as wide as one lookup can be.
+    public func eventCount(calendarNamed name: String) async throws -> Int? {
+        try await ensureAccess()
+        let found = store.calendars(for: .event).filter { $0.title.caseInsensitiveCompare(name) == .orderedSame }
+        guard found.count == 1, let from = Calendar.current.date(byAdding: .year, value: -2, to: Date()),
+              let to = Calendar.current.date(byAdding: .year, value: 2, to: Date()) else { return nil }
+        return store.events(matching: store.predicateForEvents(withStart: from, end: to, calendars: found)).count
     }
 
     // MARK: Changing
@@ -763,7 +872,7 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
                 guard describe(event).draft == snapshot.draft else { throw CalendarError.gone }
                 try store.remove(event, span: future ? .futureEvents : .thisEvent, commit: true)
                 return "Deleted"
-            case .createCalendar(let name):
+            case .createCalendar(let name, _):
                 guard !store.calendars(for: .event).contains(where: { $0.title.caseInsensitiveCompare(name) == .orderedSame }) else {
                     throw CalendarError.refused("there is already a calendar called \"\(name)\"")
                 }
@@ -780,7 +889,7 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
                 target.title = to
                 try store.saveCalendar(target, commit: true)
                 return "Renamed to \(to)"
-            case .deleteCalendar(let name):
+            case .deleteCalendar(let name, _, _, _):
                 let target = try calendar(named: name)
                 guard !target.isImmutable else { throw CalendarError.refused("the calendar \"\(name)\" cannot be deleted") }
                 try store.removeCalendar(target, commit: true)
@@ -967,7 +1076,7 @@ public enum PersonalIntent {
         addPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
-    private static let changeVerbs = "move|reschedule|change|rename|cancel|delete|remove|update|edit|push|postpone|shift|clear|extend|shorten|bump|swap"
+    private static let changeVerbs = "move|reschedule|change|rename|cancel|delete|remove|get rid of|update|edit|push|postpone|shift|clear|extend|shorten|bump|swap"
     private static let changePattern = try! NSRegularExpression(
         pattern: #"\b("# + changeVerbs + #")\b.{0,80}?\b(events?|appointments?|meetings?|calendars?|"# + days
             + #"|(at|to|from) \d{1,2}|\d{1,2}(st|nd|rd|th)? (of )?("# + months + #")|("# + months + #")[a-z]* \d{1,2})"#
@@ -980,6 +1089,23 @@ public enum PersonalIntent {
     /// any way: something added, moved, altered or deleted.
     public static func asksToChangeCalendar(_ text: String) -> Bool {
         asksToAddEvent(text) || changePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static let deletePattern = try! NSRegularExpression(
+        pattern: #"\b(delete|cancel|remove|get rid of|clear|scrap|drop)\b"#, options: [.caseInsensitive])
+    // "delete the Work calendar", but not "delete lunch from my calendar".
+    private static let deleteCalendarPattern = try! NSRegularExpression(
+        pattern: #"\b(delete|remove|get rid of)\b(?!.*\b(from|on|in|off) (my|the) calendar\b).{0,60}?\bcalendar\b"#,
+        options: [.caseInsensitive])
+
+    /// True when the user's own words ask for something to be deleted.
+    public static func asksToDelete(_ text: String) -> Bool {
+        deletePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// True when the user's own words ask for a whole calendar to be deleted.
+    public static func asksToDeleteCalendar(_ text: String) -> Bool {
+        deleteCalendarPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     /// True when the words include an instruction such as "move" or "delete"

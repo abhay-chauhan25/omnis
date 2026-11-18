@@ -24,7 +24,7 @@ Creating new events only. The model proposes; the user sees a preview and nothin
 - The year is shown when it is not this year; a time in the past is flagged.
 - Times the clocks skip are refused. Events longer than 31 days are refused.
 - A chat with a preview stays on this Mac.
-- OMNIS cannot change or delete existing events.
+- When this step was built OMNIS could not change or delete existing events. That came next: `calendar-full-control.md`.
 - The audit log records proposed, added, declined or failed. Never the title, time or place.
 
 ## Tests

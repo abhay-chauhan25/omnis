@@ -1,6 +1,6 @@
 # ADR-0011 — Calendar through EventKit, read-only first
 
-- **Status:** Accepted
+- **Status:** Accepted; the read-only limit was lifted by ADR-0012
 - **Date:** 2026-11-17
 
 ## Problem / context

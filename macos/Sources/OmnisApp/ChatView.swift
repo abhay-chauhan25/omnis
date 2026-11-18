@@ -442,7 +442,10 @@ private struct EventCard: View {
                             Text(row.label)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 62, alignment: .leading)
+                            // Notes can be long; they are cut after a few lines
+                            // here so the buttons stay in view.
                             Text(row.value)
+                                .lineLimit(row.label == "Notes" ? 8 : nil)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .font(.system(size: 12))

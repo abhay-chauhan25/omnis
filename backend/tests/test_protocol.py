@@ -15,7 +15,7 @@ class DecodeClientTests(unittest.TestCase):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
         self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto", "web": True, "history": [],
                                "cloud": {"allowed": True, "max_usd": 1.0, "reason": ""},
-                               "attachments": [], "options": {"personal": False, "calendar": False, "calendar_write": False}})
+                               "attachments": [], "options": {"personal": False, "calendar": False, "calendar_write": False, "calendar_delete": "none"}})
 
     def test_cancel(self):
         self.assertEqual(
@@ -106,9 +106,12 @@ class DecodeClientTests(unittest.TestCase):
 
     def test_personal_and_calendar_flags_and_tool_content(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","personal":true,"calendar":true}')
-        self.assertEqual(got["options"], {"personal": True, "calendar": True, "calendar_write": False})
+        self.assertEqual(got["options"], {"personal": True, "calendar": True, "calendar_write": False, "calendar_delete": "none"})
         got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","calendar_write":true}')
         self.assertTrue(got["options"]["calendar_write"])
+        got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","calendar_delete":"events"}')
+        self.assertEqual(got["options"]["calendar_delete"], "events")
+        self.assert_bad(b'{"type":"ask","id":"a","text":"x","calendar_delete":"everything"}')
         self.assert_bad(b'{"type":"ask","id":"a","text":"x","calendar":"yes"}')
         self.assertEqual(
             protocol.tool_request("r", "c", "calendar_events", "", {"start": "2026-11-18", "end": "2026-11-18"}),

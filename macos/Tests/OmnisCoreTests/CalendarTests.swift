@@ -28,6 +28,9 @@ final class StubCalendar: CalendarReading, @unchecked Sendable {
         return list
     }
 
+    var counts: [String: Int] = [:]
+    func eventCount(calendarNamed name: String) async throws -> Int? { counts[name] }
+
     var ranges: [(Date, Date)] { lock.withLock { asked } }
 
     func events(from start: Date, to end: Date) async throws -> [CalendarEvent] {
@@ -234,6 +237,10 @@ enum Zone {
         #expect(longer.start == lunch.start)
         #expect(longer.end == Zone.date("2026-11-18T19:30:00Z"))
 
+        // The old end sent along with a later start: the length is kept.
+        let stale = try change(["start": "2026-11-18T15:00", "end": "2026-11-18T14:00"])
+        #expect(stale.when(calendar: Zone.newYork, now: now) == "Wed 18 Nov, 15:00 to 16:00")
+
         let both = try change(["start": "2026-11-19T09:00", "end": "2026-11-19T09:15"])
         #expect(both.when(calendar: Zone.newYork, now: now) == "Thu 19 Nov, 09:00 to 09:15")
     }
@@ -345,6 +352,60 @@ enum Zone {
         #expect(refused(.deleteCalendar(name: "Work")) == nil)
         #expect(refused(.deleteCalendar(name: "Birthdays")) != nil)
         #expect(refused(.deleteCalendar(name: "Nope")) != nil)
+    }
+
+    @Test func detailsThatCannotBeShownInFullAreNeverRewritten() throws {
+        func refused(_ change: CalendarChange) -> String? {
+            do { try change.check(against: [CalendarInfo(name: "Home")]); return nil } catch { return error.localizedDescription }
+        }
+        let twoAlerts = EventSnapshot(key: "k", draft: lunch, complexAlerts: true)
+        #expect(refused(.update(original: twoAlerts, after: try change(["alert_minutes": "30"]), future: false))?.contains("more than one alert") == true)
+        #expect(refused(.update(original: twoAlerts, after: try change(["title": "X"]), future: false)) == nil)
+
+        let longNotes = EventSnapshot(key: "k", draft: lunch, longNotes: true)
+        #expect(refused(.update(original: longNotes, after: try change(["notes": "new"]), future: false))?.contains("too long to change here") == true)
+        #expect(refused(.update(original: longNotes, after: try change(["location": "Home"]), future: false)) == nil)
+
+        let custom = try change(["repeat": "weekly"])
+        let odd = EventDraft(title: custom.title, start: custom.start, end: custom.end, location: custom.location,
+                             calendarName: "Home", repeats: .custom)
+        let pattern = EventSnapshot(key: "k", draft: odd, recurring: true)
+        #expect(refused(.update(original: pattern, after: try odd.applying(["repeat": "weekly"], calendar: Zone.newYork), future: true))?
+            .contains("pattern OMNIS cannot set") == true)
+        #expect(refused(.update(original: pattern, after: try odd.applying(["title": "X"], calendar: Zone.newYork), future: false)) == nil)
+
+        // How it repeats changes for this day and all later ones, never for one day alone.
+        let weekly = EventSnapshot(key: "k", draft: custom, recurring: true)
+        let ending = try custom.applying(["repeat_until": "2026-12-31"], calendar: Zone.newYork)
+        #expect(ending.repeats == .weekly && ending.repeatUntil != nil)
+        #expect(refused(.update(original: weekly, after: ending, future: false))?.contains("all later ones together") == true)
+        #expect(refused(.update(original: weekly, after: ending, future: true)) == nil)
+    }
+
+    @Test func guestsAndAccountsAreShownWhereAChangeReachesOtherPeopleOrDevices() throws {
+        let shared = EventSnapshot(key: "k", draft: lunch, guests: ["Sam", "Priya"])
+        #expect(CalendarChange.delete(shared, future: false).rows(calendar: Zone.newYork, now: now).last
+                == ChangeRow("Guests", "2 guests, who may be told about this"))
+        #expect(CalendarChange.update(original: EventSnapshot(key: "k", draft: lunch, guests: ["Sam"]),
+                                      after: try change(["title": "X"]), future: false).rows(calendar: Zone.newYork, now: now).last
+                == ChangeRow("Guests", "1 guest, who may be told about this"))
+        let whole = CalendarChange.deleteCalendar(name: "Work", account: "iCloud", events: 37, isDefault: true)
+        #expect(whole.rows() == [ChangeRow("Account", "iCloud"), ChangeRow("Events", "37 events will be deleted")])
+        #expect(whole.warning == "Deletes this calendar and every event in it, on every device that uses iCloud. This cannot be undone. It is your default calendar for new events.")
+        #expect(CalendarChange.createCalendar(name: "Gym", account: "iCloud").rows() == [ChangeRow("Account", "iCloud")])
+    }
+
+    @Test func aVeryLongOrZeroLengthEventCanStillHaveOtherDetailsChanged() throws {
+        let long = EventDraft(title: "Sabbatical", start: Zone.date("2026-11-02T05:00:00Z"), end: Zone.date("2027-01-10T05:00:00Z"), allDay: true)
+        #expect(try long.applying(["title": "Leave"], calendar: Zone.newYork).title == "Leave")
+        let instant = EventDraft(title: "Deadline", start: now, end: now)
+        #expect(try instant.applying(["location": "Office"], calendar: Zone.newYork).location == "Office")
+        #expect(throws: CalendarError.self) { try long.applying(["end": "2027-02-01"], calendar: Zone.newYork) }
+    }
+
+    @Test func errorCodesForTheLogCarryNoNames() {
+        #expect(CalendarError.refused("there is no calendar called \"Therapy\"").code == "refused")
+        #expect(CalendarError.unavailable("x").code == "unavailable" && CalendarError.gone.code == "gone")
     }
 
     @Test func eventsAreListedWithShortIdsAndDetailsAreFlattened() {
@@ -552,6 +613,34 @@ enum Zone {
         for text in ["what's on my calendar tomorrow", "who won the world cup", "summarise this", "how do I delete a git branch"] {
             #expect(!PersonalIntent.asksToChangeCalendar(text), "\(text) does not ask for a change")
         }
+    }
+
+    @Test func deletingIsOfferedOnlyWhenTheUsersOwnWordsAskForIt() {
+        var chat = Conversation()
+        chat.markPersonal()      // the calendar was read; an event title may be hostile
+        // Ordinary words that happen to contain a change verb never open deleting.
+        for text in ["update me on Friday", "can you change the wording", "move it to 3", "rename it to Checkup"] {
+            let offer = chat.offer(for: text, hasAttachments: false)
+            #expect(offer.deletes == .none, "\(text)")
+        }
+        #expect(chat.offer(for: "delete the dentist one", hasAttachments: false) == ChangeOffer(changes: true, deletes: .events))
+        // The answer to "this day or all later ones?" may still delete an event, once.
+        #expect(chat.offer(for: "all of them", hasAttachments: false) == ChangeOffer(changes: true, deletes: .events))
+        #expect(chat.offer(for: "thanks", hasAttachments: false) == ChangeOffer())
+        #expect(chat.offer(for: "cancel my dentist appointment tomorrow", hasAttachments: false).deletes == .events)
+        #expect(chat.offer(for: "delete lunch from my calendar tomorrow", hasAttachments: false).deletes == .events)
+        // A whole calendar: only when the message itself says so, and never carried forward.
+        #expect(chat.offer(for: "delete the Old calendar", hasAttachments: false).deletes == .all)
+        #expect(chat.offer(for: "yes, go ahead", hasAttachments: false).deletes == .events)
+        #expect(chat.offer(for: "get rid of my Work calendar", hasAttachments: false).deletes == .all)
+
+        // Nothing is deleted in a chat that holds a file.
+        var withFile = Conversation()
+        _ = withFile.begin(question: "summarise", attachments: [Attachment(kind: .text, name: "a.txt", text: "x")])
+        withFile.markPersonal()
+        #expect(withFile.offer(for: "delete the Old calendar", hasAttachments: false) == ChangeOffer(changes: true, deletes: .none))
+        withFile.clear()
+        #expect(withFile.offer(for: "delete the Old calendar", hasAttachments: false).deletes == .all)
     }
 
     @Test func inAChatAboutTheCalendarAShortInstructionIsEnough() {

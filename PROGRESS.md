@@ -18,14 +18,14 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
 | Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
 | Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
-| Calendar, changing and deleting events | Not started. Plan and approval first | — |
+| Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
 | Stage 2: main window | Not started. Waits for a design conversation | — |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 138. Swift: 171. Six more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 148. Swift: 193. Seven more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -34,6 +34,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] User's test of calendar questions against the real calendar (needs the macOS permission prompt).
 - [ ] User's test of adding events, including the first real save and an all-day event.
 - [ ] User's feedback on the look of the event preview card.
+- [ ] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
 - [ ] Verify API credit in the Anthropic Console (expected around 2026-11-23).
 - [ ] Approval to install the `anthropic` package, then a first live Claude call.
 - [ ] A second review of the Claude lane fixes before going live.
@@ -51,6 +52,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 4. Whether an answer given locally because Claude was unavailable should keep that chat local afterwards.
 
 5. Whether a new event preview should withdraw an unrelated one still waiting, as it does now.
+
+6. Whether calendar changes should ever happen without the confirmation click. Built with confirmation.
 
 ## Approved decisions
 
@@ -72,6 +75,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | Commit and push as work is completed, without waiting to be told. | — |
 | 2026-11-17 | Calendar through Apple's EventKit, read-only first, then creating events. | ADR-0011 |
 | 2026-11-17 | Events: create only; preview and a click every time; default calendar, shown on the preview. | `docs/stages/calendar-events.md` |
+| 2026-11-17 | Full calendar control: every command, including deleting. Each change still confirmed. | ADR-0012 |
 
 ## Things worth knowing
 
@@ -92,4 +96,4 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Next step
 
-The user tests reading the calendar and adding events. Then the choice of what comes next: changing and deleting events, email, or the main window design conversation.
+The user tests the calendar end to end in a throwaway calendar. Then the choice of what comes next: email, or the main window design conversation.

@@ -132,6 +132,7 @@ public struct Conversation: Equatable, Sendable {
         var message = ChatMessage(role: .user, text: question)
         message.attachments = attachments
         if !attachments.isEmpty {
+            hasFile = true
             hasPersonalData = true
             staysLocal = true
         }
@@ -176,15 +177,40 @@ public struct Conversation: Equatable, Sendable {
     /// True once the calendar has been read or a change prepared in this
     /// chat. After that, "delete the second one" is enough to ask for a change.
     private var calendarTouched = false
+    private var deleteNext = false
+    /// True once a file has been attached in this chat.
+    private var hasFile = false
 
     /// Whether the model may prepare an event for this message. Only when the
     /// user's own words ask for one, or follow straight on from asking, and
     /// never on a message that carries a file.
     public mutating func offersEvents(for text: String, hasAttachments: Bool) -> Bool {
+        offer(for: text, hasAttachments: hasAttachments).changes
+    }
+
+    /// What the model may prepare for this message.
+    ///
+    /// Deleting is held to a stricter rule than other changes. An event may
+    /// be deleted only when the user's own message says delete, cancel or
+    /// remove (or answers the model's question straight after such a
+    /// message). A whole calendar only when the message itself says to delete
+    /// a calendar. And nothing is deleted in a chat that holds a file, since
+    /// text in the file could be steering the model.
+    public mutating func offer(for text: String, hasAttachments: Bool) -> ChangeOffer {
         let asks = PersonalIntent.asksToChangeCalendar(text) || (calendarTouched && PersonalIntent.hasChangeVerb(text))
-        let offered = !hasAttachments && (asks || offerEventsNext)
+        let changes = !hasAttachments && (asks || offerEventsNext)
+        var deletes = DeleteLevel.none
+        let asksDelete = PersonalIntent.asksToDelete(text)
+        if changes && !hasFile {
+            if asksDelete {
+                deletes = PersonalIntent.asksToDeleteCalendar(text) ? .all : .events
+            } else if deleteNext {
+                deletes = .events
+            }
+        }
         offerEventsNext = asks && !hasAttachments
-        return offered
+        deleteNext = asksDelete && deletes != .none
+        return ChangeOffer(changes: changes, deletes: deletes)
     }
 
     /// The user clicked to add a preview. Returns the event to save and marks
@@ -246,6 +272,8 @@ public struct Conversation: Equatable, Sendable {
         hasPersonalData = false
         offerEventsNext = false
         calendarTouched = false
+        deleteNext = false
+        hasFile = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

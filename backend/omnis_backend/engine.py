@@ -210,6 +210,15 @@ CALENDAR_READ_NAMES = {tool["function"]["name"] for tool in CALENDAR_READ_TOOLS}
 CALENDAR_WRITE_NAMES = {tool["function"]["name"] for tool in CALENDAR_WRITE_TOOLS}
 MAX_NOTES_TEXT = 1000
 
+CALENDAR_NO_DELETE_PROMPT = (
+    " For this message the two deleting tools are not available. If the user wants something "
+    "deleted, ask them to say plainly what to delete."
+)
+CALENDAR_NO_DELETE_CALENDAR_PROMPT = (
+    " For this message calendar_delete_calendar is not available. If the user wants a whole "
+    "calendar deleted, ask them to say so plainly, naming the calendar."
+)
+
 CHANGE_SHOWN = (
     "A preview of this is now shown to the user with a button to confirm. It has NOT been done, "
     "and you cannot do it. In one short sentence, say what you prepared and ask them to check it "
@@ -365,7 +374,8 @@ class LocalEngine:
             async for item in self._local(text, decision, web, history, attachments,
                                           web_off_for_file=personal and web_wanted,
                                           calendar=bool(options.get("calendar")),
-                                          calendar_write=bool(options.get("calendar_write"))):
+                                          calendar_write=bool(options.get("calendar_write")),
+                                          calendar_delete=str(options.get("calendar_delete") or "none")):
                 if isinstance(item, AnswerInfo):
                     item.fallback = fallback
                 yield item
@@ -392,6 +402,7 @@ class LocalEngine:
     async def _local(
         self, text: str, decision: Decision, web: bool, history: list, attachments: list | None = None,
         web_off_for_file: bool = False, calendar: bool = False, calendar_write: bool = False,
+        calendar_delete: str = "none",
     ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
         model = self._models[decision.target]
         started = time.monotonic()
@@ -406,8 +417,17 @@ class LocalEngine:
         system = SYSTEM_PROMPT + DATE_PROMPT.format(today=today) + (WEB_PROMPT if web else "")
         if calendar:
             system += CALENDAR_PROMPT
+        # Deleting is offered only when the user's own message asked for it,
+        # and a whole calendar only when it named one. The app decides that.
+        write_tools = [tool for tool in CALENDAR_WRITE_TOOLS if not (
+            (tool is DELETE_EVENT_TOOL and calendar_delete not in ("events", "all"))
+            or (tool is DELETE_CALENDAR_TOOL and calendar_delete != "all"))]
         if calendar_write:
             system += CALENDAR_WRITE_PROMPT
+            if calendar_delete == "none":
+                system += CALENDAR_NO_DELETE_PROMPT
+            elif calendar_delete == "events":
+                system += CALENDAR_NO_DELETE_CALENDAR_PROMPT
         elif calendar:
             system += CALENDAR_READ_ONLY_PROMPT
         if web_off_for_file:
@@ -438,7 +458,7 @@ class LocalEngine:
             if calendar and calendar_attempts < MAX_CALENDAR_READS:
                 tools += CALENDAR_READ_TOOLS
             if calendar_write and proposals < MAX_EVENT_PROPOSALS:
-                tools += CALENDAR_WRITE_TOOLS
+                tools += write_tools
             turn = _Turn()
             async for piece in self._one_turn(model, messages, tools or None, started, turn, context):
                 shown = True
@@ -944,10 +964,10 @@ def _calendar_calls(tool_calls: list[dict], offered: set[str], today: datetime.d
             out, note = _event_draft(arguments)
             if out is not None:
                 note = " ".join(filter(None, [note, _extras(arguments, out, clearing=False)]))
-        elif not isinstance(arguments, dict):
-            out, note = None, "The details could not be read. Call the tool again with its named values."
         elif name == "calendar_list":
             out, note = {}, ""
+        elif not isinstance(arguments, dict):
+            out, note = None, "The details could not be read. Call the tool again with its named values."
         elif name == "calendar_update_event":
             out, note = _event_update(arguments)
         elif name in ("calendar_event_details", "calendar_delete_event"):
@@ -1009,7 +1029,7 @@ def _extras(arguments: dict, out: dict, clearing: bool) -> str:
     elif alert not in (None, "") and not isinstance(alert, bool):
         try:
             minutes = int(float(alert))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             minutes = None
         if minutes is not None and 0 <= minutes <= 40320:
             out["alert_minutes"] = str(minutes)
@@ -1029,6 +1049,13 @@ def _extras(arguments: dict, out: dict, clearing: bool) -> str:
                 out["repeat_until"] = day.date().isoformat()
     elif repeat and repeat != "none":
         dropped.append("repeat setting")
+    elif clearing and not repeat and _text(arguments, "repeat_until", 30):
+        # A new last day for an event that already repeats.
+        day = _local_time(_text(arguments, "repeat_until", 30))
+        if day is None:
+            dropped.append("last repeat day")
+        else:
+            out["repeat_until"] = day.date().isoformat()
     if not dropped:
         return ""
     return f"Note: the {', '.join(dropped)} was not valid and was left out. Tell the user."

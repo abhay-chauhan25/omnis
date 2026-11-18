@@ -612,7 +612,7 @@ def event_call(**arguments):
 
 
 SHOWN = {"ok": True, "error": "", "results": [], "content": ""}
-WRITE = {"calendar": True, "calendar_write": True}
+WRITE = {"calendar": True, "calendar_write": True, "calendar_delete": "all"}
 
 
 class CreateEventTests(unittest.IsolatedAsyncioTestCase):
@@ -739,6 +739,32 @@ class FullCalendarTests(unittest.IsolatedAsyncioTestCase):
         self.fake.requests.clear()
         await run_tools(self.engine, "x", {}, web=False, options={"calendar": True})
         self.assertEqual(self.tool_names(self.chats()[0]), READS)
+        # Deleting is offered only as far as the app allows for this message.
+        for level, missing, sentence in (("none", {"calendar_delete_event", "calendar_delete_calendar"}, "the two deleting tools are not available"),
+                                         ("events", {"calendar_delete_calendar"}, "calendar_delete_calendar is not available")):
+            self.fake.requests.clear()
+            await run_tools(self.engine, "x", {}, web=False,
+                            options={"calendar": True, "calendar_write": True, "calendar_delete": level})
+            self.assertEqual(self.tool_names(self.chats()[0]), READS + [name for name in WRITES if name not in missing])
+            self.assertIn(sentence, self.chats()[0]["messages"][0]["content"])
+
+    async def test_a_delete_asked_for_when_not_offered_never_reaches_the_app(self):
+        self.fake.tool_calls = [[tool_call("calendar_delete_calendar", name="Work"), tool_call("calendar_delete_event", event="e1")]]
+        _, _, requests = await run_tools(self.engine, "update me on Friday", {name: SHOWN for name in WRITES},
+                                         options={"calendar": True, "calendar_write": True, "calendar_delete": "none"})
+        self.assertEqual(requests, [])
+
+    async def test_small_argument_edge_cases(self):
+        from omnis_backend.engine import _event_update, _calendar_calls
+        import datetime
+        self.assertEqual(_event_update({"event": "e1", "repeat_until": "2026-12-20"})[0],
+                         {"event": "e1", "repeat_until": "2026-12-20", "scope": "this"})
+        out, note = _event_update({"event": "e1", "title": "x", "alert_minutes": float("inf")})
+        self.assertEqual(out, {"event": "e1", "title": "x", "scope": "this"})
+        self.assertIn("alert", note)
+        for arguments in (None, "", {}):
+            call = {"function": {"name": "calendar_list", "arguments": arguments}}
+            self.assertEqual(_calendar_calls([call], {"calendar_list"}, datetime.date.today())[0][1], {})
         self.fake.requests.clear()
         await run_tools(self.engine, "x", {}, web=False, options={"calendar": False})
         self.assertNotIn("tools", self.chats()[0])

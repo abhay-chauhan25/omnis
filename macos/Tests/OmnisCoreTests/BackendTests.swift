@@ -89,6 +89,8 @@ import Testing
         #expect(calendarAsk["personal"] as? Bool == true)
         #expect(calendarAsk["calendar"] as? Bool == true)
         #expect(calendarAsk["calendar_write"] as? Bool == false)
+        #expect(calendarAsk["calendar_delete"] as? String == "none")
+        #expect(try json(.ask(id: "q", text: "t", calendarWrite: true, calendarDelete: .events))["calendar_delete"] as? String == "events")
         #expect(try json(.ask(id: "q", text: "t", calendarWrite: true))["calendar_write"] as? Bool == true)
         #expect(ask["personal"] as? Bool == false)
         #expect(ask["calendar"] as? Bool == false)
@@ -327,7 +329,7 @@ import Testing
         let stub = StubCalendar()
         let backend = calendarService(stub)
         let run = try await trace(backend.ask("event: Lunch with Sam | 2026-11-18T13:00 | 2026-11-18T14:00",
-                                              calendar: true, calendarWrite: true))
+                                              calendar: true, calendarWrite: true, deletes: .all))
         let expected = try EventDraft.parse(["title": "Lunch with Sam", "start": "2026-11-18T13:00",
                                              "end": "2026-11-18T14:00", "all_day": "false"])
         #expect(run.events.first == .changeProposed(.create(expected)))
@@ -342,10 +344,10 @@ import Testing
         #expect(notOffered.events.first == .eventRefused("changing the calendar is not available"))
         #expect(notOffered.text.hasPrefix("Event ok=False"))
 
-        let bad = try await trace(backend.ask("event: Lunch | tomorrow | later", calendar: true, calendarWrite: true))
+        let bad = try await trace(backend.ask("event: Lunch | tomorrow | later", calendar: true, calendarWrite: true, deletes: .all))
         #expect(bad.events.first == .eventRefused("the event could not be prepared: its date or time was not valid"))
         let backwards = try await trace(backend.ask("event: Lunch | 2026-11-18T13:00 | 2026-11-18T12:00",
-                                                    calendar: true, calendarWrite: true))
+                                                    calendar: true, calendarWrite: true, deletes: .all))
         #expect(backwards.events.first == .eventRefused("the event could not be prepared: it ends before it starts"))
         backend.stop()
     }
@@ -375,7 +377,7 @@ import Testing
         let stub = stubWithTwoEvents()
         let backend = calendarService(stub)
         // An id means nothing until the calendar has been read.
-        let early = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true, calendarWrite: true))
+        let early = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true, calendarWrite: true, deletes: .all))
         #expect(refusals(early).first?.hasPrefix("that event id is not known") == true)
 
         let read = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
@@ -384,7 +386,7 @@ import Testing
 
         let dentist = try await stub.snapshot(key: "def|2")
         let moved = try await trace(backend.ask("tool: calendar_update_event event=e2; start=2026-11-18T15:00; scope=future",
-                                                calendar: true, calendarWrite: true))
+                                                calendar: true, calendarWrite: true, deletes: .all))
         let after = try dentist.draft.applying(["start": "2026-11-18T15:00"])
         // "future" means nothing for an event that does not repeat.
         #expect(changes(moved) == [.update(original: dentist, after: after, future: false)])
@@ -392,17 +394,17 @@ import Testing
 
         let standup = try await stub.snapshot(key: "abc|1")
         let deleted = try await trace(backend.ask("tool: calendar_delete_event event=e1; scope=future",
-                                                  calendar: true, calendarWrite: true))
+                                                  calendar: true, calendarWrite: true, deletes: .all))
         #expect(changes(deleted) == [.delete(standup, future: true)])
 
         let nothing = try await trace(backend.ask("tool: calendar_update_event event=e2; title=Dentist",
-                                                  calendar: true, calendarWrite: true))
+                                                  calendar: true, calendarWrite: true, deletes: .all))
         #expect(refusals(nothing) == ["that would not change anything about the event"])
-        let unknown = try await trace(backend.ask("tool: calendar_delete_event event=e77", calendar: true, calendarWrite: true))
+        let unknown = try await trace(backend.ask("tool: calendar_delete_event event=e77", calendar: true, calendarWrite: true, deletes: .all))
         #expect(changes(unknown).isEmpty && refusals(unknown).count == 1)
         // The event has gone by the time it is looked up.
         stub.events.removeAll { $0.key == "def|2" }
-        let gone = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true, calendarWrite: true))
+        let gone = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true, calendarWrite: true, deletes: .all))
         #expect(refusals(gone).first?.hasPrefix("that event has changed or no longer exists") == true)
         backend.stop()
     }
@@ -418,15 +420,48 @@ import Testing
             #expect(changes(run).isEmpty, "\(request)")
             #expect(run.text.hasPrefix("Tool ok=False"), "\(request)")
         }
-        let unknown = try await trace(backend.ask("tool: calendar_wipe_everything name=Work", calendar: true, calendarWrite: true))
+        let unknown = try await trace(backend.ask("tool: calendar_wipe_everything name=Work", calendar: true, calendarWrite: true, deletes: .all))
         #expect(changes(unknown).isEmpty && unknown.text.hasPrefix("Tool ok=False"))
+        backend.stop()
+    }
+
+    @Test func deletingIsRefusedBeyondWhatTheAppAllowedForThatQuestion() async throws {
+        let stub = stubWithTwoEvents()
+        let backend = calendarService(stub)
+        _ = try await trace(backend.ask("calendar: 2026-11-18 2026-11-18", calendar: true))
+        let why = "deleting was not asked for in the user's message. Ask them to say plainly what to delete"
+        let noDelete = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true, calendarWrite: true))
+        #expect(changes(noDelete).isEmpty && refusals(noDelete) == [why])
+        let eventsOnly = try await trace(backend.ask("tool: calendar_delete_calendar name=Work", calendar: true,
+                                                     calendarWrite: true, deletes: .events))
+        #expect(changes(eventsOnly).isEmpty && refusals(eventsOnly) == [why])
+        let allowed = try await trace(backend.ask("tool: calendar_delete_event event=e2", calendar: true,
+                                                  calendarWrite: true, deletes: .events))
+        #expect(changes(allowed).count == 1)
+        // Other changes are unaffected.
+        let update = try await trace(backend.ask("tool: calendar_update_event event=e2; title=Checkup", calendar: true, calendarWrite: true))
+        #expect(changes(update).count == 1)
+        backend.stop()
+    }
+
+    @Test func aCalendarDeletionPreviewSaysWhichAccountAndHowMuchWouldGo() async throws {
+        let stub = stubWithTwoEvents()
+        stub.list = [CalendarInfo(name: "Home", isDefault: true, account: "iCloud"), CalendarInfo(name: "Work", account: "Google")]
+        stub.counts = ["Work": 37]
+        let backend = calendarService(stub)
+        let run = try await trace(backend.ask("tool: calendar_delete_calendar name=work", calendar: true, calendarWrite: true, deletes: .all))
+        #expect(changes(run) == [.deleteCalendar(name: "Work", account: "Google", events: 37, isDefault: false)])
+        let home = try await trace(backend.ask("tool: calendar_delete_calendar name=Home", calendar: true, calendarWrite: true, deletes: .all))
+        #expect(changes(home) == [.deleteCalendar(name: "Home", account: "iCloud", events: nil, isDefault: true)])
+        let made = try await trace(backend.ask("tool: calendar_create_calendar name=Gym", calendar: true, calendarWrite: true))
+        #expect(changes(made) == [.createCalendar(name: "Gym", account: "iCloud")])
         backend.stop()
     }
 
     @Test func wholeCalendarsCanBeAddedRenamedAndDeletedOnlyWhenThatMakesSense() async throws {
         let backend = calendarService(stubWithTwoEvents())
         func run(_ request: String) async throws -> (text: String, events: [AnswerEvent]) {
-            try await trace(backend.ask("tool: \(request)", calendar: true, calendarWrite: true))
+            try await trace(backend.ask("tool: \(request)", calendar: true, calendarWrite: true, deletes: .all))
         }
         #expect(changes(try await run("calendar_create_calendar name=Gym")) == [.createCalendar(name: "Gym")])
         #expect(changes(try await run("calendar_rename_calendar name=Work; new_name=Office")) == [.renameCalendar(from: "Work", to: "Office")])
@@ -486,8 +521,12 @@ import Testing
         ]
         let backend = BackendService(config: config, webSearch: StubSearch(), calendar: stub)
         func ask(_ text: String) async throws -> (text: String, events: [AnswerEvent]) {
-            let run = try await trace(backend.ask(text, personal: true, calendar: true, calendarWrite: true))
-            print("LIVE_CHANGE \(text) => \(changes(run).map { $0.line() }) | refused \(refusals(run)) | answer: \(run.text)")
+            // The same rule the app applies to each message.
+            var chat = Conversation()
+            let offer = chat.offer(for: text, hasAttachments: false)
+            let run = try await trace(backend.ask(text, personal: true, calendar: true, calendarWrite: offer.changes,
+                                                  deletes: offer.deletes))
+            print("LIVE_CHANGE [\(offer.changes) \(offer.deletes)] \(text) => \(changes(run).map { $0.line() }) | refused \(refusals(run)) | answer: \(run.text)")
             return run
         }
 
@@ -553,7 +592,7 @@ import Testing
         }
 
         let run = try await trace(backend.ask("Add lunch with Sam tomorrow at 1pm at Cafe Rio",
-                                              personal: true, calendar: true, calendarWrite: true))
+                                              personal: true, calendar: true, calendarWrite: true, deletes: .all))
         print("LIVE_EVENT timed: \(drafts(run)) answer: \(run.text)")
         #expect(drafts(run).count == 1)
         if let draft = drafts(run).first {
@@ -569,25 +608,25 @@ import Testing
         #expect(!run.text.localizedCaseInsensitiveContains("I have added"))
 
         let ranged = try await trace(backend.ask("Put a dentist appointment on my calendar for tomorrow from 9:30 to 10:15 in the morning",
-                                                 personal: true, calendar: true, calendarWrite: true))
+                                                 personal: true, calendar: true, calendarWrite: true, deletes: .all))
         print("LIVE_EVENT range: \(drafts(ranged)) answer: \(ranged.text)")
         #expect(drafts(ranged).first?.start == tomorrow.addingTimeInterval(9.5 * 3600))
         #expect(drafts(ranged).first?.end == tomorrow.addingTimeInterval(10.25 * 3600))
 
         let allDay = try await trace(backend.ask("Create an all-day event called Mum's birthday tomorrow",
-                                                 personal: true, calendar: true, calendarWrite: true))
+                                                 personal: true, calendar: true, calendarWrite: true, deletes: .all))
         print("LIVE_EVENT all day: \(drafts(allDay)) answer: \(allDay.text)")
         #expect(drafts(allDay).first?.allDay == true)
         #expect(drafts(allDay).first?.start == tomorrow)
 
         // No day or time given: it should ask, not invent one.
         let vague = try await trace(backend.ask("Add a meeting with Priya to my calendar",
-                                                personal: true, calendar: true, calendarWrite: true))
+                                                personal: true, calendar: true, calendarWrite: true, deletes: .all))
         print("LIVE_EVENT vague: \(drafts(vague)) answer: \(vague.text)")
         #expect(drafts(vague).isEmpty)
 
         // An ordinary question prepares nothing.
-        let other = try await trace(backend.ask("What is the capital of France?", calendar: true, calendarWrite: true))
+        let other = try await trace(backend.ask("What is the capital of France?", calendar: true, calendarWrite: true, deletes: .all))
         #expect(drafts(other).isEmpty)
         backend.stop()
     }

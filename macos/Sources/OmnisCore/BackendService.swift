@@ -105,6 +105,7 @@ public final class BackendService: @unchecked Sendable {
         let personal: Bool
         let calendar: Bool
         let calendarWrite: Bool
+        let deletes: DeleteLevel
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -185,7 +186,8 @@ public final class BackendService: @unchecked Sendable {
         attachments: [Attachment] = [],
         personal: Bool = false,
         calendar: Bool = false,
-        calendarWrite: Bool = false
+        calendarWrite: Bool = false,
+        deletes: DeleteLevel = .none
     ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -200,7 +202,8 @@ public final class BackendService: @unchecked Sendable {
                 self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
                                            attachments: attachments, personal: personal,
                                            calendar: calendar && self.calendar != nil,
-                                           calendarWrite: calendarWrite, continuation: continuation)
+                                           calendarWrite: calendarWrite,
+                                           deletes: calendarWrite ? deletes : .none, continuation: continuation)
                 self.send(id)
             }
         }
@@ -233,7 +236,7 @@ public final class BackendService: @unchecked Sendable {
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
                            cloud: request.cloud, attachments: request.attachments,
                            personal: request.personal, calendar: request.calendar,
-                           calendarWrite: request.calendarWrite))
+                           calendarWrite: request.calendarWrite, calendarDelete: request.deletes))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -346,7 +349,7 @@ public final class BackendService: @unchecked Sendable {
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
                            cloud: request.cloud, attachments: request.attachments,
                            personal: request.personal, calendar: request.calendar,
-                           calendarWrite: request.calendarWrite))
+                           calendarWrite: request.calendarWrite, calendarDelete: request.deletes))
         }
     }
 
@@ -475,6 +478,12 @@ public final class BackendService: @unchecked Sendable {
             reply(.failure(CalendarError.refused("changing the calendar is not available")))
             return
         }
+        // Deleting needs the user's own message to have asked for it.
+        if (tool == "calendar_delete_event" && request.deletes == .none)
+            || (tool == "calendar_delete_calendar" && request.deletes != .all) {
+            reply(.failure(CalendarError.refused("deleting was not asked for in the user's message. Ask them to say plainly what to delete")))
+            return
+        }
 
         // What can be checked without the calendar is checked first.
         let refs = self.refs
@@ -545,8 +554,20 @@ public final class BackendService: @unchecked Sendable {
                 default: change = .deleteCalendar(name: try name("name"))
                 }
                 work = {
-                    try change.check(against: try await calendar.calendars())
-                    return .proposal(change)
+                    let list = try await calendar.calendars()
+                    try change.check(against: list)
+                    // The preview says which account is involved and how much would go.
+                    switch change {
+                    case .createCalendar(let name, _):
+                        return .proposal(.createCalendar(name: name, account: list.first(where: \.isDefault)?.account ?? ""))
+                    case .deleteCalendar(let name, _, _, _):
+                        let info = list.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                        let count = try? await calendar.eventCount(calendarNamed: info?.name ?? name)
+                        return .proposal(.deleteCalendar(name: info?.name ?? name, account: info?.account ?? "",
+                                                         events: count ?? nil, isDefault: info?.isDefault ?? false))
+                    default:
+                        return .proposal(change)
+                    }
                 }
             default:
                 throw CalendarError.refused("that is not something OMNIS can do with the calendar")

@@ -285,8 +285,9 @@ final class ChatModel: ObservableObject {
         }
         let cloud = ledger.permission()
         // The model may prepare an event only when your own message asks for one.
-        let offerEvents = calendarWriter != nil
-            && conversation.offersEvents(for: options.text, hasAttachments: !attachments.isEmpty)
+        // Deleting is held to a stricter rule; see `Conversation.offer`.
+        let offer = calendarWriter == nil ? ChangeOffer()
+            : conversation.offer(for: options.text, hasAttachments: !attachments.isEmpty)
 
         let history = conversation.history()
         let answerID = conversation.begin(question: text, attachments: attachments)
@@ -305,7 +306,7 @@ final class ChatModel: ObservableObject {
             do {
                 for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
                                                    attachments: attachments, personal: personal, calendar: true,
-                                                   calendarWrite: offerEvents) {
+                                                   calendarWrite: offer.changes, deletes: offer.deletes) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -350,7 +351,8 @@ final class ChatModel: ObservableObject {
                         }
                     case .eventRefused(let why):
                         self.conversation.update(answerID) { $0.proposalProblem = why }
-                        audit.record(action: "calendar_propose", outcome: "error", detail: why)
+                        // The reason can name a calendar, so it is not logged.
+                        audit.record(action: "calendar_propose", outcome: "refused")
                     case .usage(let model, let inputTokens, let outputTokens, let costUSD):
                         // Recorded turn by turn, so a stopped, failed or fallen-back
                         // answer still counts towards the month.
@@ -405,7 +407,9 @@ final class ChatModel: ObservableObject {
                 self?.conversation.updateProposal(proposalID) { $0.state = .done(result) }
                 self?.announce(result)
             } catch {
-                audit.record(action: "calendar_change", outcome: "error", detail: "\(change.kind): \(error.localizedDescription)")
+                // A fixed word for the reason: the full text can name a calendar.
+                audit.record(action: "calendar_change", outcome: "error",
+                             detail: "\(change.kind): \((error as? CalendarError)?.code ?? "error")")
                 self?.conversation.updateProposal(proposalID) { $0.state = .failed(error.localizedDescription) }
                 self?.announce("The calendar was not changed")
             }
