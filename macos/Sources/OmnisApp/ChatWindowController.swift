@@ -137,6 +137,11 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            // Command-V with a picture or files on the clipboard attaches them.
+            if event.keyCode == 9, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               self.model.attachFromPasteboard() {
+                return nil
+            }
             switch event.keyCode {
             case 53: // escape
                 self.hide()

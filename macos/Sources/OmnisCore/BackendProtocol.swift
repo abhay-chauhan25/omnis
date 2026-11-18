@@ -9,7 +9,7 @@ public enum BackendProtocol {
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
     case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [],
-             cloud: CloudPermission = CloudPermission())
+             cloud: CloudPermission = CloudPermission(), attachments: [Attachment] = [])
     case cancel(id: String)
     /// Sent once after hello. Hands the Claude key to the backend in memory;
     /// an empty key means Claude stays off.
@@ -75,11 +75,16 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route, let web, let history, let cloud):
+        case .ask(let id, let text, let route, let web, let history, let cloud, let attachments):
             object = [
                 "type": "ask", "id": id, "text": text, "route": route, "web": web,
-                "history": history.map { ["role": $0.role.rawValue, "content": $0.content] },
+                "history": history.map { turn -> [String: Any] in
+                    var entry: [String: Any] = ["role": turn.role.rawValue, "content": turn.content]
+                    if !turn.attachments.isEmpty { entry["attachments"] = turn.attachments.map(Self.encode) }
+                    return entry
+                },
                 "cloud": ["allowed": cloud.allowed, "max_usd": cloud.maxUSD, "reason": cloud.reason],
+                "attachments": attachments.map(Self.encode),
             ]
         case .toolResult(let id, let callID, let ok, let results, let error):
             object = [
@@ -92,6 +97,16 @@ public enum ProtocolCodec {
             object = ["type": "configure", "claude_key": claudeKey]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private static func encode(_ attachment: Attachment) -> [String: Any] {
+        switch attachment.kind {
+        case .image:
+            return ["kind": "image", "name": attachment.name,
+                    "data": (attachment.imageData ?? Data()).base64EncodedString()]
+        case .text:
+            return ["kind": "text", "name": attachment.name, "text": attachment.text ?? ""]
+        }
     }
 
     public static func decode(_ line: Data) throws -> ServiceMessage {

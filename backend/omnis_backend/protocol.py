@@ -15,7 +15,10 @@ App to service:
          "history": [{"role": "user"|"assistant", "content": "..."}] holding the
          earlier turns of the conversation, oldest first, and
          "cloud": {"allowed": true, "max_usd": 1.0, "reason": "..."}, the app's
-         say on whether Claude may be used for this question)
+         say on whether Claude may be used for this question, and
+         "attachments": [{"kind": "image", "name": "...", "data": "<base64 JPEG or PNG>"},
+                         {"kind": "text", "name": "...", "text": "..."}], files the user
+         attached. A history entry from the user may carry "attachments" too.)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -34,6 +37,7 @@ Service to app:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from . import __version__
@@ -45,6 +49,10 @@ MAX_ID_CHARS = 128
 
 CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result", "configure")
 MAX_KEY_CHARS = 500
+MAX_ATTACHMENTS = 4
+MAX_IMAGE_BASE64_CHARS = 6_000_000      # about 4.5 MB of image
+MAX_ATTACHMENT_TEXT_CHARS = 60_000
+MAX_NAME_CHARS = 200
 MAX_HISTORY_MESSAGES = 24
 MAX_HISTORY_CHARS = 12_000
 MAX_RESULTS = 8
@@ -115,7 +123,44 @@ def decode_client(line: bytes) -> dict[str, Any]:
         "type": "ask", "id": request_id, "text": text, "route": route, "web": web,
         "history": _decode_history(obj.get("history", []), request_id),
         "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
+        "attachments": _decode_attachments(obj.get("attachments", []), request_id),
     }
+
+
+_BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+
+
+def _decode_attachments(raw: Any, request_id: str) -> list[dict[str, str]]:
+    """Files attached to a message. Everything is size-limited, and an image
+    must be plain base64 so it cannot smuggle anything else into the request."""
+    if not isinstance(raw, list):
+        raise ProtocolError("bad_request", "'attachments' must be a list", request_id)
+    if len(raw) > MAX_ATTACHMENTS:
+        raise ProtocolError("bad_request", "too many attachments", request_id)
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ProtocolError("bad_request", "each attachment must be an object", request_id)
+        kind = item.get("kind")
+        name = item.get("name", "")
+        if not isinstance(name, str):
+            raise ProtocolError("bad_request", "an attachment name must be text", request_id)
+        name = " ".join(name.split())[:MAX_NAME_CHARS] or "attachment"
+        if kind == "image":
+            data = item.get("data")
+            if not isinstance(data, str) or not data or len(data) > MAX_IMAGE_BASE64_CHARS:
+                raise ProtocolError("bad_request", "an image attachment is missing or too large", request_id)
+            if len(data) % 4 != 0 or not _BASE64.fullmatch(data):
+                raise ProtocolError("bad_request", "an image attachment is not valid base64", request_id)
+            out.append({"kind": "image", "name": name, "data": data})
+        elif kind == "text":
+            text = item.get("text")
+            if not isinstance(text, str) or len(text) > MAX_ATTACHMENT_TEXT_CHARS:
+                raise ProtocolError("bad_request", "a text attachment is missing or too large", request_id)
+            out.append({"kind": "text", "name": name, "text": text})
+        else:
+            raise ProtocolError("bad_request", "unknown attachment kind", request_id)
+    return out
 
 
 def _decode_cloud(raw: Any, request_id: str) -> dict[str, Any]:
@@ -135,22 +180,28 @@ def _decode_cloud(raw: Any, request_id: str) -> dict[str, Any]:
     }
 
 
-def _decode_history(raw: Any, request_id: str) -> list[dict[str, str]]:
+def _decode_history(raw: Any, request_id: str) -> list[dict[str, Any]]:
     """Earlier turns of the conversation. Only user and assistant turns are
     accepted, so nothing sent by the app can pose as a system instruction."""
     if not isinstance(raw, list):
         raise ProtocolError("bad_request", "'history' must be a list", request_id)
-    turns: list[dict[str, str]] = []
+    turns: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             raise ProtocolError("bad_request", "each history entry must be an object", request_id)
         role, content = item.get("role"), item.get("content")
         if role not in ("user", "assistant") or not isinstance(content, str):
             raise ProtocolError("bad_request", "history entries need a user or assistant role and text", request_id)
-        if content.strip():
-            turns.append({"role": role, "content": content})
+        attachments = _decode_attachments(item.get("attachments", []), request_id)
+        if attachments and role != "user":
+            raise ProtocolError("bad_request", "only a user turn may carry attachments", request_id)
+        if content.strip() or attachments:
+            turn: dict[str, Any] = {"role": role, "content": content}
+            if attachments:
+                turn["attachments"] = attachments
+            turns.append(turn)
     # Keep the most recent turns that fit, dropping the oldest first.
-    kept: list[dict[str, str]] = []
+    kept: list[dict[str, Any]] = []
     total = 0
     for turn in reversed(turns[-MAX_HISTORY_MESSAGES:]):
         total += len(turn["content"])

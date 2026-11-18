@@ -5,10 +5,13 @@ public struct ChatTurn: Equatable, Sendable {
     public enum Role: String, Sendable { case user, assistant }
     public let role: Role
     public let content: String
+    /// Files that went with a user turn.
+    public let attachments: [Attachment]
 
-    public init(role: Role, content: String) {
+    public init(role: Role, content: String, attachments: [Attachment] = []) {
         self.role = role
         self.content = content
+        self.attachments = attachments
     }
 }
 
@@ -38,6 +41,8 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var searchProblem: String?
     /// The "which model answered" line.
     public var sourceLine: String?
+    /// Files the user attached to this message.
+    public var attachments: [Attachment] = []
 
     public init(id: UUID = UUID(), role: Role, text: String, state: State = .done) {
         self.id = id
@@ -67,8 +72,10 @@ public struct Conversation: Equatable, Sendable {
 
     /// Adds the user's message and an empty answer to fill in. Returns the answer's id.
     @discardableResult
-    public mutating func begin(question: String) -> UUID {
-        messages.append(ChatMessage(role: .user, text: question))
+    public mutating func begin(question: String, attachments: [Attachment] = []) -> UUID {
+        var message = ChatMessage(role: .user, text: question)
+        message.attachments = attachments
+        messages.append(message)
         let answer = ChatMessage(role: .assistant, text: "", state: .streaming)
         messages.append(answer)
         return answer.id
@@ -108,6 +115,13 @@ public struct Conversation: Equatable, Sendable {
             kept.insert(contentsOf: [question, answer], at: 0)
             index -= 2
         }
+        // Files are large, so only the most recent ones travel with later
+        // questions. That is enough for "and what about the second chart?".
+        if let latest = kept.lastIndex(where: { !$0.attachments.isEmpty }) {
+            for position in kept.indices where position != latest && !kept[position].attachments.isEmpty {
+                kept[position] = ChatTurn(role: kept[position].role, content: kept[position].content)
+            }
+        }
         return kept
     }
 
@@ -121,7 +135,7 @@ public struct Conversation: Equatable, Sendable {
                 let usable = (answer.state == .done || answer.state == .stopped)
                     && !answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 if usable {
-                    turns.append(ChatTurn(role: .user, content: question.text))
+                    turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
                     turns.append(ChatTurn(role: .assistant, content: answer.text))
                 }
                 index += 2

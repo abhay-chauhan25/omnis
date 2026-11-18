@@ -21,7 +21,8 @@ def _mock_delay_seconds() -> float:
 
 
 async def mock_answer(
-    text: str, route: str = "auto", web: bool = True, history: list | None = None, cloud: dict | None = None
+    text: str, route: str = "auto", web: bool = True, history: list | None = None, cloud: dict | None = None,
+    attachments: list | None = None,
 ) -> AsyncIterator["str | ToolRequest"]:
     """Yield a canned reply a word at a time, the way a real model would stream.
 
@@ -36,6 +37,12 @@ async def mock_answer(
         results = outcome.get("results") or []
         first = results[0]["title"] if results else "none"
         reply = f"Search ok={outcome.get('ok')} results={len(results)} first={first} error={outcome.get('error')}"
+    elif stripped.lower() == "attachments?":
+        # Test aid: report what files the app sent along, without echoing their content.
+        now = attachments or []
+        before = sum(len(t.get("attachments", [])) for t in (history or []))
+        kinds = ", ".join(f"{a['kind']} {a['name']}" for a in now) or "none"
+        reply = f"Got {len(now)} attachments ({kinds}). Earlier turns carried {before}."
     elif stripped.lower() == "history?":
         # Test aid: report what conversation the app sent along.
         turns = history or []

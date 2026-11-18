@@ -32,6 +32,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var notice: String?
     /// Bumped each time the window opens, so the view can take keyboard focus.
     @Published private(set) var openCount = 0
+    /// Files waiting to go with the next message.
+    @Published private(set) var pendingAttachments: [Attachment] = []
 
     private var registry = Registry(entries: [], editor: RegistryConfig.standard.editor)
     private let backend: BackendService?
@@ -53,7 +55,10 @@ final class ChatModel: ObservableObject {
 
     var editorName: String { registry.editor.name }
     var isAnswering: Bool { conversation.isAnswering }
-    var canSend: Bool { !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isAnswering }
+    var canSend: Bool {
+        let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (hasText || !pendingAttachments.isEmpty) && !isAnswering
+    }
 
     // MARK: Lifecycle
 
@@ -78,6 +83,77 @@ final class ChatModel: ObservableObject {
         conversation.clear()
         input = ""
         notice = nil
+        pendingAttachments = []
+    }
+
+    // MARK: Attachments
+
+    /// Reads the chosen files and queues them for the next message. A file
+    /// that cannot be read is reported and the rest are still attached.
+    func attach(urls: [URL]) {
+        for url in urls {
+            do {
+                try add(AttachmentLoader.load(url))
+            } catch {
+                show(notice: error.localizedDescription, seconds: 6)
+                if case AttachmentError.tooMany = error { return }
+            }
+        }
+    }
+
+    func attachImage(data: Data, name: String) {
+        do {
+            try add([AttachmentLoader.image(from: data, name: name)])
+        } catch {
+            show(notice: error.localizedDescription, seconds: 6)
+        }
+    }
+
+    private func add(_ attachments: [Attachment]) throws {
+        for attachment in attachments {
+            guard pendingAttachments.count < AttachmentLoader.maxAttachments else { throw AttachmentError.tooMany }
+            pendingAttachments.append(attachment)
+            if attachment.truncated {
+                show(notice: "\u{201C}\(attachment.name)\u{201D} is long, so only the first part will be read.", seconds: 6)
+            }
+        }
+    }
+
+    func removeAttachment(_ id: UUID) {
+        pendingAttachments.removeAll { $0.id == id }
+    }
+
+    /// The "+" button: choose files to attach.
+    func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image, .pdf, .text, .sourceCode, .json, .xml, .yaml]
+        panel.message = "Choose images, PDFs or text files. They are read on this Mac and are not sent to Claude."
+        panel.prompt = "Attach"
+        panel.level = .modalPanel  // above the chat window, which floats
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        attach(urls: panel.urls)
+    }
+
+    /// Command-V: if the clipboard holds a picture or files, attach them.
+    /// Returns false for ordinary text, so that pastes as usual.
+    func attachFromPasteboard() -> Bool {
+        let pasteboard = NSPasteboard.general
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                             options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            attach(urls: urls)
+            return true
+        }
+        guard pasteboard.string(forType: .string) == nil else { return false }
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            if let data = pasteboard.data(forType: type) {
+                attachImage(data: data, name: "Pasted image")
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: Typing
@@ -143,12 +219,23 @@ final class ChatModel: ObservableObject {
 
     func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isAnswering else { return }
+        let attachments = pendingAttachments
+        guard !text.isEmpty || !attachments.isEmpty, !isAnswering else { return }
 
         // The typed prefixes still work and win over the controls for one message.
         let options = RoutePrefix.split(text)
         var route = options.route != "auto" ? options.route : lane.rawValue
-        let web = webEnabled && options.web
+        var web = webEnabled && options.web
+
+        // A file is personal: it is read by the model on this Mac, the chat
+        // stays here, and nothing from it is put into a web search.
+        if !attachments.isEmpty {
+            route = "local"
+            web = false
+            let images = attachments.filter { $0.kind == .image }.count
+            audit.record(action: "attach", outcome: "ok",
+                         detail: "\(images) image, \(attachments.count - images) document")
+        }
 
         // Keeping one turn on this Mac keeps the whole chat here: otherwise a
         // later question would carry that turn to Claude as history.
@@ -163,8 +250,9 @@ final class ChatModel: ObservableObject {
         let cloud = ledger.permission()
 
         let history = conversation.history()
-        let answerID = conversation.begin(question: text)
+        let answerID = conversation.begin(question: text, attachments: attachments)
         input = ""
+        pendingAttachments = []
 
         guard let backend else {
             let reason = "The OMNIS backend is not set up, so questions cannot be answered yet."
@@ -176,7 +264,8 @@ final class ChatModel: ObservableObject {
         let audit = self.audit
         askTask = Task { [weak self] in
             do {
-                for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud) {
+                for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
+                                                   attachments: attachments) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):

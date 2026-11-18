@@ -7,6 +7,7 @@ struct ChatView: View {
     @ObservedObject var model: ChatModel
     let onClose: () -> Void
     @FocusState private var inputFocused: Bool
+    @State private var dropTargeted = false
 
     static let corner: CGFloat = 26
     private static let bottomID = "bottom"
@@ -20,6 +21,23 @@ struct ChatView: View {
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
         .ignoresSafeArea()
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: Self.corner, style: .continuous)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8, 6]))
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    DispatchQueue.main.async { model.attach(urls: [url]) }
+                }
+            }
+            return !providers.isEmpty
+        }
         .onChange(of: model.openCount) { focusInput() }
         .onAppear { focusInput() }
     }
@@ -108,6 +126,15 @@ struct ChatView: View {
                 suggestionStrip
             }
             VStack(alignment: .leading, spacing: 10) {
+                if !model.pendingAttachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(model.pendingAttachments) { attachment in
+                                AttachmentChip(attachment: attachment) { model.removeAttachment(attachment.id) }
+                            }
+                        }
+                    }
+                }
                 TextField("Ask OMNIS", text: $model.input, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
@@ -161,6 +188,13 @@ struct ChatView: View {
 
     private var controls: some View {
         HStack(spacing: 14) {
+            Button(action: model.chooseFiles) {
+                Image(systemName: "plus").font(.system(size: 15, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .help("Attach an image, PDF or text file. You can also drag one in, or paste a screenshot.")
+            .accessibilityLabel("Attach a file")
+
             Button {
                 model.webEnabled.toggle()
             } label: {
@@ -223,14 +257,21 @@ private struct MessageView: View {
         case .user:
             HStack {
                 Spacer(minLength: 40)
-                Text(message.text)
-                    .font(.system(size: 15))
-                    .foregroundStyle(.white)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.accentColor))
-                    .accessibilityLabel("You said: \(message.text)")
+                VStack(alignment: .trailing, spacing: 6) {
+                    ForEach(message.attachments) { attachment in
+                        AttachmentChip(attachment: attachment, onRemove: nil)
+                    }
+                    if !message.text.isEmpty {
+                        Text(message.text)
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.accentColor))
+                            .accessibilityLabel("You said: \(message.text)")
+                    }
+                }
             }
         case .assistant:
             answer
@@ -410,5 +451,54 @@ private struct WindowDragArea: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             window?.performDrag(with: event)
         }
+    }
+}
+
+/// One attached file: a small picture, or a document icon with its name.
+/// With `onRemove` it has a button to take it off again.
+private struct AttachmentChip: View {
+    let attachment: Attachment
+    let onRemove: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if attachment.kind == .image, let data = attachment.imageData, let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: onRemove == nil ? 120 : 40, height: onRemove == nil ? 90 : 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+            }
+            if attachment.kind == .text || onRemove != nil {
+                Text(attachment.name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 150, alignment: .leading)
+            }
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Remove")
+                .accessibilityLabel("Remove \(attachment.name)")
+            }
+        }
+        .padding(onRemove == nil && attachment.kind == .image ? 0 : 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(onRemove == nil && attachment.kind == .image ? 0 : 0.08))
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Attached \(attachment.kind == .image ? "image" : "document"): \(attachment.name)")
     }
 }

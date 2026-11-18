@@ -181,6 +181,23 @@ class CloudLaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.route, "local")
         self.assertEqual(info.fallback, "Claude could not be used (this month's Claude budget is used up)")
 
+    async def test_a_file_never_goes_to_claude_even_when_claude_is_asked_for(self):
+        engine = self.engine(["should not be used"])
+        files = [{"kind": "text", "name": "private.txt", "text": "secret"}]
+        for route in ("auto", "claude"):
+            out, info = "", None
+            async for item in engine.answer("use claude to summarise this", route, True, [], ALLOWED, files):
+                if isinstance(item, AnswerInfo):
+                    info = item
+            self.assertEqual(info.route, "local")
+            self.assertEqual(info.fallback, "")      # nothing to apologise for: it was never going there
+        self.assertEqual(self.claude.calls, [])
+        # Nor does a later, file-free question in the same chat.
+        history = [{"role": "user", "content": "q", "attachments": files}, {"role": "assistant", "content": "a"}]
+        async for _ in engine.answer("a public follow-up", "auto", True, history, ALLOWED):
+            pass
+        self.assertEqual(self.claude.calls, [])
+
     async def test_choosing_local_never_calls_claude_and_adds_no_note(self):
         engine = self.engine(["should not be used"])
         _, info, _ = await run(engine, "use claude for this", route="local")

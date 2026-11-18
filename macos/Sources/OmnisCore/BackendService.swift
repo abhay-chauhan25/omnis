@@ -89,6 +89,7 @@ public final class BackendService: @unchecked Sendable {
         let web: Bool
         let history: [ChatTurn]
         let cloud: CloudPermission
+        let attachments: [Attachment]
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -153,7 +154,8 @@ public final class BackendService: @unchecked Sendable {
         route: String = "auto",
         web: Bool = true,
         history: [ChatTurn] = [],
-        cloud: CloudPermission = CloudPermission()
+        cloud: CloudPermission = CloudPermission(),
+        attachments: [Attachment] = []
     ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -165,7 +167,8 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud, continuation: continuation)
+                self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
+                                           attachments: attachments, continuation: continuation)
                 self.send(id)
             }
         }
@@ -196,7 +199,7 @@ public final class BackendService: @unchecked Sendable {
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud))
+                           cloud: request.cloud, attachments: request.attachments))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -307,7 +310,7 @@ public final class BackendService: @unchecked Sendable {
         for id in resend {
             guard let request = pending[id] else { continue }
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud))
+                           cloud: request.cloud, attachments: request.attachments))
         }
     }
 

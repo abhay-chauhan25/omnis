@@ -12,7 +12,8 @@ from .handlers import mock_answer
 from .ollama import DEFAULT_PORT, OllamaClient
 from .service import Service
 
-LINE_LIMIT = 1 << 20
+# Large enough for a message carrying a few images.
+LINE_LIMIT = 24 << 20
 
 
 async def _serve(args: argparse.Namespace) -> int:

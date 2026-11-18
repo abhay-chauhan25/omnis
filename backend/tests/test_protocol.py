@@ -14,7 +14,8 @@ class DecodeClientTests(unittest.TestCase):
     def test_ask(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
         self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto", "web": True, "history": [],
-                               "cloud": {"allowed": True, "max_usd": 1.0, "reason": ""}})
+                               "cloud": {"allowed": True, "max_usd": 1.0, "reason": ""},
+                               "attachments": []})
 
     def test_cancel(self):
         self.assertEqual(
@@ -64,6 +65,44 @@ class DecodeClientTests(unittest.TestCase):
         self.assertEqual(protocol.usage("r", "claude-haiku-5-5", 10, 5, 0.000004), {
             "type": "usage", "id": "r", "model": "claude-haiku-5-5",
             "input_tokens": 10, "output_tokens": 5, "cost_usd": 0.000004})
+
+    def test_attachments_are_checked_and_limited(self):
+        def ask(attachments, **extra):
+            return json.dumps({"type": "ask", "id": "a", "text": "look", "attachments": attachments, **extra}).encode()
+
+        good = [{"kind": "image", "name": " my  chart.png ", "data": "aGVsbG8=", "extra": "dropped"},
+                {"kind": "text", "name": "notes.txt", "text": "line one"}]
+        got = protocol.decode_client(ask(good))["attachments"]
+        self.assertEqual(got, [{"kind": "image", "name": "my chart.png", "data": "aGVsbG8="},
+                               {"kind": "text", "name": "notes.txt", "text": "line one"}])
+        self.assertEqual(protocol.decode_client(ask([{"kind": "text", "text": "x"}]))["attachments"][0]["name"], "attachment")
+
+        for bad in (
+            "not a list",
+            ["text"],
+            [{"kind": "video", "name": "a", "data": "aGVsbG8="}],
+            [{"kind": "image", "name": "a"}],
+            [{"kind": "image", "name": "a", "data": "not base64!!"}],
+            [{"kind": "image", "name": "a", "data": "abc"}],                       # wrong length
+            [{"kind": "image", "name": "a", "data": "aGVs\nbG8="}],                # a line break hidden inside
+            [{"kind": "image", "name": "a", "data": "A" * (protocol.MAX_IMAGE_BASE64_CHARS + 4)}],
+            [{"kind": "text", "name": "a", "text": "x" * (protocol.MAX_ATTACHMENT_TEXT_CHARS + 1)}],
+            [{"kind": "text", "name": 7, "text": "x"}],
+            [{"kind": "text", "name": "a", "text": "x"}] * (protocol.MAX_ATTACHMENTS + 1),
+        ):
+            with self.subTest(bad=str(bad)[:50]):
+                self.assert_bad(ask(bad))
+
+    def test_history_may_carry_attachments_on_user_turns_only(self):
+        def ask(history):
+            return json.dumps({"type": "ask", "id": "a", "text": "next", "history": history}).encode()
+
+        file = [{"kind": "text", "name": "n.txt", "text": "body"}]
+        ok = [{"role": "user", "content": "", "attachments": file}, {"role": "assistant", "content": "seen"}]
+        kept = protocol.decode_client(ask(ok))["history"]
+        self.assertEqual(kept[0]["attachments"], file)   # kept although the text was empty
+        self.assertNotIn("attachments", kept[1])
+        self.assert_bad(ask([{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "attachments": file}]))
 
     def test_ask_can_forbid_web_search(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a","text":"x","web":false}')

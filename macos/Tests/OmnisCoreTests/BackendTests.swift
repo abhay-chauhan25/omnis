@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import OmnisCore
@@ -277,6 +278,67 @@ import Testing
         let bare = backend(key: nil)
         #expect(try await trace(bare.ask("x")).text == "configure=none anthropic_env_vars=0")
         bare.stop()
+    }
+
+    // The mock backend reports the files it was sent when asked "attachments?".
+    @Test func attachedFilesReachTheBackendWithTheQuestionAndWithLaterOnes() async throws {
+        let picture = try AttachmentLoader.image(from: Make.solid(width: 800, height: 600, red: 1, green: 0, blue: 0),
+                                                 name: "red square.png")
+        let notes = Attachment(kind: .text, name: "notes.txt", text: "private notes")
+        let backend = service()
+        let first = try await trace(backend.ask("attachments?", attachments: [picture, notes]))
+        #expect(first.text == "Got 2 attachments (image red square.png, text notes.txt). Earlier turns carried 0.")
+
+        let history = [ChatTurn(role: .user, content: "look", attachments: [picture]),
+                       ChatTurn(role: .assistant, content: "A red square.")]
+        let later = try await trace(backend.ask("attachments?", history: history))
+        #expect(later.text == "Got 0 attachments (none). Earlier turns carried 1.")
+        backend.stop()
+    }
+
+    /// Real model: it must actually see a picture sent through the whole chain.
+    ///   OMNIS_LIVE_TESTS=1 swift test --filter liveImage
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(5)))
+    func liveImageIsSeenByTheModel() async throws {
+        let ollama = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OMNIS_OLLAMA"] ?? "/opt/homebrew/bin/ollama")
+        var config = BackendConfig.python(URL(fileURLWithPath: "/usr/bin/env"), backendDirectory: Self.backendDirectory,
+                                          ollama: ollama, idleSeconds: 0)
+        config.arguments.insert("python3", at: 0)
+        let backend = BackendService(config: config)
+
+        // A picture with writing in it, like a screenshot.
+        let screenshot = Make.png(Make.bitmap(width: 900, height: 300) { context in
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 300))
+            context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            Make.write("Order confirmed. Your reference number is 7391.", in: context, at: CGPoint(x: 40, y: 170), size: 34)
+            Make.write("Delivery: Thursday", in: context, at: CGPoint(x: 40, y: 90), size: 34)
+        })
+        let picture = try AttachmentLoader.image(from: screenshot, name: "confirmation.png")
+        let started = Date()
+        let seen = try await trace(backend.ask("What is the reference number in this picture? Reply with the number only.",
+                                               attachments: [picture]))
+        print("LIVE_IMAGE seconds \(Date().timeIntervalSince(started)) answer: \(seen.text)")
+        #expect(seen.text.contains("7391"))
+
+        // A follow-up that only makes sense if the picture travelled with the history.
+        let history = [ChatTurn(role: .user, content: "What is the reference number in this picture?", attachments: [picture]),
+                       ChatTurn(role: .assistant, content: seen.text)]
+        let followUp = try await trace(backend.ask("And which day is the delivery? One word.", history: history))
+        print("LIVE_IMAGE follow-up: \(followUp.text)")
+        #expect(followUp.text.localizedCaseInsensitiveContains("Thursday"))
+
+        // A document: the answer must come from the file.
+        let report = Attachment(kind: .text, name: "report.txt",
+                                text: "Internal note. The project codename is Bluebird and the launch date is 14 March.")
+        let document = try await trace(backend.ask("What is the project codename? One word.", attachments: [report]))
+        print("LIVE_DOCUMENT answer: \(document.text)")
+        #expect(document.text.localizedCaseInsensitiveContains("Bluebird"))
+        let details = document.events.compactMap { event -> AnswerDetails? in
+            if case .finished(_, let details) = event { return details } else { return nil }
+        }.first
+        #expect(details?.route == "local")
+        backend.stop()
     }
 
     // The mock backend reports the history it was sent when asked "history?".
