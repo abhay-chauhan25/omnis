@@ -104,6 +104,18 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tools", self.chats()[0])
         self.assertNotIn("web_search", self.chats()[0]["messages"][0]["content"])
 
+    async def test_in_a_file_chat_the_model_is_told_why_it_cannot_search(self):
+        files = [{"kind": "text", "name": "private.txt", "text": "secret plans"}]
+        await collect(self.engine.answer("what is the latest news", "auto", True, [], None, files))
+        system = self.chats()[0]["messages"][0]["content"]
+        self.assertIn("Web search is switched off in this chat because a file was attached", system)
+        self.assertIn("a new chat will be able to search", system)
+        # An ordinary chat, or one where the user turned web off themselves, gets no such note.
+        await collect(self.engine.answer("what is the latest news"))
+        await collect(self.engine.answer("what is the latest news", "auto", False, [], None, files))
+        for body in self.chats()[1:]:
+            self.assertNotIn("because a file was attached", body["messages"][0]["content"])
+
     async def test_a_chat_that_already_has_a_file_keeps_it_for_follow_ups_and_stays_offline(self):
         self.fake.tool_calls = ["should not be used"]
         history = [{"role": "user", "content": "what is this?", "attachments": [

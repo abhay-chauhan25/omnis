@@ -49,6 +49,14 @@ WEB_PROMPT = (
     "say so."
 )
 
+# Without this the model just says it does not know, and the user cannot tell why.
+FILE_CHAT_PROMPT = (
+    " Web search is switched off in this chat because a file was attached to it, so that nothing "
+    "from the file can end up in a search. If a question needs current information you do not have, "
+    "say exactly that: web search is off in this chat because it has a file, and a new chat will be "
+    "able to search. Do not guess at current events."
+)
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -148,6 +156,7 @@ class LocalEngine:
         # has one, stays on this Mac and does not search the web: a search
         # could carry text from the file to the search engines.
         personal = bool(attachments) or any(turn.get("attachments") for turn in history)
+        web_wanted = web
         if personal:
             web = False
         ready, why_not = self._cloud_ready(cloud)
@@ -177,7 +186,8 @@ class LocalEngine:
                     fallback = f"Claude could not be used ({error.message})"
                     decision = decide(text, route if route == "local" else "auto", cloud_ready=False)
 
-            async for item in self._local(text, decision, web, history, attachments):
+            async for item in self._local(text, decision, web, history, attachments,
+                                          web_off_for_file=personal and web_wanted):
                 if isinstance(item, AnswerInfo):
                     item.fallback = fallback
                 yield item
@@ -202,7 +212,8 @@ class LocalEngine:
     # -- local -----------------------------------------------------------
 
     async def _local(
-        self, text: str, decision: Decision, web: bool, history: list, attachments: list | None = None
+        self, text: str, decision: Decision, web: bool, history: list, attachments: list | None = None,
+        web_off_for_file: bool = False,
     ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
         model = self._models[decision.target]
         started = time.monotonic()
@@ -214,6 +225,8 @@ class LocalEngine:
 
         today = datetime.date.today().strftime("%d %B %Y")
         system = SYSTEM_PROMPT + DATE_PROMPT.format(today=today) + (WEB_PROMPT if web else "")
+        if web_off_for_file:
+            system += FILE_CHAT_PROMPT
         # Earlier turns go between the instructions and the new question, so a
         # follow-up such as "and who came second?" makes sense to the model.
         messages: list[dict] = [{"role": "system", "content": system}]
