@@ -54,6 +54,8 @@ final class ChatModel: ObservableObject {
     }
 
     var editorName: String { registry.editor.name }
+    /// True when this chat cannot search the web because a file is, or was, part of it.
+    var webBlockedByFile: Bool { conversation.hasFiles || !pendingAttachments.isEmpty }
     var isAnswering: Bool { conversation.isAnswering }
     var canSend: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

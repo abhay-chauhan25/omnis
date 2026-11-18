@@ -195,16 +195,26 @@ struct ChatView: View {
             .help("Attach an image, PDF or text file. You can also drag one in, or paste a screenshot.")
             .accessibilityLabel("Attach a file")
 
-            Button {
-                model.webEnabled.toggle()
-            } label: {
-                Label(model.webEnabled ? "Web on" : "Web off", systemImage: model.webEnabled ? "globe" : "globe.badge.chevron.backward")
+            if model.webBlockedByFile {
+                // A chat that has had a file never searches. Say so, where the
+                // control is, instead of showing a switch that does nothing.
+                Label("Web off in this chat", systemImage: "globe.badge.chevron.backward")
                     .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.secondary)
+                    .help("Web search is off in a chat that has a file, so nothing from the file can end up in a search. Start a new chat to search the web.")
+                    .accessibilityLabel("Web search is off in this chat because it has a file")
+            } else {
+                Button {
+                    model.webEnabled.toggle()
+                } label: {
+                    Label(model.webEnabled ? "Web on" : "Web off", systemImage: model.webEnabled ? "globe" : "globe.badge.chevron.backward")
+                        .labelStyle(.titleAndIcon)
+                }
+                .foregroundStyle(model.webEnabled ? Color.accentColor : Color.secondary)
+                .help(model.webEnabled ? "OMNIS may search the web when a question needs it. Click to turn off."
+                                       : "Web search is off. Click to turn on.")
+                .accessibilityLabel(model.webEnabled ? "Web search on" : "Web search off")
             }
-            .foregroundStyle(model.webEnabled ? Color.accentColor : Color.secondary)
-            .help(model.webEnabled ? "OMNIS may search the web when a question needs it. Click to turn off."
-                                   : "Web search is off. Click to turn on.")
-            .accessibilityLabel(model.webEnabled ? "Web search on" : "Web search off")
 
             Menu {
                 Picker("Answer with", selection: $model.lane) {
