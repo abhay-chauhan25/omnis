@@ -2,7 +2,7 @@
 
 OMNIS = **Orchestrated Multimodal Neural Intelligence System**.
 
-The repo holds the planning documents, agent instructions, and the working app so far: a popup that launches apps and projects and answers questions with models running on this Mac.
+The repo holds the planning documents, agent instructions, and the working app so far: a chat window that launches apps and projects, answers questions with a model running on this Mac, and searches the web when a question needs it.
 
 ## Contents
 - `CLAUDE.md` — project vision, requirements, collaboration/approval rules, architecture proposals, security constraints, staged plan.
@@ -23,25 +23,30 @@ The repo holds the planning documents, agent instructions, and the working app s
 
 ## Running OMNIS
 
-Needs Xcode 26 and Python 3.11 or newer. For real answers it also needs Ollama with the two models (`ollama pull qwen3:4b` and `ollama pull qwen3:8b`); without Ollama the popup still launches things and gives mock replies.
+Needs Xcode 26 and Python 3.11 or newer. Two more things are optional, and OMNIS says so in plain words when one is missing:
+
+- **Ollama with the local model**, for answers: `ollama pull gemma4:12b` (7.7 GB). Without it the window still launches things.
+- **Docker Desktop, running**, for web search. OMNIS starts and stops its own search container.
 
 ```sh
 macos/scripts/bundle.sh          # builds macos/build/OMNIS.app
 open macos/build/OMNIS.app
 ```
 
-Press Control+Space, type, and press Enter. Esc closes the popup. Quit from the menu-bar icon or the Dock.
+Press Control+Space to show or hide the chat window. Type a question and press Return, or type the name of an app or project to open it. Drag the window by its top strip; it stays open until you hide it with Esc or the close button, and it remembers the conversation until you start a new chat or quit.
 
-Questions are answered on this Mac. Start a question with `claude:` to route it to Claude (a labelled stand-in until live use is approved) or `local:` to keep it local whatever it says.
+In the input bar, the globe turns web search on or off and the menu chooses where a question is answered: Auto, Local, or Claude. Typing `offline:`, `local:` or `claude:` before a question does the same for one message.
 
-Launchers, aliases, project folders and the editor are set in `~/Library/Application Support/OMNIS/registry.json`, created on first run. Actions are recorded in `audit.log` beside it.
+Questions are answered on this Mac unless a Claude API key has been saved from the menu-bar icon. With a key, public questions go to Claude; anything kept local stays local, and if Claude cannot be used OMNIS answers locally and says why. The live Claude connection also needs the `anthropic` Python package, which is not installed by default.
+
+Launchers, aliases, project folders and the editor are set in `~/Library/Application Support/OMNIS/registry.json`, created on first run. Beside it, `audit.log` records what OMNIS did (never what was typed or answered) and `claude-usage.csv` records what Claude has cost.
 
 Tests:
 
 ```sh
 cd macos && swift test
 cd backend && python3 -m unittest discover -s tests -t .
-cd macos && OMNIS_LIVE_TESTS=1 swift test --filter live    # uses the real models
+cd macos && OMNIS_LIVE_TESTS=1 swift test --filter live    # uses the real model and real web search
 ```
 
 Layout: `macos/` is the Swift app (`OmnisCore` for logic, `OmnisApp` for the popup). `backend/` is the Python service the app starts on demand.
