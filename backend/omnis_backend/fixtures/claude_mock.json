@@ -1,6 +1,0 @@
-{
-  "model": "claude-mock",
-  "input_tokens": 0,
-  "output_tokens": 0,
-  "reply": "Claude is not connected yet, so this is a stand-in reply and not a real answer. OMNIS chose Claude for this request because {reason}. Once live use is approved and funded, the real answer will appear here. To get a local answer now, ask again without mentioning Claude, or keep the question short and general."
-}

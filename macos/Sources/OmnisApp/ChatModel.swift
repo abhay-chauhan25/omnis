@@ -36,13 +36,15 @@ final class ChatModel: ObservableObject {
     private var registry = Registry(entries: [], editor: RegistryConfig.standard.editor)
     private let backend: BackendService?
     private let audit: AuditLog
+    private let ledger: UsageLedger
     private let performer: LaunchPerforming
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
-    init(backend: BackendService?, audit: AuditLog) {
+    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger) {
         self.backend = backend
         self.audit = audit
+        self.ledger = ledger
         self.performer = SystemLaunchPerformer(onLateFailure: { url, status in
             audit.record(action: "launch", kind: EntryKind.launcher.rawValue, target: url.lastPathComponent,
                          outcome: "error", detail: "exited with status \(status)")
@@ -145,8 +147,20 @@ final class ChatModel: ObservableObject {
 
         // The typed prefixes still work and win over the controls for one message.
         let options = RoutePrefix.split(text)
-        let route = options.route != "auto" ? options.route : lane.rawValue
+        var route = options.route != "auto" ? options.route : lane.rawValue
         let web = webEnabled && options.web
+
+        // Keeping one turn on this Mac keeps the whole chat here: otherwise a
+        // later question would carry that turn to Claude as history.
+        if route == "local" {
+            conversation.keepLocal()
+        } else if conversation.staysLocal {
+            if route == "claude" {
+                show(notice: "This chat is staying on this Mac. Start a new chat to use Claude.", seconds: 5)
+            }
+            route = "local"
+        }
+        let cloud = ledger.permission()
 
         let history = conversation.history()
         let answerID = conversation.begin(question: text)
@@ -162,7 +176,7 @@ final class ChatModel: ObservableObject {
         let audit = self.audit
         askTask = Task { [weak self] in
             do {
-                for try await event in backend.ask(options.text, route: route, web: web, history: history) {
+                for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud) {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -178,9 +192,14 @@ final class ChatModel: ObservableObject {
                         self.conversation.update(answerID) { $0.searching = false; $0.searchProblem = why }
                         audit.record(action: "web_search", outcome: "error", detail: why)
                     case .finished(let model, let details):
+                        if details.route == "cloud", let model {
+                            self.ledger.record(model: model, inputTokens: details.inputTokens ?? 0,
+                                               outputTokens: details.outputTokens ?? 0, costUSD: details.costUSD ?? 0)
+                        }
+                        let warning = details.route == "cloud" ? self.ledger.warning() : nil
                         self.conversation.update(answerID) {
                             $0.state = .done
-                            $0.sourceLine = Self.sourceLabel(model: model, details: details)
+                            $0.sourceLine = Self.sourceLabel(model: model, details: details, budgetWarning: warning)
                         }
                         audit.record(action: "ask", outcome: "ok", detail: Self.auditDetail(model: model, details: details))
                         self.announce("Answer ready")
@@ -224,21 +243,42 @@ final class ChatModel: ObservableObject {
     // MARK: Labels
 
     /// The "which model answered" line under an answer.
-    static func sourceLabel(model: String?, details: AnswerDetails) -> String? {
+    static func sourceLabel(model: String?, details: AnswerDetails, budgetWarning: String? = nil) -> String? {
         guard let model else { return nil }
+        var parts: [String] = []
         switch details.route {
         case "local":
-            var parts = ["\(model), on this Mac"]
-            if (details.searches ?? 0) > 0 { parts.append("searched the web") }
-            if let total = details.totalMilliseconds {
-                parts.append(String(format: "%.1f s", Double(total) / 1000))
-            }
-            return parts.joined(separator: " \u{00B7} ")
-        case "cloud-mock":
-            return "Claude is not connected. This is a stand-in, not an answer."
+            // Say first if Claude was wanted and could not be used.
+            if let fallback = details.fallback { parts.append(fallback) }
+            parts.append("\(model), on this Mac")
+        case "cloud":
+            parts.append(Self.claudeName(model))
+            if let cost = details.costUSD { parts.append(Self.costText(cost)) }
         default:
             return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
         }
+        if (details.searches ?? 0) > 0 { parts.append("searched the web") }
+        if let total = details.totalMilliseconds {
+            parts.append(String(format: "%.1f s", Double(total) / 1000))
+        }
+        if let budgetWarning { parts.append(budgetWarning) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    static func claudeName(_ model: String) -> String {
+        switch model {
+        case "claude-haiku-5-5": return "Claude Haiku 5.5"
+        case "claude-sonnet-5-5": return "Claude Sonnet 5.5"
+        case "claude-opus-5-5": return "Claude Opus 5.5"
+        default: return model
+        }
+    }
+
+    /// Small amounts are shown in cents so they do not all read as "$0.00".
+    static func costText(_ dollars: Double) -> String {
+        if dollars <= 0 { return "no charge" }
+        if dollars < 0.01 { return String(format: "%.2f\u{00A2}", dollars * 100) }
+        return String(format: "$%.2f", dollars)
     }
 
     /// Numbers only: which model, which route, how long, how many tokens, what it cost.
@@ -252,6 +292,7 @@ final class ChatModel: ObservableObject {
         if let total = details.totalMilliseconds { parts.append("total \(total) ms") }
         if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
         if let searches = details.searches, searches > 0 { parts.append("web searches \(searches)") }
+        if let fallback = details.fallback { parts.append("fallback: \(fallback)") }
         return parts.joined(separator: ", ")
     }
 }

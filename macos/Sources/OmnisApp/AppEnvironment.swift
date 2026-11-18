@@ -21,11 +21,17 @@ enum AppEnvironment {
         let ollama = ollamaPath.flatMap { path in
             path.hasPrefix("/") && fileManager.isExecutableFile(atPath: path) ? URL(fileURLWithPath: path) : nil
         }
-        return .python(
+        var config = BackendConfig.python(
             URL(fileURLWithPath: python),
             backendDirectory: URL(fileURLWithPath: directory, isDirectory: true),
             ollama: ollama
         )
+        // The Claude key comes from the Keychain each time the backend starts.
+        // With no key saved, the backend runs with Claude off and answers locally.
+        config.secrets = {
+            KeychainStore.claudeKey.read().map { ["ANTHROPIC_API_KEY": $0] } ?? [:]
+        }
+        return config
     }
 
     /// Web search runs SearXNG in Docker. Returns nil if Docker cannot be found;

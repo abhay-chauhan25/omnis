@@ -119,7 +119,7 @@ async def answer(client, model, question, web, think, today):
         await asyncio.sleep(SEARCH_PAUSE)
         paused += SEARCH_PAUSE
         messages.append({"role": "assistant", "content": turn["text"], "tool_calls": turn["calls"][:1]})
-        messages.append({"role": "tool", "tool_name": "web_search", "content": _results_for_model(query, outcome)})
+        messages.append({"role": "tool", "tool_name": "web_search", "content": _results_for_model(query, outcome, today)})
     return {
         "seconds": round(time.monotonic() - started - paused, 1), "first_visible": first_visible and round(first_visible, 1),
         "searches": searches, "queries": queries, "out_tokens": out_tokens,

@@ -21,7 +21,7 @@ def _mock_delay_seconds() -> float:
 
 
 async def mock_answer(
-    text: str, route: str = "auto", web: bool = True, history: list | None = None
+    text: str, route: str = "auto", web: bool = True, history: list | None = None, cloud: dict | None = None
 ) -> AsyncIterator["str | ToolRequest"]:
     """Yield a canned reply a word at a time, the way a real model would stream.
 

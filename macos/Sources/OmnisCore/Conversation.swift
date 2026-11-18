@@ -51,8 +51,16 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
 /// when a new chat is started or OMNIS quits.
 public struct Conversation: Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
+    /// True once the user has kept any turn of this chat on this Mac. From
+    /// then on the whole chat stays local, so a later question cannot carry
+    /// those turns to Claude as history. A new chat clears it.
+    public private(set) var staysLocal = false
 
     public init() {}
+
+    public mutating func keepLocal() {
+        staysLocal = true
+    }
 
     public var isEmpty: Bool { messages.isEmpty }
     public var isAnswering: Bool { messages.last?.state == .streaming }
@@ -75,6 +83,7 @@ public struct Conversation: Equatable, Sendable {
 
     public mutating func clear() {
         messages.removeAll()
+        staysLocal = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

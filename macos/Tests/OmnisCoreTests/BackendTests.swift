@@ -62,6 +62,12 @@ import Testing
         #expect(ask["web"] as? Bool == true)
         #expect(try json(.ask(id: "q", text: "t", web: false))["web"] as? Bool == false)
         #expect((ask["history"] as? [Any])?.isEmpty == true)
+        let cloud = try #require(ask["cloud"] as? [String: Any])
+        #expect(cloud["allowed"] as? Bool == true)
+        #expect(cloud["max_usd"] as? Double == 1.0)
+        let denied = try json(.ask(id: "q", text: "t", cloud: CloudPermission(allowed: false, maxUSD: 0, reason: "budget used up")))
+        #expect((denied["cloud"] as? [String: Any])?["allowed"] as? Bool == false)
+        #expect((denied["cloud"] as? [String: Any])?["reason"] as? String == "budget used up")
         let withHistory = try json(.ask(id: "q", text: "next", history: [
             ChatTurn(role: .user, content: "first"), ChatTurn(role: .assistant, content: "reply"),
         ]))
@@ -96,6 +102,11 @@ import Testing
             == .answerDone(id: "q", model: "qwen3:4b", cancelled: false, details: AnswerDetails(
                 route: "local", reason: "short", inputTokens: 12, outputTokens: 34,
                 loadMilliseconds: 2000, totalMilliseconds: 4100, costUSD: 0)))
+        #expect(try decode(#"{"type":"answer_done","id":"q","model":"gemma4:12b","route":"local","fallback":"Claude could not be used (there is no Claude API credit)"}"#)
+            == .answerDone(id: "q", model: "gemma4:12b", cancelled: false, details: AnswerDetails(
+                route: "local", fallback: "Claude could not be used (there is no Claude API credit)")))
+        #expect(try decode(#"{"type":"answer_done","id":"q","model":"m","fallback":""}"#)
+            == .answerDone(id: "q", model: "m", cancelled: false, details: AnswerDetails()))
         // Wrongly typed extras are ignored, not trusted.
         #expect(try decode(#"{"type":"answer_done","id":"q","model":"m","route":7,"input_tokens":"lots","cost_usd":true}"#)
             == .answerDone(id: "q", model: "m", cancelled: false, details: AnswerDetails()))
@@ -161,6 +172,86 @@ import Testing
         #expect(run.events.prefix(2) == [.searching(query: "claude max plan"), .sources(stub.results)])
         #expect(run.text == "Search ok=True results=2 first=What is the Max plan? error=")
         backend.stop()
+    }
+
+    /// The backend with a stand-in for Claude (no network, no key, no model).
+    func cloudService(secrets: (@Sendable () -> [String: String])? = nil) -> BackendService {
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMNIS_CLAUDE"] = "mock"
+        var config = BackendConfig(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0", "--engine", "local"],
+            workingDirectory: Self.backendDirectory, environment: environment
+        )
+        config.secrets = secrets
+        return BackendService(config: config, webSearch: StubSearch())
+    }
+
+    @Test func aPublicQuestionGoesToClaudeAndComesBackWithItsCost() async throws {
+        let backend = cloudService()
+        let run = try await trace(backend.ask("who won the world cup"))
+        #expect(run.text == "Mock Claude reply. No API call was made. You asked: who won the world cup")
+        let details = try #require(run.events.compactMap { event -> (String?, AnswerDetails)? in
+            if case .finished(let model, let details) = event { return (model, details) } else { return nil }
+        }.first)
+        #expect(details.0 == "claude-haiku-5-5")
+        #expect(details.1.route == "cloud")
+        #expect((details.1.costUSD ?? 0) > 0)
+        #expect(details.1.fallback == nil)
+        backend.stop()
+    }
+
+    @Test func claudeSearchesThroughTheAppToo() async throws {
+        let stub = StubSearch()
+        var environment = ProcessInfo.processInfo.environment
+        environment["OMNIS_CLAUDE"] = "mock"
+        let backend = BackendService(config: BackendConfig(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0", "--engine", "local"],
+            workingDirectory: Self.backendDirectory, environment: environment
+        ), webSearch: stub)
+        let run = try await trace(backend.ask("search: latest news"))
+        #expect(stub.queries == ["latest news"])
+        #expect(run.events.contains(.sources(stub.results)))
+        #expect(run.text.hasPrefix("Mock Claude reply written from the search results."))
+        // Turning web off is enforced by the app whatever the backend asks for.
+        let off = try await trace(backend.ask("search: latest news", web: false))
+        #expect(stub.queries.count == 1)
+        #expect(!off.events.contains { if case .sources = $0 { return true } else { return false } })
+        backend.stop()
+    }
+
+    /// The key reaches the backend only through `secrets` (the Keychain in the
+    /// app), never from the app's own environment.
+    @Test func theClaudeKeyComesOnlyFromTheSuppliedSecrets() async throws {
+        let script = #"""
+        echo '{"type":"hello","protocol":2,"service":"fake","version":"0"}'
+        while read -r line; do
+          case "$line" in
+            *'"type":"ask"'*)
+              id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"key=${ANTHROPIC_API_KEY:-none} token=${ANTHROPIC_AUTH_TOKEN:-none}\"}"
+              echo "{\"type\":\"answer_done\",\"id\":\"$id\",\"model\":\"fake\",\"cancelled\":false}" ;;
+          esac
+        done
+        """#
+        func backend(secrets: (@Sendable () -> [String: String])?) -> BackendService {
+            var config = BackendConfig(
+                executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
+                workingDirectory: URL(fileURLWithPath: "/tmp"),
+                environment: ["PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": "from-the-app-environment",
+                              "ANTHROPIC_AUTH_TOKEN": "stray-token"]
+            )
+            config.secrets = secrets
+            return BackendService(config: config)
+        }
+        let withKey = backend(secrets: { ["ANTHROPIC_API_KEY": "from-the-keychain"] })
+        #expect(try await trace(withKey.ask("x")).text == "key=from-the-keychain token=none")
+        withKey.stop()
+
+        let noKey = backend(secrets: { [:] })
+        #expect(try await trace(noKey.ask("x")).text == "key=none token=none")
+        noKey.stop()
     }
 
     // The mock backend reports the history it was sent when asked "history?".
@@ -522,12 +613,13 @@ import Testing
         #expect(finished?.details.route == "local")
         #expect((finished?.details.outputTokens ?? 0) > 0)
 
-        var standIn: AnswerDetails?
-        for try await event in backend.ask("use claude to explain quicksort") {
-            if case .finished(_, let details) = event { standIn = details }
+        // With no Claude key, asking for Claude is answered locally and says so.
+        var passedOver: AnswerDetails?
+        for try await event in backend.ask("use claude to say hello in one word") {
+            if case .finished(_, let details) = event { passedOver = details }
         }
-        #expect(standIn?.route == "cloud-mock")
-        #expect(standIn?.costUSD == 0)
+        #expect(passedOver?.route == "local")
+        #expect(passedOver?.fallback == "Claude could not be used (it is not set up)")
 
         // A typed route survives the trip: a Claude-sounding request stays local.
         var forced: AnswerDetails?

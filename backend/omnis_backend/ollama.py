@@ -174,6 +174,9 @@ class OllamaClient:
             raise OllamaError("The local model server is not running and OMNIS was not told how to start it.")
         if not self.started_server:
             env = dict(os.environ, OLLAMA_HOST=f"{self.host}:{self.port}")
+            # The model server has no business with the Claude key.
+            for secret in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+                env.pop(secret, None)
             try:
                 self._server = await asyncio.create_subprocess_exec(
                     self.binary,

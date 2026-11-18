@@ -10,8 +10,10 @@ App to service:
     {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
      "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "..."}
         ("ask" may also carry "web": false to forbid web search for that question,
-         and "history": [{"role": "user"|"assistant", "content": "..."}] holding the
-         earlier turns of the conversation, oldest first)
+         "history": [{"role": "user"|"assistant", "content": "..."}] holding the
+         earlier turns of the conversation, oldest first, and
+         "cloud": {"allowed": true, "max_usd": 1.0, "reason": "..."}, the app's
+         say on whether Claude may be used for this question)
 
 Service to app:
     {"type": "hello", "protocol": 1, "service": "omnis-backend", "version": "..."}
@@ -101,6 +103,24 @@ def decode_client(line: bytes) -> dict[str, Any]:
     return {
         "type": "ask", "id": request_id, "text": text, "route": route, "web": web,
         "history": _decode_history(obj.get("history", []), request_id),
+        "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
+    }
+
+
+def _decode_cloud(raw: Any, request_id: str) -> dict[str, Any]:
+    """The app's permission for Claude. Anything missing means the safe choice:
+    not allowed when the field is malformed, the default limit otherwise."""
+    if not isinstance(raw, dict):
+        raise ProtocolError("bad_request", "'cloud' must be an object", request_id)
+    allowed = raw.get("allowed", True)
+    limit = raw.get("max_usd", 1.0)
+    reason = raw.get("reason", "")
+    if not isinstance(allowed, bool) or isinstance(limit, bool) or not isinstance(limit, (int, float)):
+        raise ProtocolError("bad_request", "'cloud' needs allowed (true/false) and max_usd (a number)", request_id)
+    return {
+        "allowed": allowed,
+        "max_usd": max(0.0, min(float(limit), 100.0)),
+        "reason": reason[:200] if isinstance(reason, str) else "",
     }
 
 

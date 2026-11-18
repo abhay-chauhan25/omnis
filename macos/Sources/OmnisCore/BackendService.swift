@@ -12,6 +12,9 @@ public struct BackendConfig: Sendable {
     /// How long a web search may take before the app gives up on it. Kept
     /// shorter than the backend's own wait (70 s).
     public var searchDeadline: TimeInterval = 50
+    /// Extra environment for the backend, read each time it starts. Used to
+    /// hand over the Claude key from the Keychain without storing it anywhere.
+    public var secrets: (@Sendable () -> [String: String])?
 
     public init(
         executable: URL,
@@ -81,6 +84,7 @@ public final class BackendService: @unchecked Sendable {
         let route: String
         let web: Bool
         let history: [ChatTurn]
+        let cloud: CloudPermission
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         var receivedAny = false
         var retried = false
@@ -144,7 +148,8 @@ public final class BackendService: @unchecked Sendable {
         _ text: String,
         route: String = "auto",
         web: Bool = true,
-        history: [ChatTurn] = []
+        history: [ChatTurn] = [],
+        cloud: CloudPermission = CloudPermission()
     ) -> AsyncThrowingStream<AnswerEvent, Error> {
         let id = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -156,7 +161,7 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, route: route, web: web, history: history, continuation: continuation)
+                self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud, continuation: continuation)
                 self.send(id)
             }
         }
@@ -186,7 +191,8 @@ public final class BackendService: @unchecked Sendable {
             // Marked before writing: from here the request belongs to this
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
-            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
+                           cloud: request.cloud))
         } catch let error as BackendError {
             finish(id, throwing: error)
         } catch {
@@ -224,7 +230,13 @@ public final class BackendService: @unchecked Sendable {
         child.executableURL = config.executable
         child.arguments = config.arguments
         child.currentDirectoryURL = config.workingDirectory
-        if let environment = config.environment { child.environment = environment }
+        var environment = config.environment ?? ProcessInfo.processInfo.environment
+        // A key in the app's own environment is not passed on; only the Keychain supplies one.
+        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] where config.secrets != nil {
+            environment.removeValue(forKey: name)
+        }
+        for (name, value) in config.secrets?() ?? [:] { environment[name] = value }
+        child.environment = environment
 
         let toChild = Pipe()
         let fromChild = Pipe()
@@ -287,7 +299,8 @@ public final class BackendService: @unchecked Sendable {
         try write(.hello(protocolVersion: BackendProtocol.version))
         for id in resend {
             guard let request = pending[id] else { continue }
-            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history))
+            try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
+                           cloud: request.cloud))
         }
     }
 

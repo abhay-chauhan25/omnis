@@ -20,7 +20,7 @@ class AnswerInfo:
     """What produced an answer and what it cost. Sent with `answer_done`."""
 
     model: str
-    route: str  # "local", "cloud-mock" or "mock"
+    route: str  # "local", "cloud" or "mock"
     reason: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -28,6 +28,8 @@ class AnswerInfo:
     total_ms: int = 0
     cost_usd: float = 0.0
     searches: int = 0
+    #: Set when Claude was wanted but could not be used: why, in a few words.
+    fallback: str = ""
 
     def as_fields(self) -> dict:
         return asdict(self)

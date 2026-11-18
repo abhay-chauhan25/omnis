@@ -1,8 +1,8 @@
-"""Chooses which model should answer.
+"""Chooses where a request is answered.
 
-This is a first, deliberately simple version: plain rules, no model call, the
-same answer for the same input. It is meant to be measured against real
-requests and replaced or tuned later (Stage 6).
+The rule is about data, not difficulty (ADR-0009): anything personal stays on
+this Mac; a public question goes to Claude when Claude can be used. Plain
+rules, no model call, the same answer for the same input.
 """
 
 from __future__ import annotations
@@ -36,36 +36,38 @@ _ASKED_FOR_CLAUDE = re.compile(
     r"\b(use|ask|with|via|using)\s+claude\b(?!\s+(" + "|".join(_SURNAMES) + r")\b)", re.IGNORECASE
 )
 
-# Topics that are usually better handled by Claude. A match here does NOT
-# send the request to Claude: local-only is the default (ADR-0006), and word
-# matching is too blunt to spend money on. It picks the larger local model
-# and records that Claude was a candidate, so real requests can be reviewed
-# when automatic cloud routing is designed and measured (Stage 6).
-_CLAUDE_CANDIDATES = re.compile(
-    r"\bresearch paper\b|\b(this|the|that|my|attached) (paper|pdf|article)\b|\bmethodology\b"
-    r"|\bleetcode\b|\balgorithm\b|\bdynamic programming\b|\btime complexity\b|\bprove that\b|\bproof\b",
-    re.IGNORECASE,
-)
-
 _MODERATE_HINTS = re.compile(
     r"\bstep[- ]by[- ]step\b|\bplan\b|\bcompare\b|\btrade-?offs?\b|\bsummar(y|ise|ize)\b"
-    r"|\bexplain (why|how)\b|\bwrite (a|some|the)?\s*(code|function|script|program)\b|\bdebug\b|\brefactor\b",
+    r"|\bexplain (why|how)\b|\bwrite (a|some|the)?\s*(code|function|script|program)\b|\bdebug\b|\brefactor\b"
+    r"|\bleetcode\b|\balgorithm\b|\btime complexity\b|\bprove\b|\bproof\b",
     re.IGNORECASE,
 )
 
 LONG_REQUEST_WORDS = 40
 
 
-def decide(text: str, override: str = "auto") -> Decision:
-    """Claude is chosen only when the user asks for it, by override or by name."""
-    if override == "claude":
-        return Decision(Target.CLOUD, "you chose Claude")
-    if override != "local" and _ASKED_FOR_CLAUDE.search(text):
-        return Decision(Target.CLOUD, "you asked for Claude")
+def wants_claude(text: str, override: str = "auto") -> bool:
+    """True if the user asked for Claude outright, by control or by name."""
+    return override == "claude" or (override != "local" and bool(_ASKED_FOR_CLAUDE.search(text)))
 
-    prefix = "you chose local; " if override == "local" else ""
-    if _CLAUDE_CANDIDATES.search(text):
-        return Decision(Target.MODERATE, prefix + "it may suit Claude, which is used only when you ask for it")
+
+def decide(text: str, override: str = "auto", cloud_ready: bool = False, personal: bool = False) -> Decision:
+    """`cloud_ready` says whether Claude can be used right now. `personal`
+    says the request touches personal data, which never leaves this Mac."""
+    if personal:
+        return _local(text, "it uses personal data, which stays on this Mac; ")
+    if override == "local":
+        return _local(text, "you chose local; ")
+    if cloud_ready:
+        if override == "claude":
+            return Decision(Target.CLOUD, "you chose Claude")
+        if _ASKED_FOR_CLAUDE.search(text):
+            return Decision(Target.CLOUD, "you asked for Claude")
+        return Decision(Target.CLOUD, "it is a public question")
+    return _local(text, "")
+
+
+def _local(text: str, prefix: str) -> Decision:
     if _MODERATE_HINTS.search(text):
         return Decision(Target.MODERATE, prefix + "it asks for planning, comparison, code or a summary")
     if len(text.split()) > LONG_REQUEST_WORDS:

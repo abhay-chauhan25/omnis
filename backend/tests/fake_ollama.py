@@ -19,6 +19,8 @@ class FakeOllama:
         # Each chat request that offers tools pops one entry and replies with
         # that tool call instead of an answer. A dict is sent as the raw call.
         self.tool_calls: list = []
+        # This many chat requests get a reply with no text at all, then replies are normal.
+        self.empty_replies = 0
         self.error: str | None = None
         self.status = 200
         self.disconnected = asyncio.Event()
@@ -97,6 +99,13 @@ class FakeOllama:
             return
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n")
         body = self.requests[-1][2] or {}
+        if self.empty_replies > 0:
+            self.empty_replies -= 1
+            await self._chunk(writer, {"message": {"role": "assistant", "content": ""}, "done": True,
+                                       "prompt_eval_count": 3, "eval_count": 1})
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+            return
         if body.get("tools") and self.tool_calls:
             call = self.tool_calls.pop(0)
             if isinstance(call, list):

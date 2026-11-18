@@ -41,6 +41,12 @@ struct ChatView: View {
                 .help("Hide OMNIS (Esc)")
                 .accessibilityLabel("Hide OMNIS")
                 Spacer()
+                if model.conversation.staysLocal {
+                    Label("On this Mac", systemImage: "lock.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .help("This chat is staying on this Mac. Start a new chat to use Claude.")
+                        .accessibilityLabel("This chat is staying on this Mac")
+                }
                 Button(action: model.newChat) {
                     Image(systemName: "square.and.pencil").font(.system(size: 16, weight: .medium))
                 }

@@ -287,4 +287,5 @@ public enum OmnisPaths {
 
     public static var registryFile: URL { supportDirectory.appendingPathComponent("registry.json") }
     public static var auditLog: URL { supportDirectory.appendingPathComponent("audit.log") }
+    public static var usageLedger: URL { supportDirectory.appendingPathComponent("claude-usage.csv") }
 }

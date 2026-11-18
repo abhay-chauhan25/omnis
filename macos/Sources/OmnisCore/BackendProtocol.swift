@@ -8,7 +8,8 @@ public enum BackendProtocol {
 
 public enum ClientMessage: Equatable, Sendable {
     case hello(protocolVersion: Int)
-    case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [])
+    case ask(id: String, text: String, route: String = "auto", web: Bool = true, history: [ChatTurn] = [],
+             cloud: CloudPermission = CloudPermission())
     case cancel(id: String)
     /// The app's reply to a `toolRequest`: what the search found, or why it failed.
     case toolResult(id: String, callID: String, ok: Bool, results: [SearchResult], error: String)
@@ -17,7 +18,7 @@ public enum ClientMessage: Equatable, Sendable {
 /// What produced an answer and what it cost. All fields are optional on the
 /// wire; the mock backend sends none of them.
 public struct AnswerDetails: Equatable, Sendable {
-    /// "local", "cloud-mock" or "mock".
+    /// "local", "cloud" or "mock".
     public var route: String?
     /// Why this model was chosen, in plain words.
     public var reason: String?
@@ -28,10 +29,12 @@ public struct AnswerDetails: Equatable, Sendable {
     public var costUSD: Double?
     /// How many web searches were made for this answer.
     public var searches: Int?
+    /// Set when Claude was wanted but could not be used: why, in a few words.
+    public var fallback: String?
 
     public init(route: String? = nil, reason: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
                 loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil, costUSD: Double? = nil,
-                searches: Int? = nil) {
+                searches: Int? = nil, fallback: String? = nil) {
         self.route = route
         self.reason = reason
         self.inputTokens = inputTokens
@@ -40,6 +43,7 @@ public struct AnswerDetails: Equatable, Sendable {
         self.totalMilliseconds = totalMilliseconds
         self.costUSD = costUSD
         self.searches = searches
+        self.fallback = fallback
     }
 }
 
@@ -66,10 +70,11 @@ public enum ProtocolCodec {
         switch message {
         case .hello(let version):
             object = ["type": "hello", "protocol": version]
-        case .ask(let id, let text, let route, let web, let history):
+        case .ask(let id, let text, let route, let web, let history, let cloud):
             object = [
                 "type": "ask", "id": id, "text": text, "route": route, "web": web,
                 "history": history.map { ["role": $0.role.rawValue, "content": $0.content] },
+                "cloud": ["allowed": cloud.allowed, "max_usd": cloud.maxUSD, "reason": cloud.reason],
             ]
         case .toolResult(let id, let callID, let ok, let results, let error):
             object = [
@@ -125,7 +130,8 @@ public enum ProtocolCodec {
                     loadMilliseconds: optionalInt("load_ms"),
                     totalMilliseconds: optionalInt("total_ms"),
                     costUSD: cost,
-                    searches: optionalInt("searches")
+                    searches: optionalInt("searches"),
+                    fallback: optionalText("fallback").flatMap { $0.isEmpty ? nil : $0 }
                 )
             )
         case "tool_request":

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backend: BackendService?
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
+    private let ledger = UsageLedger(url: OmnisPaths.usageLedger)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A backend that has just exited must give a write error, not end the app.
@@ -21,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         backend = AppEnvironment.backendConfig().map { BackendService(config: $0, webSearch: web?.search) }
-        let model = ChatModel(backend: backend, audit: audit)
+        let model = ChatModel(backend: backend, audit: audit, ledger: ledger)
         chat = ChatWindowController(model: model)
 
         buildMainMenu()
@@ -72,6 +73,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Asks for the Claude API key and keeps it in the Keychain. The field
+    /// hides what is typed, and the key is never shown again or written to a file.
+    @objc private func setClaudeKey() {
+        let hasKey = KeychainStore.claudeKey.read() != nil
+        let alert = NSAlert()
+        alert.messageText = "Claude API key"
+        alert.informativeText = hasKey
+            ? "A key is saved. Paste a new one to replace it, or remove it to keep every answer on this Mac."
+            : "Paste your Anthropic API key to let OMNIS send public questions to Claude. It is stored in the macOS Keychain. Without a key, every answer comes from the model on this Mac."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "sk-ant-..."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        if hasKey { alert.addButton(withTitle: "Remove Key") }
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            guard !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            let saved = KeychainStore.claudeKey.save(field.stringValue)
+            audit.record(action: "claude_key", outcome: saved ? "saved" : "error")
+        case .alertThirdButtonReturn:
+            KeychainStore.claudeKey.delete()
+            audit.record(action: "claude_key", outcome: "removed")
+        default:
+            return
+        }
+        // The backend reads the key when it starts, so restart it.
+        backend?.stop()
+    }
+
     @objc private func openPopup() {
         chat.show()
     }
@@ -88,6 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let open = NSMenuItem(title: "Open OMNIS", action: #selector(openPopup), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let key = NSMenuItem(title: "Claude API Key\u{2026}", action: #selector(setClaudeKey), keyEquivalent: "")
+        key.target = self
+        menu.addItem(key)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit OMNIS", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
