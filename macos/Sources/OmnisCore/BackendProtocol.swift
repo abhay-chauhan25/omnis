@@ -176,7 +176,7 @@ public enum ProtocolCodec {
             // Only short text values are kept from the arguments.
             var arguments: [String: String] = [:]
             for (key, value) in (object["arguments"] as? [String: Any]) ?? [:] {
-                if let text = value as? String, key.count <= 40 { arguments[key] = String(text.prefix(200)) }
+                if let text = value as? String, key.count <= 40 { arguments[key] = String(text.prefix(1200)) }
             }
             return .toolRequest(id: try string("id"), callID: try string("call_id"),
                                 tool: try string("tool"), query: String(try string("query").prefix(400)),

@@ -392,45 +392,71 @@ private struct MessageView: View {
     }
 }
 
-/// A new event, shown for the user to check. Nothing is on the calendar
-/// until "Add to Calendar" is clicked.
+/// One change to the calendar, shown for the user to check. Nothing is
+/// done until the confirm button is clicked.
 private struct EventCard: View {
     let proposal: EventProposal
     let confirm: () -> Void
     let decline: () -> Void
 
+    private var change: CalendarChange { proposal.change }
     private var isLive: Bool { proposal.state == .waiting || proposal.state == .saving }
+
+    private var symbol: String {
+        switch change {
+        case .create: return "calendar.badge.plus"
+        case .update: return "calendar.badge.clock"
+        case .delete: return "calendar.badge.minus"
+        case .createCalendar: return "plus.rectangle.on.rectangle"
+        case .renameCalendar: return "pencil"
+        case .deleteCalendar: return "trash"
+        }
+    }
+
+    private var rows: [ChangeRow] {
+        var rows = change.rows()
+        // A new event with no calendar named goes to the default one.
+        if case .create(let draft) = change, draft.calendarName == nil, isLive {
+            rows.append(ChangeRow("Calendar", proposal.calendarName ?? "your default calendar"))
+        }
+        return rows
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "calendar.badge.plus")
+                Image(systemName: symbol)
                     .font(.system(size: 18))
-                    .foregroundStyle(isLive ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(!isLive ? Color.secondary : change.isDestructive ? Color.red : Color.accentColor)
                     .frame(width: 24)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(proposal.draft.title)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(change.heading.uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(change.isDestructive && isLive ? Color.red : Color.secondary)
+                    // Shown in full: what you see is exactly what is done.
+                    Text(change.title)
                         .font(.system(size: 14, weight: .semibold))
-                        // Shown in full: what you see is exactly what is saved.
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(proposal.draft.when())
-                        .font(.system(size: 13))
-                    if let place = proposal.draft.location {
-                        Label(place, systemImage: "mappin.and.ellipse")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if isLive {
-                        Text("Calendar: \(proposal.calendarName ?? "your default calendar")")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        if proposal.draft.start < Date() {
-                            Label("This time is in the past", systemImage: "exclamationmark.triangle.fill")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.orange)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(row.label)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 62, alignment: .leading)
+                            Text(row.value)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+                        .font(.system(size: 12))
+                    }
+                    if isLive, let start = change.resultingStart, start < Date() {
+                        Label("This time is in the past", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                    }
+                    if isLive, let warning = change.warning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: 0)
@@ -438,45 +464,55 @@ private struct EventCard: View {
             footer
         }
         .padding(12)
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: 440, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.5)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
         .textSelection(.enabled)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("New event: \(proposal.draft.title), \(proposal.draft.when())")
+        .accessibilityLabel("\(change.heading): \(change.title)")
+    }
+
+    @ViewBuilder private var confirmButton: some View {
+        if change.isDestructive {
+            Button(change.confirmLabel, role: .destructive, action: confirm)
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+        } else {
+            Button(change.confirmLabel, action: confirm)
+                .buttonStyle(.borderedProminent)
+        }
     }
 
     @ViewBuilder private var footer: some View {
         switch proposal.state {
         case .waiting:
             HStack(spacing: 8) {
-                Text("Not added yet").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Text("Nothing changed yet").font(.system(size: 11)).foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
-                Button("Don't Add", action: decline)
-                Button("Add to Calendar", action: confirm)
-                    .buttonStyle(.borderedProminent)
+                Button(change.declineLabel, action: decline)
+                confirmButton
             }
             .controlSize(.small)
         case .saving:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Adding").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("Working").font(.system(size: 12)).foregroundStyle(.secondary)
             }
-        case .added(let calendar):
-            Label("Added to \(calendar)", systemImage: "checkmark.circle.fill")
+        case .done(let result):
+            Label(result, systemImage: "checkmark.circle.fill")
                 .font(.system(size: 12)).foregroundStyle(.green)
         case .declined:
-            Text("Not added").font(.system(size: 12)).foregroundStyle(.secondary)
+            Text("Not done").font(.system(size: 12)).foregroundStyle(.secondary)
         case .replaced:
-            Text("Not added. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
+            Text("Not done. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
         case .failed(let why):
             VStack(alignment: .leading, spacing: 6) {
-                Label("Could not add it: \(why)", systemImage: "exclamationmark.triangle.fill")
+                Label("Not done: \(why)", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    Button("Don't Add", action: decline)
+                    Button(change.declineLabel, action: decline)
                     Button("Try Again", action: confirm)
                 }
                 .controlSize(.small)

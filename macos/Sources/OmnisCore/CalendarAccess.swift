@@ -9,14 +9,21 @@ public struct CalendarEvent: Equatable, Sendable {
     public let allDay: Bool
     public let calendar: String
     public let location: String?
+    /// Identifies this event (and, for a repeating one, this day of it) to
+    /// the calendar. Never shown to the model, which gets a short id instead.
+    public let key: String
+    public let repeats: Bool
 
-    public init(title: String, start: Date, end: Date, allDay: Bool = false, calendar: String, location: String? = nil) {
+    public init(title: String, start: Date, end: Date, allDay: Bool = false, calendar: String, location: String? = nil,
+                key: String = "", repeats: Bool = false) {
         self.title = title
         self.start = start
         self.end = end
         self.allDay = allDay
         self.calendar = calendar
         self.location = location
+        self.key = key
+        self.repeats = repeats
     }
 }
 
@@ -26,6 +33,8 @@ public enum CalendarError: Error, Equatable, LocalizedError {
     case unavailable(String)
     case badEvent(String)
     case noCalendar
+    case gone
+    case refused(String)
 
     public var errorDescription: String? {
         switch self {
@@ -35,16 +44,56 @@ public enum CalendarError: Error, Equatable, LocalizedError {
         case .unavailable(let why): return "the calendar could not be used (\(why))"
         case .badEvent(let why): return "the event could not be prepared: \(why)"
         case .noCalendar: return "there is no calendar that new events can be added to. Choose a default calendar in the Calendar app's settings"
+        case .gone: return "that event has changed or no longer exists. Read the calendar again"
+        case .refused(let why): return why
         }
     }
 }
 
-/// Anything that can read calendar events. Reading only: nothing here can add or change an event.
-public protocol CalendarReading: Sendable {
-    func events(from start: Date, to end: Date) async throws -> [CalendarEvent]
+/// How an event repeats. `custom` stands for a rule OMNIS can show but not
+/// set, such as "every second Tuesday"; it is left untouched by changes.
+public enum Repeat: String, Equatable, Sendable {
+    case none, daily, weekly, monthly, yearly, custom
 }
 
-/// A new event that has been proposed but not saved.
+/// One of the user's calendars.
+public struct CalendarInfo: Equatable, Sendable {
+    public let name: String
+    public let writable: Bool
+    public let isDefault: Bool
+
+    public init(name: String, writable: Bool = true, isDefault: Bool = false) {
+        self.name = name
+        self.writable = writable
+        self.isDefault = isDefault
+    }
+}
+
+/// An existing event with all its details, as it was when it was looked up.
+public struct EventSnapshot: Equatable, Sendable {
+    public let key: String
+    /// Its details, with `calendarName` set to the calendar it is in.
+    public let draft: EventDraft
+    public let guests: [String]
+    public let recurring: Bool
+
+    public init(key: String, draft: EventDraft, guests: [String] = [], recurring: Bool = false) {
+        self.key = key
+        self.draft = draft
+        self.guests = guests
+        self.recurring = recurring
+    }
+}
+
+/// Anything that can read the calendar. Nothing here can change it.
+public protocol CalendarReading: Sendable {
+    func events(from start: Date, to end: Date) async throws -> [CalendarEvent]
+    /// One event in full, by the key it was listed with.
+    func snapshot(key: String) async throws -> EventSnapshot
+    func calendars() async throws -> [CalendarInfo]
+}
+
+/// The details of an event: a new one being proposed, or an existing one.
 public struct EventDraft: Equatable, Sendable {
     public let title: String
     public let start: Date
@@ -52,54 +101,189 @@ public struct EventDraft: Equatable, Sendable {
     public let end: Date
     public let allDay: Bool
     public let location: String?
+    public let notes: String?
+    public let url: String?
+    /// Nil means the default calendar.
+    public let calendarName: String?
+    /// Minutes before the start that an alert is shown. Nil means no alert.
+    public let alertMinutes: Int?
+    public let repeats: Repeat
+    /// The last moment it repeats. Nil means it repeats with no end.
+    public let repeatUntil: Date?
 
-    public init(title: String, start: Date, end: Date, allDay: Bool = false, location: String? = nil) {
+    public init(title: String, start: Date, end: Date, allDay: Bool = false, location: String? = nil,
+                notes: String? = nil, url: String? = nil, calendarName: String? = nil, alertMinutes: Int? = nil,
+                repeats: Repeat = .none, repeatUntil: Date? = nil) {
         self.title = title
         self.start = start
         self.end = end
         self.allDay = allDay
         self.location = location
+        self.notes = notes
+        self.url = url
+        self.calendarName = calendarName
+        self.alertMinutes = alertMinutes
+        self.repeats = repeats
+        self.repeatUntil = repeatUntil
     }
 
     public static let maxDays = 31
+    public static let maxNotesCharacters = 1000
+    public static let maxAlertMinutes = 40_320   // four weeks
 
-    /// Builds a draft from what the model asked for. Times are read as local
-    /// times in the user's time zone. Anything that is not a clear, real
-    /// date and time is refused.
-    public static func parse(_ arguments: [String: String], calendar: Calendar = .current) throws -> EventDraft {
-        let title = CalendarFormatter.clean(arguments["title"] ?? "")
-        guard !title.isEmpty else { throw CalendarError.badEvent("it has no title") }
-        let allDay = arguments["all_day"] == "true"
+    private static func formatter(_ format: String, _ calendar: Calendar) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = calendar.timeZone
         formatter.isLenient = false
-        formatter.dateFormat = allDay ? "yyyy-MM-dd" : "yyyy-MM-dd'T'HH:mm"
-        let length = allDay ? 10 : 16
-        let startText = arguments["start"] ?? "", endText = arguments["end"] ?? ""
-        guard startText.count == length, endText.count == length,
-              let first = formatter.date(from: startText), let last = formatter.date(from: endText) else {
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    /// Reads "2026-11-18T13:00" or "2026-11-18" as a local time in the user's zone.
+    private static func moment(_ text: String, _ calendar: Calendar) -> (date: Date, dateOnly: Bool)? {
+        if text.count == 16, let date = formatter("yyyy-MM-dd'T'HH:mm", calendar).date(from: text) { return (date, false) }
+        if text.count == 10, let date = formatter("yyyy-MM-dd", calendar).date(from: text) { return (date, true) }
+        return nil
+    }
+
+    /// Builds a new event from what the model asked for. Times are read as
+    /// local times in the user's time zone. Anything that is not a clear,
+    /// real date and time is refused.
+    public static func parse(_ arguments: [String: String], calendar: Calendar = .current) throws -> EventDraft {
+        let title = CalendarFormatter.clean(arguments["title"] ?? "")
+        guard !title.isEmpty else { throw CalendarError.badEvent("it has no title") }
+        let allDay = arguments["all_day"] == "true"
+        guard let first = moment(arguments["start"] ?? "", calendar), let last = moment(arguments["end"] ?? "", calendar),
+              first.dateOnly == allDay, last.dateOnly == allDay else {
             throw CalendarError.badEvent("its date or time was not valid")
         }
         let start: Date, end: Date
         if allDay {
-            start = calendar.startOfDay(for: first)
-            guard last >= first,
-                  let dayAfter = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: last)) else {
+            start = calendar.startOfDay(for: first.date)
+            guard last.date >= first.date,
+                  let dayAfter = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: last.date)) else {
                 throw CalendarError.badEvent("it ends before it starts")
             }
             end = dayAfter
         } else {
-            guard last > first else { throw CalendarError.badEvent("it ends before it starts") }
-            start = first
-            end = last
+            guard last.date > first.date else { throw CalendarError.badEvent("it ends before it starts") }
+            start = first.date
+            end = last.date
         }
+        try checkLength(start, end, calendar)
+        let place = CalendarFormatter.clean(arguments["location"] ?? "")
+        let base = EventDraft(title: title, start: start, end: end, allDay: allDay, location: place.isEmpty ? nil : place)
+        return try base.withExtras(arguments, calendar: calendar)
+    }
+
+    private static func checkLength(_ start: Date, _ end: Date, _ calendar: Calendar) throws {
+        guard end > start else { throw CalendarError.badEvent("it ends before it starts") }
         guard let limit = calendar.date(byAdding: .day, value: maxDays + 1, to: start), end <= limit else {
             throw CalendarError.badEvent("it is longer than \(maxDays) days")
         }
-        let place = CalendarFormatter.clean(arguments["location"] ?? "")
-        return EventDraft(title: title, start: start, end: end, allDay: allDay, location: place.isEmpty ? nil : place)
+    }
+
+    /// The event as it would be after the changes the model asked for. Only
+    /// the fields named in `arguments` change; an empty value removes a detail.
+    public func applying(_ arguments: [String: String], calendar: Calendar = .current) throws -> EventDraft {
+        var title = self.title
+        if let wanted = arguments["title"].map(CalendarFormatter.clean), !wanted.isEmpty { title = wanted }
+        let allDay = arguments["all_day"].map { $0 == "true" } ?? self.allDay
+        var start = self.start, end = self.end
+        let givenStart = try arguments["start"].map { text -> (date: Date, dateOnly: Bool) in
+            guard let found = Self.moment(text, calendar) else { throw CalendarError.badEvent("its new start was not valid") }
+            return found
+        }
+        let givenEnd = try arguments["end"].map { text -> (date: Date, dateOnly: Bool) in
+            guard let found = Self.moment(text, calendar) else { throw CalendarError.badEvent("its new end was not valid") }
+            return found
+        }
+
+        if allDay {
+            let days = max(1, self.allDay ? (calendar.dateComponents([.day], from: self.start, to: self.end).day ?? 1) : 1)
+            start = calendar.startOfDay(for: givenStart?.date ?? self.start)
+            let lastDay = givenEnd.map { calendar.startOfDay(for: $0.date) }
+            guard let newEnd = calendar.date(byAdding: .day, value: lastDay == nil ? days : 1, to: lastDay ?? start) else {
+                throw CalendarError.badEvent("its new end was not valid")
+            }
+            end = newEnd
+        } else {
+            if let given = givenStart {
+                if given.dateOnly {
+                    // A new day with no time: keep the time of day it had.
+                    guard !self.allDay else { throw CalendarError.badEvent("it needs a start time now that it is not all day") }
+                    let time = calendar.dateComponents([.hour, .minute], from: self.start)
+                    guard let moved = calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0,
+                                                    of: given.date) else {
+                        throw CalendarError.badEvent("its new start was not valid")
+                    }
+                    start = moved
+                } else {
+                    start = given.date
+                }
+                // Moving the start keeps the length, unless a new end is given.
+                end = start.addingTimeInterval(self.allDay ? 3600 : self.end.timeIntervalSince(self.start))
+            } else if self.allDay {
+                throw CalendarError.badEvent("it needs a start time now that it is not all day")
+            }
+            if let given = givenEnd {
+                guard !given.dateOnly else { throw CalendarError.badEvent("its new end needs a time") }
+                end = given.date
+            }
+        }
+        try Self.checkLength(start, end, calendar)
+
+        var location = self.location
+        if let wanted = arguments["location"].map(CalendarFormatter.clean) { location = wanted.isEmpty ? nil : wanted }
+        let base = EventDraft(title: title, start: start, end: end, allDay: allDay, location: location, notes: notes,
+                              url: url, calendarName: calendarName, alertMinutes: alertMinutes, repeats: repeats,
+                              repeatUntil: repeatUntil)
+        return try base.withExtras(arguments, calendar: calendar)
+    }
+
+    /// Notes, link, calendar, alert and repeat setting from the model's
+    /// request, laid over what the event already has.
+    private func withExtras(_ arguments: [String: String], calendar: Calendar) throws -> EventDraft {
+        var notes = self.notes, url = self.url, calendarName = self.calendarName
+        var alertMinutes = self.alertMinutes, repeats = self.repeats, repeatUntil = self.repeatUntil
+        if let wanted = arguments["notes"].map(CalendarFormatter.cleanNotes) { notes = wanted.isEmpty ? nil : wanted }
+        if let wanted = arguments["url"]?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if wanted.isEmpty {
+                url = nil
+            } else {
+                guard wanted.count <= 300, let parsed = URL(string: wanted), let scheme = parsed.scheme?.lowercased(),
+                      scheme == "https" || scheme == "http", parsed.host != nil else {
+                    throw CalendarError.badEvent("its link was not a web address")
+                }
+                url = wanted
+            }
+        }
+        if let wanted = arguments["calendar"].map(CalendarFormatter.clean), !wanted.isEmpty { calendarName = wanted }
+        if let text = arguments["alert_minutes"] {
+            guard let minutes = Int(text), minutes == -1 || (0...Self.maxAlertMinutes).contains(minutes) else {
+                throw CalendarError.badEvent("its alert time was not valid")
+            }
+            alertMinutes = minutes == -1 ? nil : minutes
+        }
+        if let text = arguments["repeat"] {
+            guard let wanted = Repeat(rawValue: text), wanted != .custom else {
+                throw CalendarError.badEvent("its repeat setting was not valid")
+            }
+            repeats = wanted
+            repeatUntil = nil
+        }
+        if let text = arguments["repeat_until"] {
+            guard repeats != .none, repeats != .custom, let day = Self.moment(text, calendar), day.dateOnly,
+                  let after = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: day.date)),
+                  after > start else {
+                throw CalendarError.badEvent("its last repeat day was not valid")
+            }
+            repeatUntil = after.addingTimeInterval(-1)
+        }
+        return EventDraft(title: title, start: start, end: end, allDay: allDay, location: location, notes: notes, url: url,
+                          calendarName: calendarName, alertMinutes: alertMinutes, repeats: repeats, repeatUntil: repeatUntil)
     }
 
     /// When the event is, for the preview: "Wed 18 Nov, 13:00 to 14:00".
@@ -110,25 +294,287 @@ public struct EventDraft: Equatable, Sendable {
                                       showYear: otherYear)
     }
 
-    /// One line describing the draft, in the same form as events read from the calendar.
+    /// One line describing the event, in the same form as events read from the calendar.
     public func line(calendar: Calendar = .current) -> String {
         CalendarFormatter.text(for: [CalendarEvent(title: title, start: start, end: end, allDay: allDay,
                                                    calendar: "", location: location)], calendar: calendar)
     }
+
+    public var alertText: String {
+        guard let minutes = alertMinutes else { return "none" }
+        if minutes == 0 { return "at the start" }
+        if minutes % 1440 == 0 { return minutes == 1440 ? "1 day before" : "\(minutes / 1440) days before" }
+        if minutes % 60 == 0 { return minutes == 60 ? "1 hour before" : "\(minutes / 60) hours before" }
+        return minutes == 1 ? "1 minute before" : "\(minutes) minutes before"
+    }
+
+    public func repeatText(calendar: Calendar = .current) -> String {
+        let name: String
+        switch repeats {
+        case .none: return "does not repeat"
+        case .custom: name = "on a custom pattern"
+        default: name = repeats.rawValue
+        }
+        guard let until = repeatUntil else { return name }
+        let day = DateFormatter()
+        day.calendar = calendar
+        day.timeZone = calendar.timeZone
+        day.locale = Locale(identifier: "en_GB")
+        day.dateFormat = "d MMM yyyy"
+        return "\(name) until \(day.string(from: until))"
+    }
 }
 
-/// Anything that can add an event to the calendar. This is called only when
-/// the user clicks to confirm a preview, never by the model.
+/// One line of a preview: what, and its value.
+public struct ChangeRow: Equatable, Sendable {
+    public let label: String
+    public let value: String
+
+    public init(_ label: String, _ value: String) {
+        self.label = label
+        self.value = value
+    }
+}
+
+/// One change to the calendar, prepared for the user to confirm. Nothing in
+/// this type does anything: it only describes.
+public enum CalendarChange: Equatable, Sendable {
+    case create(EventDraft)
+    /// `future` applies to a repeating event: this day and all later ones.
+    case update(original: EventSnapshot, after: EventDraft, future: Bool)
+    case delete(EventSnapshot, future: Bool)
+    case createCalendar(name: String)
+    case renameCalendar(from: String, to: String)
+    case deleteCalendar(name: String)
+
+    /// A short word for the audit log. It carries no details of the change.
+    public var kind: String {
+        switch self {
+        case .create: return "create_event"
+        case .update: return "update_event"
+        case .delete: return "delete_event"
+        case .createCalendar: return "create_calendar"
+        case .renameCalendar: return "rename_calendar"
+        case .deleteCalendar: return "delete_calendar"
+        }
+    }
+
+    public var heading: String {
+        switch self {
+        case .create: return "New event"
+        case .update: return "Change event"
+        case .delete: return "Delete event"
+        case .createCalendar: return "New calendar"
+        case .renameCalendar: return "Rename calendar"
+        case .deleteCalendar: return "Delete calendar"
+        }
+    }
+
+    /// The event's title or the calendar's name.
+    public var title: String {
+        switch self {
+        case .create(let draft): return draft.title
+        case .update(let original, _, _): return original.draft.title
+        case .delete(let snapshot, _): return snapshot.draft.title
+        case .createCalendar(let name), .deleteCalendar(let name): return name
+        case .renameCalendar(let from, _): return from
+        }
+    }
+
+    public var confirmLabel: String {
+        switch self {
+        case .create: return "Add to Calendar"
+        case .update: return "Change Event"
+        case .delete: return "Delete Event"
+        case .createCalendar: return "Create Calendar"
+        case .renameCalendar: return "Rename Calendar"
+        case .deleteCalendar: return "Delete Calendar"
+        }
+    }
+
+    public var declineLabel: String {
+        switch self {
+        case .create, .createCalendar: return "Don't Add"
+        case .update, .renameCalendar: return "Don't Change"
+        case .delete, .deleteCalendar: return "Don't Delete"
+        }
+    }
+
+    public var isDestructive: Bool {
+        switch self {
+        case .delete, .deleteCalendar: return true
+        default: return false
+        }
+    }
+
+    public var warning: String? {
+        switch self {
+        case .delete(let snapshot, let future):
+            if snapshot.recurring && future { return "Deletes this day and every later repeat. This cannot be undone." }
+            return "This cannot be undone."
+        case .deleteCalendar: return "Deletes this calendar and every event in it. This cannot be undone."
+        default: return nil
+        }
+    }
+
+    /// The start of the event as it would be afterwards, if this is about one.
+    public var resultingStart: Date? {
+        switch self {
+        case .create(let draft): return draft.start
+        case .update(_, let after, _): return after.start
+        default: return nil
+        }
+    }
+
+    private static func scope(_ future: Bool) -> ChangeRow {
+        ChangeRow("Applies to", future ? "this day and all later repeats" : "this day only")
+    }
+
+    private static func details(_ draft: EventDraft, calendar: Calendar, now: Date) -> [ChangeRow] {
+        var rows = [ChangeRow("When", draft.when(calendar: calendar, now: now))]
+        if let place = draft.location { rows.append(ChangeRow("Place", place)) }
+        if let name = draft.calendarName { rows.append(ChangeRow("Calendar", name)) }
+        if draft.alertMinutes != nil { rows.append(ChangeRow("Alert", draft.alertText)) }
+        if draft.repeats != .none { rows.append(ChangeRow("Repeats", draft.repeatText(calendar: calendar))) }
+        if let link = draft.url { rows.append(ChangeRow("Link", link)) }
+        if let notes = draft.notes { rows.append(ChangeRow("Notes", notes)) }
+        return rows
+    }
+
+    /// Everything the change would do, line by line. For a change to an
+    /// event, each line shows the old value and the new one.
+    public func rows(calendar: Calendar = .current, now: Date = Date()) -> [ChangeRow] {
+        switch self {
+        case .create(let draft):
+            return Self.details(draft, calendar: calendar, now: now)
+        case .delete(let snapshot, let future):
+            var rows = Self.details(snapshot.draft, calendar: calendar, now: now).filter { ["When", "Place", "Calendar", "Repeats"].contains($0.label) }
+            if snapshot.recurring { rows.append(Self.scope(future)) }
+            return rows
+        case .update(let original, let after, let future):
+            let before = original.draft
+            var rows: [ChangeRow] = []
+            func changed(_ label: String, _ old: String, _ new: String) { rows.append(ChangeRow(label, "\(old) → \(new)")) }
+            if before.title != after.title { changed("Title", before.title, after.title) }
+            if before.start != after.start || before.end != after.end || before.allDay != after.allDay {
+                changed("When", before.when(calendar: calendar, now: now), after.when(calendar: calendar, now: now))
+            } else {
+                rows.append(ChangeRow("When", before.when(calendar: calendar, now: now)))
+            }
+            if before.location != after.location { changed("Place", before.location ?? "none", after.location ?? "none") }
+            if before.calendarName != after.calendarName {
+                changed("Calendar", before.calendarName ?? "default", after.calendarName ?? "default")
+            }
+            if before.alertMinutes != after.alertMinutes { changed("Alert", before.alertText, after.alertText) }
+            if before.repeats != after.repeats || before.repeatUntil != after.repeatUntil {
+                changed("Repeats", before.repeatText(calendar: calendar), after.repeatText(calendar: calendar))
+            }
+            if before.url != after.url { changed("Link", before.url ?? "none", after.url ?? "none") }
+            if before.notes != after.notes { changed("Notes", before.notes ?? "none", after.notes ?? "none") }
+            if original.recurring { rows.append(Self.scope(future)) }
+            return rows
+        case .createCalendar:
+            return []
+        case .renameCalendar(_, let to):
+            return [ChangeRow("New name", to)]
+        case .deleteCalendar:
+            return []
+        }
+    }
+
+    /// One line for the model to read in later turns.
+    public func line(calendar: Calendar = .current) -> String {
+        switch self {
+        case .create(let draft): return "new event \(draft.line(calendar: calendar))"
+        case .update(let original, let after, _):
+            return "change \(original.draft.line(calendar: calendar)) to \(after.line(calendar: calendar))"
+        case .delete(let snapshot, _): return "delete \(snapshot.draft.line(calendar: calendar))"
+        case .createCalendar(let name): return "new calendar \"\(name)\""
+        case .renameCalendar(let from, let to): return "rename calendar \"\(from)\" to \"\(to)\""
+        case .deleteCalendar(let name): return "delete calendar \"\(name)\" and all its events"
+        }
+    }
+
+    /// Checks the calendars a change names against the ones that exist, so a
+    /// preview is never shown for something that cannot be done.
+    public func check(against calendars: [CalendarInfo]) throws {
+        func matching(_ name: String) -> [CalendarInfo] {
+            calendars.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        func existing(_ name: String) throws -> CalendarInfo {
+            let found = matching(name)
+            guard let only = found.first else { throw CalendarError.refused("there is no calendar called \"\(name)\"") }
+            guard found.count == 1 else { throw CalendarError.refused("more than one calendar is called \"\(name)\"") }
+            guard only.writable else { throw CalendarError.refused("the calendar \"\(name)\" cannot be changed") }
+            return only
+        }
+        func unused(_ name: String) throws {
+            guard !name.isEmpty else { throw CalendarError.refused("the calendar needs a name") }
+            guard matching(name).isEmpty else { throw CalendarError.refused("there is already a calendar called \"\(name)\"") }
+        }
+        switch self {
+        case .create(let draft):
+            if let name = draft.calendarName { _ = try existing(name) }
+        case .update(let original, let after, _):
+            if after == original.draft { throw CalendarError.refused("that would not change anything about the event") }
+            if let name = after.calendarName, name != original.draft.calendarName { _ = try existing(name) }
+            if let name = original.draft.calendarName, let home = matching(name).first, !home.writable {
+                throw CalendarError.refused("that event is in the calendar \"\(name)\", which cannot be changed")
+            }
+        case .delete(let snapshot, _):
+            if let name = snapshot.draft.calendarName, let home = matching(name).first, !home.writable {
+                throw CalendarError.refused("that event is in the calendar \"\(name)\", which cannot be changed")
+            }
+        case .createCalendar(let name):
+            try unused(name)
+        case .renameCalendar(let from, let to):
+            _ = try existing(from)
+            try unused(to)
+        case .deleteCalendar(let name):
+            _ = try existing(name)
+        }
+    }
+}
+
+/// Anything that can change the calendar. This is called only when the user
+/// clicks to confirm a preview, never by the model.
 public protocol CalendarWriting: Sendable {
     /// The name of the calendar a new event would go into.
     func defaultCalendarName() async throws -> String
-    /// Saves the event and returns the name of the calendar it went into.
-    func create(_ draft: EventDraft) async throws -> String
+    /// Carries out one confirmed change. Returns a few words on what was done.
+    func apply(_ change: CalendarChange) async throws -> String
 }
 
-/// Reads the Mac's calendars through EventKit, Apple's own interface. The
-/// first use makes macOS ask the user for permission; nothing is read before
-/// that is given.
+/// Short ids such as "e3" that stand for events when talking to the model.
+/// The model never sees the calendar's own identifiers, and an id it makes
+/// up matches nothing.
+public final class EventRefs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var refs: [String: String] = [:]
+    private var keys: [String: String] = [:]
+    private var next = 1
+
+    public init() {}
+
+    public func ref(for key: String) -> String {
+        lock.withLock {
+            if let known = refs[key] { return known }
+            if refs.count >= 5000 { refs.removeAll(); keys.removeAll() }
+            let ref = "e\(next)"
+            next += 1
+            refs[key] = ref
+            keys[ref] = key
+            return ref
+        }
+    }
+
+    public func key(for ref: String) -> String? {
+        lock.withLock { keys[ref.lowercased()] }
+    }
+}
+
+/// The Mac's calendars through EventKit, Apple's own interface. The first use
+/// makes macOS ask the user for permission; nothing happens before that is given.
 public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecked Sendable {
     private let store = EKEventStore()
 
@@ -151,37 +597,10 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
         }
     }
 
-    private func targetCalendar() throws -> EKCalendar {
-        guard let target = store.defaultCalendarForNewEvents, target.allowsContentModifications else {
-            throw CalendarError.noCalendar
-        }
-        return target
-    }
+    // MARK: Reading
 
-    public func defaultCalendarName() async throws -> String {
-        try await ensureAccess()
-        return try targetCalendar().title
-    }
-
-    /// The only place in OMNIS that changes the calendar. It adds one new
-    /// event; it cannot change or remove an existing one.
-    public func create(_ draft: EventDraft) async throws -> String {
-        try await ensureAccess()
-        let target = try targetCalendar()
-        let event = EKEvent(eventStore: store)
-        event.title = draft.title
-        event.startDate = draft.start
-        // EventKit wants an all-day event to end within its last day.
-        event.endDate = draft.allDay ? draft.end.addingTimeInterval(-1) : draft.end
-        event.isAllDay = draft.allDay
-        event.location = draft.location
-        event.calendar = target
-        do {
-            try store.save(event, span: .thisEvent, commit: true)
-        } catch {
-            throw CalendarError.unavailable(error.localizedDescription)
-        }
-        return target.title
+    private static func key(for event: EKEvent) -> String {
+        "\(event.eventIdentifier ?? "")|\(Int(event.startDate.timeIntervalSince1970))"
     }
 
     public func events(from start: Date, to end: Date) async throws -> [CalendarEvent] {
@@ -194,8 +613,183 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
                 end: event.endDate,
                 allDay: event.isAllDay,
                 calendar: event.calendar?.title ?? "",
-                location: event.location
+                location: event.location,
+                key: Self.key(for: event),
+                repeats: event.hasRecurrenceRules
             )
+        }
+    }
+
+    /// Finds the event a key stands for, on the day it was listed for.
+    private func find(_ key: String) throws -> EKEvent {
+        let parts = key.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, let seconds = TimeInterval(parts[1]) else { throw CalendarError.gone }
+        let start = Date(timeIntervalSince1970: seconds)
+        let predicate = store.predicateForEvents(withStart: start.addingTimeInterval(-1), end: start.addingTimeInterval(1),
+                                                 calendars: nil)
+        let found = store.events(matching: predicate).first {
+            $0.eventIdentifier == String(parts[0]) && abs($0.startDate.timeIntervalSince(start)) < 1
+        }
+        guard let found else { throw CalendarError.gone }
+        return found
+    }
+
+    private func describe(_ event: EKEvent) -> EventSnapshot {
+        let calendar = Calendar.current
+        var end: Date = event.endDate
+        if event.isAllDay {
+            // EventKit ends an all-day event inside its last day.
+            end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: event.endDate)) ?? event.endDate
+        }
+        var repeats = Repeat.none
+        var until: Date?
+        if let rule = event.recurrenceRules?.first {
+            let simple = rule.interval == 1 && (rule.daysOfTheWeek?.count ?? 0) <= 1 && (rule.setPositions?.isEmpty ?? true)
+                && (event.recurrenceRules?.count ?? 0) == 1
+            switch rule.frequency {
+            case .daily: repeats = simple ? .daily : .custom
+            case .weekly: repeats = simple ? .weekly : .custom
+            case .monthly: repeats = simple ? .monthly : .custom
+            case .yearly: repeats = simple ? .yearly : .custom
+            @unknown default: repeats = .custom
+            }
+            until = rule.recurrenceEnd?.endDate
+        }
+        let alert = event.alarms?.first.map { max(0, Int((-$0.relativeOffset / 60).rounded())) }
+        let draft = EventDraft(
+            title: event.title ?? "", start: event.startDate, end: end, allDay: event.isAllDay,
+            location: (event.location ?? "").isEmpty ? nil : event.location,
+            notes: (event.notes ?? "").isEmpty ? nil : event.notes,
+            url: event.url?.absoluteString, calendarName: event.calendar?.title, alertMinutes: alert,
+            repeats: repeats, repeatUntil: until
+        )
+        return EventSnapshot(key: Self.key(for: event), draft: draft,
+                             guests: (event.attendees ?? []).compactMap(\.name), recurring: event.hasRecurrenceRules)
+    }
+
+    public func snapshot(key: String) async throws -> EventSnapshot {
+        try await ensureAccess()
+        return describe(try find(key))
+    }
+
+    public func calendars() async throws -> [CalendarInfo] {
+        try await ensureAccess()
+        let standard = store.defaultCalendarForNewEvents?.calendarIdentifier
+        return store.calendars(for: .event).map {
+            CalendarInfo(name: $0.title, writable: $0.allowsContentModifications && !$0.isImmutable,
+                         isDefault: $0.calendarIdentifier == standard)
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    // MARK: Changing
+    //
+    // Everything below changes the calendar. It is reached only through
+    // `apply`, which the app calls only when the user clicks to confirm.
+
+    private func calendar(named name: String) throws -> EKCalendar {
+        let found = store.calendars(for: .event).filter { $0.title.caseInsensitiveCompare(name) == .orderedSame }
+        guard let only = found.first else { throw CalendarError.refused("there is no calendar called \"\(name)\"") }
+        guard found.count == 1 else { throw CalendarError.refused("more than one calendar is called \"\(name)\"") }
+        guard only.allowsContentModifications else { throw CalendarError.refused("the calendar \"\(name)\" cannot be changed") }
+        return only
+    }
+
+    private func defaultCalendar() throws -> EKCalendar {
+        guard let target = store.defaultCalendarForNewEvents, target.allowsContentModifications else {
+            throw CalendarError.noCalendar
+        }
+        return target
+    }
+
+    public func defaultCalendarName() async throws -> String {
+        try await ensureAccess()
+        return try defaultCalendar().title
+    }
+
+    /// Writes onto `event` every detail of `wanted` that differs from `current`.
+    /// Details that are not changing are never touched.
+    private func write(_ wanted: EventDraft, onto event: EKEvent, replacing current: EventDraft?) throws {
+        if current?.title != wanted.title { event.title = wanted.title }
+        if current?.start != wanted.start || current?.end != wanted.end || current?.allDay != wanted.allDay {
+            event.isAllDay = wanted.allDay
+            event.startDate = wanted.start
+            // EventKit wants an all-day event to end within its last day.
+            event.endDate = wanted.allDay ? wanted.end.addingTimeInterval(-1) : wanted.end
+        }
+        if current?.location != wanted.location { event.location = wanted.location }
+        if current?.notes != wanted.notes { event.notes = wanted.notes }
+        if current?.url != wanted.url { event.url = wanted.url.flatMap { URL(string: $0) } }
+        if current?.calendarName != wanted.calendarName || current == nil {
+            event.calendar = try wanted.calendarName.map { try calendar(named: $0) } ?? defaultCalendar()
+        }
+        if current?.alertMinutes != wanted.alertMinutes {
+            event.alarms = wanted.alertMinutes.map { [EKAlarm(relativeOffset: TimeInterval(-60 * $0))] }
+        }
+        if current?.repeats != wanted.repeats || current?.repeatUntil != wanted.repeatUntil {
+            let frequency: EKRecurrenceFrequency?
+            switch wanted.repeats {
+            case .none: frequency = nil
+            case .daily: frequency = .daily
+            case .weekly: frequency = .weekly
+            case .monthly: frequency = .monthly
+            case .yearly: frequency = .yearly
+            case .custom: return   // cannot be set; left as it is
+            }
+            event.recurrenceRules = frequency.map {
+                [EKRecurrenceRule(recurrenceWith: $0, interval: 1, end: wanted.repeatUntil.map { EKRecurrenceEnd(end: $0) })]
+            }
+        }
+    }
+
+    public func apply(_ change: CalendarChange) async throws -> String {
+        try await ensureAccess()
+        do {
+            switch change {
+            case .create(let draft):
+                let event = EKEvent(eventStore: store)
+                try write(draft, onto: event, replacing: nil)
+                try store.save(event, span: .thisEvent, commit: true)
+                return "Added to \(event.calendar?.title ?? "your calendar")"
+            case .update(let original, let after, let future):
+                let event = try find(original.key)
+                // If it has changed since the preview was made, the preview no
+                // longer says what would happen, so nothing is done.
+                guard describe(event).draft == original.draft else { throw CalendarError.gone }
+                try write(after, onto: event, replacing: original.draft)
+                try store.save(event, span: future ? .futureEvents : .thisEvent, commit: true)
+                return "Changed"
+            case .delete(let snapshot, let future):
+                let event = try find(snapshot.key)
+                guard describe(event).draft == snapshot.draft else { throw CalendarError.gone }
+                try store.remove(event, span: future ? .futureEvents : .thisEvent, commit: true)
+                return "Deleted"
+            case .createCalendar(let name):
+                guard !store.calendars(for: .event).contains(where: { $0.title.caseInsensitiveCompare(name) == .orderedSame }) else {
+                    throw CalendarError.refused("there is already a calendar called \"\(name)\"")
+                }
+                let created = EKCalendar(for: .event, eventStore: store)
+                created.title = name
+                guard let source = store.defaultCalendarForNewEvents?.source
+                        ?? store.sources.first(where: { $0.sourceType == .local }) else { throw CalendarError.noCalendar }
+                created.source = source
+                try store.saveCalendar(created, commit: true)
+                return "Calendar created"
+            case .renameCalendar(let from, let to):
+                let target = try calendar(named: from)
+                guard !target.isImmutable else { throw CalendarError.refused("the calendar \"\(from)\" cannot be renamed") }
+                target.title = to
+                try store.saveCalendar(target, commit: true)
+                return "Renamed to \(to)"
+            case .deleteCalendar(let name):
+                let target = try calendar(named: name)
+                guard !target.isImmutable else { throw CalendarError.refused("the calendar \"\(name)\" cannot be deleted") }
+                try store.removeCalendar(target, commit: true)
+                return "Calendar deleted"
+            }
+        } catch let error as CalendarError {
+            throw error
+        } catch {
+            throw CalendarError.unavailable(error.localizedDescription)
         }
     }
 }
@@ -230,8 +824,11 @@ public enum CalendarFormatter {
 
     /// One line per event, earliest first. Titles and places are flattened to
     /// a single line and shortened, since other people can write them.
+    ///
+    /// `ref` gives each event the short id the model uses to point at it.
     public static func text(for events: [CalendarEvent], calendar: Calendar = .current,
-                            locale: Locale = Locale(identifier: "en_GB")) -> String {
+                            locale: Locale = Locale(identifier: "en_GB"),
+                            ref: ((CalendarEvent) -> String)? = nil) -> String {
         let sorted = events.sorted { ($0.start, $0.title) < ($1.start, $1.title) }
         var lines: [String] = []
         for event in sorted.prefix(maxEvents) {
@@ -241,6 +838,8 @@ public enum CalendarFormatter {
             let name = clean(event.calendar)
             if !name.isEmpty { line += " (\(name))" }
             if let place = event.location.map(clean), !place.isEmpty { line += " at \(place)" }
+            if event.repeats { line += " (repeats)" }
+            if let ref, !event.key.isEmpty { line = "[\(ref(event))] " + line }
             lines.append(line)
         }
         if sorted.count > maxEvents {
@@ -276,15 +875,52 @@ public enum CalendarFormatter {
         return "\(day.string(from: start)) \(time.string(from: start)) to \(day.string(from: end)) \(time.string(from: end))"
     }
 
+    /// Everything about one event, for the model.
+    public static func details(_ snapshot: EventSnapshot, calendar: Calendar = .current) -> String {
+        let draft = snapshot.draft
+        var lines = [draft.line(calendar: calendar)]
+        if let name = draft.calendarName { lines.append("Calendar: \(clean(name))") }
+        lines.append("Alert: \(draft.alertText)")
+        lines.append("Repeats: \(draft.repeatText(calendar: calendar))")
+        if !snapshot.guests.isEmpty { lines.append("Guests: " + snapshot.guests.prefix(30).map(clean).joined(separator: ", ")) }
+        if let link = draft.url { lines.append("Link: \(clean(link))") }
+        if let notes = draft.notes { lines.append("Notes: \(cleanNotes(notes))") }
+        return lines.joined(separator: "\n")
+    }
+
+    public static func text(for calendars: [CalendarInfo]) -> String {
+        calendars.map { info in
+            clean(info.name) + (info.isDefault ? " (default for new events)" : "") + (info.writable ? "" : " (read-only)")
+        }.joined(separator: "\n")
+    }
+
+    /// Only events whose title or place contains the text.
+    public static func filter(_ events: [CalendarEvent], search: String) -> [CalendarEvent] {
+        let wanted = search.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return events }
+        return events.filter {
+            $0.title.localizedCaseInsensitiveContains(wanted) || ($0.location ?? "").localizedCaseInsensitiveContains(wanted)
+        }
+    }
+
+    /// Notes keep their line breaks, but lose invisible and control characters.
+    static func cleanNotes(_ text: String) -> String {
+        let lines = text.components(separatedBy: .newlines).map(cleanLine).filter { !$0.isEmpty }
+        return String(lines.joined(separator: "\n").prefix(EventDraft.maxNotesCharacters))
+    }
+
     static func clean(_ text: String) -> String {
+        String(cleanLine(text).prefix(maxFieldCharacters))
+    }
+
+    private static func cleanLine(_ text: String) -> String {
         // Invisible characters that reorder text on screen are removed too.
         let hidden: [ClosedRange<UInt32>] = [0x200B...0x200F, 0x202A...0x202E, 0x2060...0x2069, 0x061C...0x061C, 0xFEFF...0xFEFF]
         let flat = text.unicodeScalars.filter { scalar in !hidden.contains { $0.contains(scalar.value) } }
             .map { scalar -> Character in
                 CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) ? " " : Character(scalar)
             }
-        let collapsed = String(flat).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
-        return String(collapsed.prefix(maxFieldCharacters))
+        return String(flat).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
     }
 }
 
@@ -313,7 +949,7 @@ public enum PersonalIntent {
     )
 
     public static func mentionsCalendar(_ text: String) -> Bool {
-        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil || asksToAddEvent(text)
+        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil || asksToChangeCalendar(text)
     }
 
     private static let days = "today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week"
@@ -329,5 +965,27 @@ public enum PersonalIntent {
     /// then, so text in a file or a web page cannot bring up a preview.
     public static func asksToAddEvent(_ text: String) -> Bool {
         addPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static let changeVerbs = "move|reschedule|change|rename|cancel|delete|remove|update|edit|push|postpone|shift|clear|extend|shorten|bump|swap"
+    private static let changePattern = try! NSRegularExpression(
+        pattern: #"\b("# + changeVerbs + #")\b.{0,80}?\b(events?|appointments?|meetings?|calendars?|"# + days
+            + #"|(at|to|from) \d{1,2}|\d{1,2}(st|nd|rd|th)? (of )?("# + months + #")|("# + months + #")[a-z]* \d{1,2})"#
+            + #"|\b(cancel|reschedule|postpone) my\b"#,
+        options: [.caseInsensitive]
+    )
+    private static let verbPattern = try! NSRegularExpression(pattern: #"\b("# + changeVerbs + #")\b"#, options: [.caseInsensitive])
+
+    /// True when the user's own words ask for the calendar to be changed in
+    /// any way: something added, moved, altered or deleted.
+    public static func asksToChangeCalendar(_ text: String) -> Bool {
+        asksToAddEvent(text) || changePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// True when the words include an instruction such as "move" or "delete"
+    /// at all. Used only in a chat that is already about the calendar, where
+    /// "delete the second one" needs no more than that.
+    public static func hasChangeVerb(_ text: String) -> Bool {
+        verbPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }

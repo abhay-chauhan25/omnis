@@ -15,14 +15,15 @@ public struct ChatTurn: Equatable, Sendable {
     }
 }
 
-/// A new calendar event shown to the user for confirmation.
+/// A change to the calendar shown to the user for confirmation.
 public struct EventProposal: Equatable, Identifiable, Sendable {
     public enum State: Equatable, Sendable {
         /// Shown, and waiting for the user to add it or not.
         case waiting
         case saving
-        case added(calendar: String)
-        /// The user chose not to add it.
+        /// Carried out. The text says what was done, such as "Added to Home".
+        case done(String)
+        /// The user chose not to do it.
         case declined
         /// A later answer proposed something else before this was confirmed.
         case replaced
@@ -30,16 +31,20 @@ public struct EventProposal: Equatable, Identifiable, Sendable {
     }
 
     public let id: UUID
-    public let draft: EventDraft
+    public let change: CalendarChange
     public var state: State
-    /// The calendar it would go into, once known.
+    /// For a new event with no calendar named: the default one, once known.
     public var calendarName: String?
 
-    public init(id: UUID = UUID(), draft: EventDraft, state: State = .waiting, calendarName: String? = nil) {
+    public init(id: UUID = UUID(), change: CalendarChange, state: State = .waiting, calendarName: String? = nil) {
         self.id = id
-        self.draft = draft
+        self.change = change
         self.state = state
         self.calendarName = calendarName
+    }
+
+    public init(id: UUID = UUID(), draft: EventDraft, state: State = .waiting, calendarName: String? = nil) {
+        self.init(id: id, change: .create(draft), state: state, calendarName: calendarName)
     }
 }
 
@@ -115,6 +120,7 @@ public struct Conversation: Equatable, Sendable {
     public mutating func markPersonal() {
         hasPersonalData = true
         staysLocal = true
+        calendarTouched = true
     }
 
     public var isEmpty: Bool { messages.isEmpty }
@@ -151,8 +157,9 @@ public struct Conversation: Equatable, Sendable {
     public mutating func add(_ proposal: EventProposal, to answerID: UUID) {
         guard let target = messages.firstIndex(where: { $0.id == answerID }) else { return }
         guard messages[target].proposals.count < Self.maxProposalsPerAnswer,
-              !messages[target].proposals.contains(where: { $0.draft == proposal.draft }) else { return }
+              !messages[target].proposals.contains(where: { $0.change == proposal.change }) else { return }
         offerEventsNext = true
+        calendarTouched = true
         for index in messages.indices where index != target {
             for position in messages[index].proposals.indices where messages[index].proposals[position].state == .waiting {
                 messages[index].proposals[position].state = .replaced
@@ -166,12 +173,15 @@ public struct Conversation: Equatable, Sendable {
     /// True when the last exchange was about adding an event, so a follow-up
     /// such as "make it 2pm" or "tomorrow at 3" may still prepare one.
     private var offerEventsNext = false
+    /// True once the calendar has been read or a change prepared in this
+    /// chat. After that, "delete the second one" is enough to ask for a change.
+    private var calendarTouched = false
 
     /// Whether the model may prepare an event for this message. Only when the
     /// user's own words ask for one, or follow straight on from asking, and
     /// never on a message that carries a file.
     public mutating func offersEvents(for text: String, hasAttachments: Bool) -> Bool {
-        let asks = PersonalIntent.asksToAddEvent(text)
+        let asks = PersonalIntent.asksToChangeCalendar(text) || (calendarTouched && PersonalIntent.hasChangeVerb(text))
         let offered = !hasAttachments && (asks || offerEventsNext)
         offerEventsNext = asks && !hasAttachments
         return offered
@@ -181,13 +191,13 @@ public struct Conversation: Equatable, Sendable {
     /// it as being saved, or returns nil if it may not be saved: already
     /// saved or being saved, declined, replaced, or gone. A failed save may
     /// be tried again.
-    public mutating func beginSaving(_ id: UUID) -> EventDraft? {
+    public mutating func beginSaving(_ id: UUID) -> CalendarChange? {
         guard let found = proposal(id) else { return nil }
         switch found.state {
         case .waiting, .failed:
             updateProposal(id) { $0.state = .saving }
-            return found.draft
-        case .saving, .added, .declined, .replaced:
+            return found.change
+        case .saving, .done, .declined, .replaced:
             return nil
         }
     }
@@ -219,14 +229,14 @@ public struct Conversation: Equatable, Sendable {
         proposals.map { proposal in
             let outcome: String
             switch proposal.state {
-            case .waiting: outcome = "preview shown, not yet confirmed by the user, NOT on the calendar"
-            case .saving: outcome = "the user confirmed it and it is being added now"
-            case .added: outcome = "the user confirmed it and it was added to the calendar"
-            case .declined: outcome = "the user chose not to add it"
-            case .replaced: outcome = "replaced by a later preview, not added"
-            case .failed: outcome = "it could not be added"
+            case .waiting: outcome = "preview shown, not yet confirmed by the user, NOT done"
+            case .saving: outcome = "the user confirmed it and it is being done now"
+            case .done: outcome = "the user confirmed it and it was done"
+            case .declined: outcome = "the user chose not to do it"
+            case .replaced: outcome = "replaced by a later preview, not done"
+            case .failed: outcome = "it could not be done"
             }
-            return "\n[Event preview: \(proposal.draft.line()). Status: \(outcome).]"
+            return "\n[Calendar preview: \(proposal.change.line()). Status: \(outcome).]"
         }.joined()
     }
 
@@ -235,6 +245,7 @@ public struct Conversation: Equatable, Sendable {
         staysLocal = false
         hasPersonalData = false
         offerEventsNext = false
+        calendarTouched = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

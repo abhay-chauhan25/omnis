@@ -327,24 +327,27 @@ final class ChatModel: ObservableObject {
                         // From here the chat holds calendar information: it stays
                         // on this Mac and no longer searches the web.
                         self.conversation.markPersonal()
-                        let note = "\(summary): \(events == 1 ? "1 event" : "\(events) events")"
+                        let note = events < 0 ? summary : "\(summary): \(events == 1 ? "1 event" : "\(events) events")"
                         self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarNotes.append(note) }
                         // Counts only. No event's title, time or place is logged.
-                        audit.record(action: "calendar_read", outcome: "ok", detail: "\(events) events")
+                        audit.record(action: "calendar_read", outcome: "ok", detail: events < 0 ? "details" : "\(events) events")
                     case .calendarFailed(let why):
                         self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarProblem = why }
                         audit.record(action: "calendar_read", outcome: "error", detail: why)
-                    case .eventProposed(let draft):
-                        // Shown as a preview only. Saving happens in `confirm`,
+                    case .changeProposed(let change):
+                        // Shown as a preview only. It is carried out in `confirm`,
                         // which nothing but the user's click calls.
-                        let proposal = EventProposal(draft: draft)
+                        let proposal = EventProposal(change: change)
                         self.conversation.add(proposal, to: answerID)
                         // Follow-ups such as "make it 2pm" must reach the local
-                        // model, which is the one that can prepare events.
+                        // model, which is the one that can prepare changes.
                         self.conversation.keepLocal()
-                        audit.record(action: "calendar_propose", outcome: "ok")
-                        self.announce("Event ready to check")
-                        self.fillCalendarName(for: proposal.id)
+                        // The kind of change only. No title, time, place or name.
+                        audit.record(action: "calendar_propose", outcome: "ok", detail: change.kind)
+                        self.announce("\(change.heading) ready to check")
+                        if case .create(let draft) = change, draft.calendarName == nil {
+                            self.fillCalendarName(for: proposal.id)
+                        }
                     case .eventRefused(let why):
                         self.conversation.update(answerID) { $0.proposalProblem = why }
                         audit.record(action: "calendar_propose", outcome: "error", detail: why)
@@ -388,23 +391,23 @@ final class ChatModel: ObservableObject {
 
     // MARK: Calendar events
 
-    /// Adds a previewed event to the calendar. Called only by the user's
-    /// click on the preview. It works once per preview, and only while that
-    /// preview is still waiting.
+    /// Carries out a previewed change to the calendar. Called only by the
+    /// user's click on that preview. It works once per preview, and only
+    /// while the preview is waiting or after a failed try.
     func confirm(_ proposalID: UUID) {
-        guard let calendarWriter, let draft = conversation.beginSaving(proposalID) else { return }
+        guard let calendarWriter, let change = conversation.beginSaving(proposalID) else { return }
         let audit = self.audit
         Task { [weak self] in
             do {
-                let name = try await calendarWriter.create(draft)
-                // The outcome only. The event's title, time and place are not logged.
-                audit.record(action: "calendar_create", outcome: "ok")
-                self?.conversation.updateProposal(proposalID) { $0.state = .added(calendar: name) }
-                self?.announce("Added to your calendar")
+                let result = try await calendarWriter.apply(change)
+                // The kind of change and the outcome only.
+                audit.record(action: "calendar_change", outcome: "ok", detail: change.kind)
+                self?.conversation.updateProposal(proposalID) { $0.state = .done(result) }
+                self?.announce(result)
             } catch {
-                audit.record(action: "calendar_create", outcome: "error", detail: error.localizedDescription)
+                audit.record(action: "calendar_change", outcome: "error", detail: "\(change.kind): \(error.localizedDescription)")
                 self?.conversation.updateProposal(proposalID) { $0.state = .failed(error.localizedDescription) }
-                self?.announce("Could not add the event")
+                self?.announce("The calendar was not changed")
             }
         }
     }
@@ -412,7 +415,7 @@ final class ChatModel: ObservableObject {
     /// The user chose not to add a previewed event.
     func decline(_ proposalID: UUID) {
         guard conversation.declineProposal(proposalID) else { return }
-        audit.record(action: "calendar_create", outcome: "declined")
+        audit.record(action: "calendar_change", outcome: "declined")
     }
 
     /// Looks up which calendar the event would go into, to show on the preview.

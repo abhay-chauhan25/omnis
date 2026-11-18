@@ -78,13 +78,14 @@ public enum AnswerEvent: Equatable, Sendable {
     /// The model asked to see the calendar and the app is reading it.
     case readingCalendar
     /// The calendar was read. `summary` says what, in a few words, without any event's details.
+    /// `events` is below zero when a count means nothing (one event's details, the list of calendars).
     case calendarRead(summary: String, events: Int)
     /// The calendar could not be read; the model was told so.
     case calendarFailed(String)
-    /// The model prepared a new event. It is not saved: the app shows it and
-    /// saves it only if the user confirms.
-    case eventProposed(EventDraft)
-    /// An event the model asked for could not be prepared; the model was told so.
+    /// The model prepared a change to the calendar. Nothing is done: the app
+    /// shows it and carries it out only if the user confirms.
+    case changeProposed(CalendarChange)
+    /// A change the model asked for could not be prepared; the model was told so.
     case eventRefused(String)
     /// One Claude turn was billed. Record it now: the answer may not finish.
     case usage(model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
@@ -130,6 +131,7 @@ public final class BackendService: @unchecked Sendable {
 
     private let webSearch: (any WebSearching)?
     private let calendar: (any CalendarReading)?
+    private let refs = EventRefs()
     private var personalDataHandler: (@Sendable () -> Void)?
 
     /// `webSearch` is what carries out a search when the model asks for one,
@@ -393,10 +395,8 @@ public final class BackendService: @unchecked Sendable {
             pending[id]?.continuation.yield(.usage(model: model, inputTokens: inputTokens,
                                                     outputTokens: outputTokens, costUSD: costUSD))
         case .toolRequest(let id, let callID, let tool, let query, let arguments):
-            if tool == "calendar_events" {
-                readCalendar(requestID: id, callID: callID, arguments: arguments)
-            } else if tool == "calendar_create_event" {
-                proposeEvent(requestID: id, callID: callID, arguments: arguments)
+            if tool.hasPrefix("calendar_") {
+                calendarTool(requestID: id, callID: callID, tool: tool, arguments: arguments)
             } else {
                 runTool(requestID: id, callID: callID, tool: tool, query: query)
             }
@@ -418,98 +418,163 @@ public final class BackendService: @unchecked Sendable {
         }
     }
 
-    /// Checks an event the model wants added and hands it to the window as a
-    /// preview. Nothing is saved here: this class has no way to save. The
-    /// reply to the model says only that the preview was shown.
-    private func proposeEvent(requestID: String, callID: String, arguments: [String: String]) {
-        guard let request = pending[requestID] else { return }
-        let outcome: Result<EventDraft, CalendarError>
-        if !request.calendarWrite {
-            outcome = .failure(.badEvent("adding events is not available"))
-        } else {
-            do {
-                outcome = .success(try EventDraft.parse(arguments))
-            } catch {
-                outcome = .failure((error as? CalendarError) ?? .badEvent("its details were not valid"))
-            }
-        }
-        switch outcome {
-        case .success(let draft):
-            do {
-                try write(.toolResult(id: requestID, callID: callID, ok: true, results: [], error: ""))
-            } catch {
-                request.continuation.yield(.eventRefused("the preview could not be passed on"))
-                return
-            }
-            request.continuation.yield(.eventProposed(draft))
-        case .failure(let error):
-            let why = error.localizedDescription
-            try? write(.toolResult(id: requestID, callID: callID, ok: false, results: [], error: why))
-            request.continuation.yield(.eventRefused(why))
-        }
+    private enum CalendarOutcome: Sendable {
+        case read(content: String, summary: String, events: Int)
+        case proposal(CalendarChange)
     }
 
-    /// Reads the calendar for the model. Reading only, and only when the app
-    /// offered the calendar for this question.
-    private func readCalendar(requestID: String, callID: String, arguments: [String: String]) {
+    static let calendarWriteTools: Set<String> = [
+        "calendar_create_event", "calendar_update_event", "calendar_delete_event",
+        "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar",
+    ]
+
+    /// Handles every calendar request from the model.
+    ///
+    /// A read returns text to the model. A change returns nothing but "a
+    /// preview was shown": this class can look things up, and it hands the
+    /// window a description of the change, but it has no way to make one.
+    /// Each kind is refused unless the app offered it for this question.
+    private func calendarTool(requestID: String, callID: String, tool: String, arguments: [String: String]) {
         guard let request = pending[requestID] else { return }
+        let writing = Self.calendarWriteTools.contains(tool)
 
         var replied = false
-        func reply(ok: Bool, content: String, error: String, summary: String = "", count: Int = 0) {
+        func reply(_ result: Result<CalendarOutcome, Error>) {
             guard !replied, pending[requestID] != nil else { return }
             replied = true
-            do {
-                try write(.toolResult(id: requestID, callID: callID, ok: ok, results: [], error: error, content: content))
-            } catch {
-                pending[requestID]?.continuation.yield(.calendarFailed("the calendar could not be passed on"))
-                return
-            }
-            if ok {
+            switch result {
+            case .success(.read(let content, let summary, let events)):
+                do {
+                    try write(.toolResult(id: requestID, callID: callID, ok: true, results: [], error: "", content: content))
+                } catch {
+                    pending[requestID]?.continuation.yield(.calendarFailed("the calendar could not be passed on"))
+                    return
+                }
                 personalDataHandler?()
-                pending[requestID]?.continuation.yield(.calendarRead(summary: summary, events: count))
-            } else {
-                pending[requestID]?.continuation.yield(.calendarFailed(error))
+                pending[requestID]?.continuation.yield(.calendarRead(summary: summary, events: events))
+            case .success(.proposal(let change)):
+                do {
+                    try write(.toolResult(id: requestID, callID: callID, ok: true, results: [], error: ""))
+                } catch {
+                    pending[requestID]?.continuation.yield(.eventRefused("the preview could not be passed on"))
+                    return
+                }
+                pending[requestID]?.continuation.yield(.changeProposed(change))
+            case .failure(let error):
+                let why = String(error.localizedDescription.prefix(240))
+                try? write(.toolResult(id: requestID, callID: callID, ok: false, results: [], error: why))
+                pending[requestID]?.continuation.yield(writing ? .eventRefused(why) : .calendarFailed(why))
             }
         }
 
         guard request.calendar, let calendar else {
-            reply(ok: false, content: "", error: "the calendar is not available")
+            reply(.failure(CalendarError.refused("the calendar is not available")))
             return
         }
-        let range: (Date, Date)
-        do {
-            range = try CalendarFormatter.range(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
-        } catch {
-            reply(ok: false, content: "", error: CalendarError.badDates.localizedDescription)
+        guard !writing || request.calendarWrite else {
+            reply(.failure(CalendarError.refused("changing the calendar is not available")))
             return
         }
 
-        request.continuation.yield(.readingCalendar)
+        // What can be checked without the calendar is checked first.
+        let refs = self.refs
+        let work: @Sendable () async throws -> CalendarOutcome
+        do {
+            func key() throws -> String {
+                guard let key = refs.key(for: arguments["event"] ?? "") else {
+                    throw CalendarError.refused("that event id is not known. Read the calendar for that day again and use the id shown there")
+                }
+                return key
+            }
+            func name(_ argument: String) throws -> String {
+                let value = CalendarFormatter.clean(arguments[argument] ?? "")
+                guard !value.isEmpty else { throw CalendarError.refused("the calendar needs a name") }
+                return value
+            }
+            let future = arguments["scope"] == "future"
+            switch tool {
+            case "calendar_events":
+                let range = try CalendarFormatter.range(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
+                let label = Self.summary(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
+                let search = arguments["search"] ?? ""
+                work = {
+                    let events = CalendarFormatter.filter(try await calendar.events(from: range.0, to: range.1), search: search)
+                    return .read(content: CalendarFormatter.text(for: events, ref: { refs.ref(for: $0.key) }),
+                                 summary: label, events: events.count)
+                }
+            case "calendar_event_details":
+                let key = try key()
+                work = {
+                    .read(content: CalendarFormatter.details(try await calendar.snapshot(key: key)),
+                          summary: "one event's details", events: -1)
+                }
+            case "calendar_list":
+                work = {
+                    .read(content: CalendarFormatter.text(for: try await calendar.calendars()),
+                          summary: "your list of calendars", events: -1)
+                }
+            case "calendar_create_event":
+                let change = CalendarChange.create(try EventDraft.parse(arguments))
+                let namesCalendar = arguments["calendar"] != nil
+                work = {
+                    if namesCalendar { try change.check(against: try await calendar.calendars()) }
+                    return .proposal(change)
+                }
+            case "calendar_update_event":
+                let key = try key()
+                work = {
+                    let original = try await calendar.snapshot(key: key)
+                    let after = try original.draft.applying(arguments)
+                    let change = CalendarChange.update(original: original, after: after, future: future && original.recurring)
+                    try change.check(against: try await calendar.calendars())
+                    return .proposal(change)
+                }
+            case "calendar_delete_event":
+                let key = try key()
+                work = {
+                    let snapshot = try await calendar.snapshot(key: key)
+                    let change = CalendarChange.delete(snapshot, future: future && snapshot.recurring)
+                    try change.check(against: try await calendar.calendars())
+                    return .proposal(change)
+                }
+            case "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar":
+                let change: CalendarChange
+                switch tool {
+                case "calendar_create_calendar": change = .createCalendar(name: try name("name"))
+                case "calendar_rename_calendar": change = .renameCalendar(from: try name("name"), to: try name("new_name"))
+                default: change = .deleteCalendar(name: try name("name"))
+                }
+                work = {
+                    try change.check(against: try await calendar.calendars())
+                    return .proposal(change)
+                }
+            default:
+                throw CalendarError.refused("that is not something OMNIS can do with the calendar")
+            }
+        } catch {
+            reply(.failure(error))
+            return
+        }
+
+        if !writing { request.continuation.yield(.readingCalendar) }
         let current = generation
-        // The first read waits on the macOS permission prompt. If that takes
+        // The first use waits on the macOS permission prompt. If that takes
         // longer than the deadline, this answer says the calendar could not
         // be read, and the next question works once permission is given.
         queue.asyncAfter(deadline: .now() + config.searchDeadline) { [weak self] in
             guard let self, current == self.generation else { return }
-            reply(ok: false, content: "", error: "reading the calendar took too long")
+            reply(.failure(CalendarError.refused("reading the calendar took too long")))
         }
-        let label = Self.summary(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
         Task { [weak self] in
-            let outcome: Result<[CalendarEvent], Error>
+            let outcome: Result<CalendarOutcome, Error>
             do {
-                outcome = .success(try await calendar.events(from: range.0, to: range.1))
+                outcome = .success(try await work())
             } catch {
                 outcome = .failure(error)
             }
             self?.queue.async {
                 guard let self, current == self.generation else { return }
-                switch outcome {
-                case .success(let events):
-                    reply(ok: true, content: CalendarFormatter.text(for: events), error: "",
-                          summary: label, count: events.count)
-                case .failure(let error):
-                    reply(ok: false, content: "", error: String(error.localizedDescription.prefix(240)))
-                }
+                reply(outcome)
             }
         }
     }

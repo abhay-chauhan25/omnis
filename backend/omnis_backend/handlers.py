@@ -54,6 +54,14 @@ async def mock_answer(
         yield request
         outcome = await request.future
         reply = f"Event ok={outcome.get('ok')} error={outcome.get('error')}"
+    elif stripped.lower().startswith("tool:"):
+        # Test aid: "tool: NAME key=value; key=value" asks the app to run any tool.
+        name, _, rest = stripped[5:].strip().partition(" ")
+        arguments = dict(part.strip().split("=", 1) for part in rest.split(";") if "=" in part)
+        request = ToolRequest(name, "", asyncio.get_running_loop().create_future(), arguments)
+        yield request
+        outcome = await request.future
+        reply = f"Tool ok={outcome.get('ok')} error={outcome.get('error')} content={outcome.get('content')}"
     elif stripped.lower() == "attachments?":
         # Test aid: report what files the app sent along, without echoing their content.
         now = attachments or []
