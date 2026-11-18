@@ -145,6 +145,73 @@ enum Make {
         #expect((cut.text ?? "").hasSuffix("[The file is longer than this. Only the first part is included.]"))
     }
 
+    @Test func aShortcutIsJudgedByWhatItPointsTo() throws {
+        let scratch = try Scratch()
+        func failure(_ url: URL) -> AttachmentError? {
+            do { _ = try AttachmentLoader.load(url); return nil } catch { return error as? AttachmentError }
+        }
+        let manager = FileManager.default
+        // To an endless device: refused at once, never read.
+        let toDevice = scratch.url.appendingPathComponent("endless.txt")
+        try manager.createSymbolicLink(at: toDevice, withDestinationURL: URL(fileURLWithPath: "/dev/zero"))
+        let started = Date()
+        #expect(failure(toDevice) == .unreadable("endless.txt"))
+        #expect(Date().timeIntervalSince(started) < 2)
+
+        // To a file over the size limit: the limit applies to the real file.
+        let big = scratch.url.appendingPathComponent("big.bin")
+        manager.createFile(atPath: big.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(31 * 1024 * 1024))   // sparse: takes no real disk space
+        try handle.close()
+        let toBig = scratch.url.appendingPathComponent("looks-small.txt")
+        try manager.createSymbolicLink(at: toBig, withDestinationURL: big)
+        #expect(failure(toBig) == .tooLarge("looks-small.txt"))
+
+        // To an ordinary file: read normally, named as the user sees it.
+        let real = try scratch.file("real notes.txt", contents: "hello")
+        let toReal = scratch.url.appendingPathComponent("alias.txt")
+        try manager.createSymbolicLink(at: toReal, withDestinationURL: real)
+        #expect(try AttachmentLoader.load(toReal).first?.text == "hello")
+        #expect(try AttachmentLoader.load(toReal).first?.name == "alias.txt")
+
+        // To a folder, and to nothing.
+        let toFolder = scratch.url.appendingPathComponent("folder-link")
+        try manager.createSymbolicLink(at: toFolder, withDestinationURL: try scratch.folder("dir"))
+        #expect(failure(toFolder) == .unsupported("folder-link"))
+        let dangling = scratch.url.appendingPathComponent("dangling.txt")
+        try manager.createSymbolicLink(at: dangling, withDestinationURL: scratch.url.appendingPathComponent("gone"))
+        #expect(failure(dangling) == .unreadable("dangling.txt"))
+    }
+
+    @Test func aLongPDFIsReadOnlyAsFarAsIsNeeded() throws {
+        let scratch = try Scratch()
+        let file = scratch.url.appendingPathComponent("book.pdf")
+        let line = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 2)
+        Make.pdf(at: file, pages: 400) { context, page in
+            for row in 0..<40 {
+                Make.write("p\(page + 1) \(line)", in: context, at: CGPoint(x: 36, y: 760 - CGFloat(row) * 18), size: 9)
+            }
+        }
+        let started = Date()
+        let attachment = try #require(try AttachmentLoader.load(file).first)
+        #expect(attachment.kind == .text)
+        #expect(attachment.truncated)
+        #expect((attachment.text ?? "").count <= 60_100)
+        #expect((attachment.text ?? "").contains("p1 The quick brown fox"))
+        #expect(!(attachment.text ?? "").contains("p400 "))     // it stopped long before the end
+        #expect((attachment.text ?? "").hasSuffix("Only the first part is included.]"))
+        #expect(Date().timeIntervalSince(started) < 20)
+    }
+
+    @Test func richTextMarkupIsNotMistakenForReadableText() throws {
+        let scratch = try Scratch()
+        let rtf = try scratch.file("letter.rtf", contents: "{\\rtf1\\ansi Hello}")
+        do { _ = try AttachmentLoader.load(rtf); Issue.record("expected a refusal") } catch {
+            #expect(error as? AttachmentError == .unsupported("letter.rtf"))
+        }
+    }
+
     @Test func thingsThatCannotBeReadAreRefusedWithAReason() throws {
         let scratch = try Scratch()
         func failure(_ url: URL) -> AttachmentError? {
@@ -171,6 +238,47 @@ enum Make {
         #expect(failure(brokenPDF) == .unreadable("broken.pdf"))
 
         #expect(AttachmentError.tooMany.localizedDescription == "Only 4 files can be attached to one message.")
+    }
+}
+
+@Suite struct AttachmentLimitsTests {
+    func document(_ name: String, _ characters: Int) -> Attachment {
+        Attachment(kind: .text, name: name, text: String(repeating: "x", count: characters))
+    }
+    let picture = Attachment(kind: .image, name: "p.png", imageData: Data([0xFF, 0xD8, 0xFF]))
+
+    @Test func filesThatFitAreAllAccepted() {
+        let outcome = AttachmentLimits.fit([document("a.txt", 10_000), picture], alongside: [document("b.txt", 20_000)])
+        #expect(outcome.accepted.count == 2)
+        #expect(outcome.note == nil)
+        #expect(!outcome.full)
+    }
+
+    @Test func togetherTheDocumentsMayNotExceedWhatCanBeRead() {
+        // 40,000 already attached; a 50,000 one is cut to what is left and the user is told.
+        let cut = AttachmentLimits.fit([document("second.txt", 50_000)], alongside: [document("first.txt", 40_000)])
+        #expect(cut.accepted.count == 1)
+        #expect(cut.accepted[0].truncated)
+        #expect((cut.accepted[0].text ?? "").count == 20_000)
+        #expect(cut.note?.contains("only the first part of \u{201C}second.txt\u{201D}") == true)
+
+        // Almost no room left: left out entirely, not cut to a useless stub.
+        let refused = AttachmentLimits.fit([document("third.txt", 5_000)], alongside: [document("first.txt", 59_000)])
+        #expect(refused.accepted.isEmpty)
+        #expect(refused.note?.contains("was left out") == true)
+
+        // Pictures do not count against the text limit.
+        let image = AttachmentLimits.fit([picture], alongside: [document("first.txt", 60_000)])
+        #expect(image.accepted == [picture])
+    }
+
+    @Test func atMostFourFilesAcrossSeveralAdditions() {
+        let three = [picture, picture, picture].enumerated().map { Attachment(kind: .image, name: "p\($0.offset).png", imageData: $0.element.imageData) }
+        let outcome = AttachmentLimits.fit([document("a.txt", 10), document("b.txt", 10)], alongside: three)
+        #expect(outcome.accepted.map(\.name) == ["a.txt"])
+        #expect(outcome.full)
+        #expect(outcome.note == "Only 4 files can be attached to one message.")
+        #expect(AttachmentLimits.fit([picture], alongside: three + [document("a.txt", 10)]).accepted.isEmpty)
     }
 }
 

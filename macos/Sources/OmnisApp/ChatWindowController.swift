@@ -138,7 +138,9 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
             // Command-V with a picture or files on the clipboard attaches them.
-            if event.keyCode == 9, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            // Matched by the letter, not the key's position, so it works on any keyboard layout.
+            if event.charactersIgnoringModifiers?.lowercased() == "v",
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                self.model.attachFromPasteboard() {
                 return nil
             }

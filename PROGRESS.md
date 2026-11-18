@@ -15,13 +15,15 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Local model `gemma4:12b` | Chosen by measurement 2026-11-17 | ADR-0007, `docs/benchmarks/model-bake-off.md` |
 | Chat window with conversation memory | Built and reviewed 2026-11-17; user testing in progress | ADR-0010 |
 | Claude lane | Built against a stand-in and reviewed 2026-11-17; review findings fixed, fixes not yet re-reviewed; never run live | ADR-0009 |
+| Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
+| Calendar (first personal-data integration) | Not started. Approach and scope to be agreed first | — |
 | Stage 2: main window | Not started. Waits for a design conversation | — |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 109. Swift: 118. Three more live tests use the real model and real search when asked for.
+- Python: 118. Swift: 138. Four more live tests use the real model, real search and a real picture when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -38,7 +40,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Decisions waiting on the user
 
-1. What to build next: image and PDF input in the chat window, the main window (Stage 2), or the first personal-data integration.
+1. Calendar: call Apple's EventKit directly from OMNIS (recommended) or use a third-party MCP server; and whether to start read-only.
 2. Whether OMNIS should ask "keep this local?" when typed text looks personal, or leave that to the Local control.
 3. Whether opening a source should be recorded in the audit log by site name, as it is now.
 4. Whether an answer given locally because Claude was unavailable should keep that chat local afterwards.

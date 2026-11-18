@@ -60,3 +60,6 @@ func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async -> Bool
     }
     return condition()
 }
+
+/// The testing library has a type of the same name; in these tests it always means OMNIS's.
+typealias Attachment = OmnisCore.Attachment

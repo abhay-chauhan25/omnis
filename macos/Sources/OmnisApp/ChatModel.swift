@@ -90,33 +90,47 @@ final class ChatModel: ObservableObject {
 
     /// Reads the chosen files and queues them for the next message. A file
     /// that cannot be read is reported and the rest are still attached.
+    /// Reading happens off the main thread, so a large PDF does not freeze the window.
     func attach(urls: [URL]) {
-        for url in urls {
-            do {
-                try add(AttachmentLoader.load(url))
-            } catch {
-                show(notice: error.localizedDescription, seconds: 6)
-                if case AttachmentError.tooMany = error { return }
+        guard !urls.isEmpty else { return }
+        show(notice: "Reading\u{2026}", seconds: 30)
+        Task { [weak self] in
+            for url in urls.prefix(AttachmentLoader.maxAttachments + 1) {
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try AttachmentLoader.load(url) }
+                }.value
+                guard let self else { return }
+                if self.notice == "Reading\u{2026}" { self.notice = nil }
+                switch result {
+                case .success(let attachments):
+                    if !self.add(attachments) { return }
+                case .failure(let error):
+                    self.show(notice: error.localizedDescription, seconds: 6)
+                }
             }
         }
     }
 
     func attachImage(data: Data, name: String) {
-        do {
-            try add([AttachmentLoader.image(from: data, name: name)])
-        } catch {
-            show(notice: error.localizedDescription, seconds: 6)
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try AttachmentLoader.image(from: data, name: name) }
+            }.value
+            switch result {
+            case .success(let attachment): _ = self?.add([attachment])
+            case .failure(let error): self?.show(notice: error.localizedDescription, seconds: 6)
+            }
         }
     }
 
-    private func add(_ attachments: [Attachment]) throws {
-        for attachment in attachments {
-            guard pendingAttachments.count < AttachmentLoader.maxAttachments else { throw AttachmentError.tooMany }
-            pendingAttachments.append(attachment)
-            if attachment.truncated {
-                show(notice: "\u{201C}\(attachment.name)\u{201D} is long, so only the first part will be read.", seconds: 6)
-            }
-        }
+    /// Queues what fits within the limits and says what did not. Returns
+    /// false once the message is full.
+    @discardableResult
+    private func add(_ attachments: [Attachment]) -> Bool {
+        let outcome = AttachmentLimits.fit(attachments, alongside: pendingAttachments)
+        pendingAttachments.append(contentsOf: outcome.accepted)
+        if let note = outcome.note { show(notice: note, seconds: 7) }
+        return !outcome.full
     }
 
     func removeAttachment(_ id: UUID) {
@@ -146,7 +160,14 @@ final class ChatModel: ObservableObject {
             attach(urls: urls)
             return true
         }
-        guard pasteboard.string(forType: .string) == nil else { return false }
+        // Text on the clipboard pastes as text. The exception is a lone web
+        // address, which is what a browser adds when you copy a picture.
+        if let string = pasteboard.string(forType: .string) {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let loneAddress = !trimmed.contains(where: \.isWhitespace)
+                && (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://"))
+            guard loneAddress else { return false }
+        }
         for type in [NSPasteboard.PasteboardType.png, .tiff] {
             if let data = pasteboard.data(forType: type) {
                 attachImage(data: data, name: "Pasted image")
