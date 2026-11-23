@@ -1,6 +1,6 @@
 # ADR-0006 — Claude use, spending limits, and battery
 
-- **Status:** Accepted; amended by ADR-0008 (search terms leave the Mac) and ADR-0009 (routing and fallback)
+- **Status:** Accepted; amended by ADR-0008 (search terms leave the Mac) and ADR-0009 (routing and fallback); replaced by ADR-0013 (Claude through Claude Code)
 - **Date:** 2026-11-16
 
 ## Problem / context

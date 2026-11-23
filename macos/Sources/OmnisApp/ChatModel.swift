@@ -5,19 +5,6 @@ import SwiftUI
 /// Everything the chat window shows, and what happens when you send or launch.
 @MainActor
 final class ChatModel: ObservableObject {
-    /// Where a question is answered. "Auto" lets OMNIS decide.
-    enum Lane: String, CaseIterable, Identifiable {
-        case auto, local, claude
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .auto: return "Auto"
-            case .local: return "Local"
-            case .claude: return "Claude"
-            }
-        }
-    }
-
     @Published var input = "" {
         didSet { if input != oldValue { refreshSuggestions() } }
     }
@@ -27,7 +14,16 @@ final class ChatModel: ObservableObject {
     /// The suggestion Enter would launch, or nil if Enter sends a message.
     @Published private(set) var selectedSuggestion: Int?
     @Published var webEnabled = true
-    @Published var lane: Lane = .auto
+    /// Which Claude model answers. Auto lets OMNIS choose per question.
+    @Published var modelChoice: ModelChoice = .auto
+    /// How hard the model thinks. Auto lets OMNIS choose per question.
+    @Published var effortChoice: EffortChoice = .auto
+    /// "Off the grid": everything is answered by the model on this Mac.
+    @Published var offGrid = false
+    /// This one chat was moved to the local model, after Claude could not be used.
+    @Published private(set) var chatLocal = false
+    /// How much of the Claude plan has been used, as last reported.
+    @Published private(set) var usage = UsageWindows()
     /// A short line under the input: a launch result or a settings warning.
     @Published private(set) var notice: String?
     /// Bumped each time the window opens, so the view can take keyboard focus.
@@ -41,11 +37,18 @@ final class ChatModel: ObservableObject {
     private let ledger: UsageLedger
     private let performer: LaunchPerforming
     private let calendarWriter: (any CalendarWriting)?
+    private let claude: ClaudeService?
+    private let limits = UsageLimits()
+    /// When the window was last hidden, to end a chat left alone for a long time.
+    private var hiddenAt: Date?
+    static let idleChatSeconds: TimeInterval = 25 * 60
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
-    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil) {
+    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil,
+         claude: ClaudeService? = nil) {
         self.backend = backend
+        self.claude = claude
         self.calendarWriter = calendarWriter
         self.audit = audit
         self.ledger = ledger
@@ -58,11 +61,27 @@ final class ChatModel: ObservableObject {
         backend?.onPersonalDataDelivered { [weak self] in
             Task { @MainActor in self?.conversation.markPersonal() }
         }
+        claude?.onPersonalDataDelivered { [weak self] in
+            Task { @MainActor in self?.conversation.markPersonal() }
+        }
+        claude?.onUsage { [weak self] windows in
+            Task { @MainActor in self?.usage = windows }
+        }
     }
 
     var editorName: String { registry.editor.name }
-    /// True when this chat cannot search the web because a file is, or was, part of it.
-    var webBlockedByFile: Bool { conversation.hasPersonalData || !pendingAttachments.isEmpty }
+    /// True when questions are answered by the model on this Mac, not by Claude.
+    var usesLocal: Bool { offGrid || chatLocal || claude == nil }
+    /// True when this chat cannot search the web: only on this Mac, where a
+    /// file or the calendar in a chat keeps its contents out of searches.
+    var webBlockedByFile: Bool { usesLocal && (conversation.hasPersonalData || !pendingAttachments.isEmpty) }
+    /// "5h 8% · 7d 2%", shown while Claude is in use.
+    var usageLabel: String? { usesLocal ? nil : usage.label() }
+    /// True when usage is within ten points of where ordinary chats stop.
+    var usageIsHigh: Bool {
+        let live = usage.current()
+        return (live.fiveHour ?? 0) >= limits.fiveHour - 0.10 || (live.sevenDay ?? 0) >= limits.sevenDay - 0.10
+    }
     var isAnswering: Bool { conversation.isAnswering }
     var canSend: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -73,6 +92,11 @@ final class ChatModel: ObservableObject {
 
     /// Called each time the window is shown. The conversation is kept.
     func prepareForOpen() {
+        // A chat left with the window closed for a long time is over.
+        if let hiddenAt, Date().timeIntervalSince(hiddenAt) >= Self.idleChatSeconds, !isAnswering, !conversation.isEmpty {
+            newChat()
+        }
+        hiddenAt = nil
         do {
             let config = try ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)
             registry = try Registry.load(config: config)
@@ -85,10 +109,17 @@ final class ChatModel: ObservableObject {
         openCount += 1
     }
 
+    /// Called when the window is hidden. The conversation is kept for now.
+    func windowHidden() {
+        hiddenAt = Date()
+    }
+
     /// Forgets the conversation and starts again.
     func newChat() {
         askTask?.cancel()
         askTask = nil
+        claude?.endSession()
+        chatLocal = false
         conversation.clear()
         input = ""
         notice = nil
@@ -252,61 +283,99 @@ final class ChatModel: ObservableObject {
         let attachments = pendingAttachments
         guard !text.isEmpty || !attachments.isEmpty, !isAnswering else { return }
 
-        // The typed prefixes still work and win over the controls for one message.
-        let options = RoutePrefix.split(text)
-        var route = options.route != "auto" ? options.route : lane.rawValue
-        var web = webEnabled && options.web
-
-        // A file is personal: it is read by the model on this Mac, the chat
-        // stays here, and nothing from it is put into a web search.
-        // A question about your own schedule is kept on this Mac from the
-        // start, so it is never offered to Claude.
-        let aboutCalendar = PersonalIntent.mentionsCalendar(options.text)
-        let personal = !attachments.isEmpty || conversation.hasPersonalData || aboutCalendar
-        if personal { route = "local" }
-        if !attachments.isEmpty || conversation.hasPersonalData {
-            web = false
+        // A typed command such as "/effort high" changes a setting and is not sent to a model.
+        if attachments.isEmpty, let command = SlashCommand.parse(text) {
+            input = ""
+            apply(command)
+            return
         }
+        input = ""
+        pendingAttachments = []
+        ask(text, attachments: attachments, onThisMac: false)
+    }
+
+    private func apply(_ command: SlashCommand) {
+        switch command {
+        case .model(let choice):
+            modelChoice = choice
+            show(notice: "Model: \(choice.title)", seconds: 3)
+        case .effort(let choice):
+            effortChoice = choice
+            show(notice: "Effort: \(choice.title)", seconds: 3)
+        case .local(let on):
+            offGrid = on
+            show(notice: on ? "Off the grid: questions are answered on this Mac." : "Back to Claude.", seconds: 4)
+        case .unknown(let help):
+            show(notice: help, seconds: 8)
+        }
+    }
+
+    /// Answers again on this Mac, after Claude could not be used. The rest of this chat stays here.
+    func answerLocally(_ answerID: UUID) {
+        guard !isAnswering, let index = conversation.messages.firstIndex(where: { $0.id == answerID }), index > 0 else { return }
+        let question = conversation.messages[index - 1]
+        guard question.role == .user else { return }
+        chatLocal = true
+        conversation.update(answerID) { $0.offersLocal = false }
+        ask(question.text, attachments: question.attachments, onThisMac: true)
+    }
+
+    private func ask(_ text: String, attachments: [Attachment], onThisMac: Bool) {
+        // The typed prefixes still work for one message.
+        let options = RoutePrefix.split(text)
+        let local = onThisMac || usesLocal || options.route == "local"
         if !attachments.isEmpty {
             let images = attachments.filter { $0.kind == .image }.count
             audit.record(action: "attach", outcome: "ok",
                          detail: "\(images) image, \(attachments.count - images) document")
         }
-
-        // Keeping one turn on this Mac keeps the whole chat here: otherwise a
-        // later question would carry that turn to Claude as history.
-        if route == "local" {
-            conversation.keepLocal()
-        } else if conversation.staysLocal {
-            if route == "claude" {
-                show(notice: "This chat is staying on this Mac. Start a new chat to use Claude.", seconds: 5)
-            }
-            route = "local"
-        }
-        let cloud = ledger.permission()
-        // The model may prepare an event only when your own message asks for one.
+        // The model may prepare a calendar change only when your own message asks for one.
         // Deleting is held to a stricter rule; see `Conversation.offer`.
         let offer = calendarWriter == nil ? ChangeOffer()
             : conversation.offer(for: options.text, hasAttachments: !attachments.isEmpty)
-
         let history = conversation.history()
         let answerID = conversation.begin(question: text, attachments: attachments)
-        input = ""
-        pendingAttachments = []
 
-        guard let backend else {
-            let reason = "The OMNIS backend is not set up, so questions cannot be answered yet."
-            conversation.update(answerID) { $0.state = .failed(reason) }
-            audit.record(action: "ask", outcome: "error", detail: "backend not configured")
-            return
+        func fail(_ reason: String, log: String, offerLocal: Bool = false) {
+            conversation.update(answerID) { $0.state = .failed(reason); $0.offersLocal = offerLocal }
+            self.audit.record(action: "ask", outcome: "error", detail: log)
+            announce("Problem: \(reason)")
+        }
+
+        let stream: AsyncThrowingStream<AnswerEvent, Error>
+        if local {
+            guard let backend else {
+                fail("The model on this Mac is not set up, so questions cannot be answered here yet.", log: "backend not configured")
+                return
+            }
+            // On this Mac, a chat that holds a file or the calendar does not
+            // search the web, so none of it can end up in a search.
+            let personal = conversation.hasPersonalData || PersonalIntent.mentionsCalendar(options.text)
+            let web = webEnabled && options.web && !conversation.hasPersonalData
+            conversation.keepLocal()
+            stream = backend.ask(options.text, route: "local", web: web, history: history, attachments: attachments,
+                                 personal: personal, calendar: true, calendarWrite: offer.changes, deletes: offer.deletes)
+        } else {
+            guard let claude else { return }
+            // Ordinary chats leave part of the Claude plan for your own work.
+            if let hit = limits.hit(by: usage) {
+                fail(hit.message, log: "claude usage limit", offerLocal: backend != nil)
+                return
+            }
+            let choice = ClaudeRouter.choose(text: options.text, hasDocument: attachments.contains { $0.kind == .text },
+                                             model: modelChoice, effort: effortChoice)
+            stream = claude.ask(ClaudeRequest(
+                text: options.text, history: history, attachments: attachments, model: choice.model, effort: choice.effort,
+                reason: choice.reason, web: webEnabled && options.web,
+                access: CalendarToolAccess(calendar: true, write: offer.changes, deletes: offer.deletes)
+            ))
         }
 
         let audit = self.audit
+        let backend = self.backend
         askTask = Task { [weak self] in
             do {
-                for try await event in backend.ask(options.text, route: route, web: web, history: history, cloud: cloud,
-                                                   attachments: attachments, personal: personal, calendar: true,
-                                                   calendarWrite: offer.changes, deletes: offer.deletes) {
+                for try await event in stream {
                     guard !Task.isCancelled, let self else { return }
                     switch event {
                     case .chunk(let piece):
@@ -325,8 +394,7 @@ final class ChatModel: ObservableObject {
                         self.conversation.update(answerID) { $0.readingCalendar = true }
                         self.announce("Checking your calendar")
                     case .calendarRead(let summary, let events):
-                        // From here the chat holds calendar information: it stays
-                        // on this Mac and no longer searches the web.
+                        // From here the chat holds calendar information.
                         self.conversation.markPersonal()
                         let note = events < 0 ? summary : "\(summary): \(events == 1 ? "1 event" : "\(events) events")"
                         self.conversation.update(answerID) { $0.readingCalendar = false; $0.calendarNotes.append(note) }
@@ -340,9 +408,6 @@ final class ChatModel: ObservableObject {
                         // which nothing but the user's click calls.
                         let proposal = EventProposal(change: change)
                         self.conversation.add(proposal, to: answerID)
-                        // Follow-ups such as "make it 2pm" must reach the local
-                        // model, which is the one that can prepare changes.
-                        self.conversation.keepLocal()
                         // The kind of change only. No title, time, place or name.
                         audit.record(action: "calendar_propose", outcome: "ok", detail: change.kind)
                         self.announce("\(change.heading) ready to check")
@@ -353,18 +418,14 @@ final class ChatModel: ObservableObject {
                         self.conversation.update(answerID) { $0.proposalProblem = why }
                         // The reason can name a calendar, so it is not logged.
                         audit.record(action: "calendar_propose", outcome: "refused")
-                    case .usage(let model, let inputTokens, let outputTokens, let costUSD):
-                        // Recorded turn by turn, so a stopped, failed or fallen-back
-                        // answer still counts towards the month.
-                        if !self.ledger.record(model: model, inputTokens: inputTokens,
-                                               outputTokens: outputTokens, costUSD: costUSD) {
-                            audit.record(action: "claude_usage", outcome: "error", detail: "usage record not written")
-                        }
+                    case .usage:
+                        break
                     case .finished(let model, let details):
-                        let warning = details.route == "cloud" ? self.ledger.warning() : nil
                         self.conversation.update(answerID) {
                             $0.state = .done
-                            $0.sourceLine = Self.sourceLabel(model: model, details: details, budgetWarning: warning)
+                            $0.searching = false
+                            $0.readingCalendar = false
+                            $0.sourceLine = Self.sourceLabel(model: model, details: details)
                         }
                         audit.record(action: "ask", outcome: "ok", detail: Self.auditDetail(model: model, details: details))
                         self.announce("Answer ready")
@@ -372,11 +433,19 @@ final class ChatModel: ObservableObject {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                // The backend's own error output helps explain a failed start.
+                // The local service's own error output helps explain a failed start.
                 // It is written by the service, not copied from what was typed.
-                let detail = [error.localizedDescription, backend.lastDiagnostic].compactMap { $0 }.joined(separator: " | ")
-                audit.record(action: "ask", outcome: "error", detail: detail)
-                self?.conversation.update(answerID) { $0.state = .failed(error.localizedDescription) }
+                let extra = local ? backend?.lastDiagnostic : nil
+                audit.record(action: "ask", outcome: "error",
+                             detail: [error.localizedDescription, extra].compactMap { $0 }.joined(separator: " | "))
+                // If Claude cannot be used, the model on this Mac is offered.
+                let offerLocal = !local && backend != nil && error is ClaudeError && (error as? ClaudeError) != .busy
+                self?.conversation.update(answerID) {
+                    $0.state = .failed(error.localizedDescription)
+                    $0.searching = false
+                    $0.readingCalendar = false
+                    $0.offersLocal = offerLocal
+                }
                 self?.announce("Problem: \(error.localizedDescription)")
             }
         }
@@ -456,6 +525,8 @@ final class ChatModel: ObservableObject {
             // Say first if Claude was wanted and could not be used.
             if let fallback = details.fallback { parts.append(fallback) }
             parts.append("\(model), on this Mac")
+        case "claude":
+            parts.append(Self.claudeName(model))
         case "cloud":
             parts.append(Self.claudeName(model))
             if let cost = details.costUSD { parts.append(Self.costText(cost)) }

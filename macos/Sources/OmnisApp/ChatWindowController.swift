@@ -89,6 +89,7 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         guard panel.isVisible else { return }
         removeKeyMonitor()
         panel.orderOut(nil)
+        model.windowHidden()
     }
 
     // MARK: Position

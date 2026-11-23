@@ -1,10 +1,10 @@
 # OMNIS — Progress
 
-Last updated: 2026-11-17
+Last updated: 2026-11-23
 
 ## Where things stand
 
-OMNIS is a working chat window on the Mac. It launches apps and projects, answers questions with a model on this Mac, searches the web when a question needs it, and has a lane for Claude that stays off until a key and credit exist.
+OMNIS is a working chat window on the Mac. It launches apps and projects, answers questions with Claude by default (through Claude Code on the user's own plan) or with a model on this Mac when switched off the grid, searches the web, and reads and changes the calendar with a confirmation for every change.
 
 | Piece | State | Record |
 |---|---|---|
@@ -19,13 +19,15 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
 | Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
 | Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
+| Claude as the default (regular mode) | Built and tested live 2026-11-23; review pending; controls not yet seen on screen | ADR-0013, `docs/stages/claude-regular-mode.md` |
+| Project mode | Not started. Plan and approval first | — |
 | Stage 2: main window | Not started. Waits for a design conversation | — |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 148. Swift: 193. Seven more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 154. Swift: 208. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -35,10 +37,9 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] User's test of adding events, including the first real save and an all-day event.
 - [ ] User's feedback on the look of the event preview card.
 - [ ] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
-- [ ] Verify API credit in the Anthropic Console (expected around 2026-11-23).
-- [ ] Approval to install the `anthropic` package, then a first live Claude call.
-- [ ] A second review of the Claude lane fixes before going live.
-- [ ] Check Claude prices against the live price list before going live (the built-in ones are dated 2026-11-03).
+- [ ] User's look at the Model and Effort sliders, usage reading and typed commands.
+- [ ] Remove the retired API-key lane from the code.
+- [ ] Dashboard design answers (panels, style, colour, motion).
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
 - [ ] Icon design for the Dock and menu bar (placeholders are in use).
@@ -76,6 +77,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | Calendar through Apple's EventKit, read-only first, then creating events. | ADR-0011 |
 | 2026-11-17 | Events: create only; preview and a click every time; default calendar, shown on the preview. | `docs/stages/calendar-events.md` |
 | 2026-11-17 | Full calendar control: every command, including deleting. Each change still confirmed. | ADR-0012 |
+| 2026-11-23 | Claude by default through Claude Code on the user's plan; local model as an off-the-grid switch; ordinary chats stop at 70% weekly and 80% five-hour usage. Replaces ADR-0009. | ADR-0013 |
+| 2026-11-23 | New tools are connected to OMNIS, not straight to Claude, so confirmations and rules apply. | `docs/stages/claude-regular-mode.md` |
 
 ## Things worth knowing
 
@@ -96,4 +99,4 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Next step
 
-The user tests the calendar end to end in a throwaway calendar. Then the choice of what comes next: email, or the main window design conversation.
+The user tries Claude mode in the window. Then: project mode, the dashboard, or email.

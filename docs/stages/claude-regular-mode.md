@@ -1,0 +1,43 @@
+# Claude as the default — regular mode
+
+**Status:** built on 2026-11-23, tested live against Claude, pushed. Independent review pending. The window's new controls have not been looked at on screen. Decision record: ADR-0013.
+
+## What was built
+
+- Claude answers by default, through Claude Code signed in with the user's own Claude plan.
+- One Claude session per chat. It closes after 25 minutes without a question, and a chat whose window has been closed for 25 minutes starts fresh.
+- Model and Effort controls: two small labels in the input bar that open a slider. The same from the keyboard: `/model auto|haiku|sonnet|opus`, `/effort auto|low|medium|high`, `/local on|off`.
+- A usage reading in the top strip (`5h 8% · 7d 2%`). Ordinary chats stop using Claude at 80% and 70% and offer a button to answer on this Mac.
+- "Off the grid" switches everything to the local model.
+
+## How it works
+
+1. `ChatModel.ask` decides between Claude and this Mac, checks the usage limits, and picks the model and effort (`ClaudeRouter`).
+2. `ClaudeService` starts `claude` once per chat (`ClaudeConfig.arguments`): no built-in tools but web search, none of the user's settings, memory files or connected tools, nothing saved to disk, and a permission prompt on every tool call.
+3. Claude learns which calendar tools exist from `backend/omnis_backend/claude_tools.py`. That program can do nothing: it only hands back text.
+4. Before each tool call Claude Code asks `ClaudeService.toolAsked`. A web search is allowed or refused by the globe switch. A calendar tool goes through `CalendarTools`, the same checks the local model goes through: a read is carried out and its text handed back; a change becomes a preview card.
+5. Usage figures arrive from Claude Code as it works and are shown and enforced by `UsageLimits`.
+
+## Measured (2026-11-23, Claude Code 2.1.330)
+
+| | Claude (Haiku) | Local model |
+|---|---|---|
+| Memory while a chat is open | about 260 MB | 7.7 GB |
+| Plain answer | about 1 s | 0.3 to 1.2 s |
+| Calendar read or change | about 1 s | 6 to 15 s |
+| Web search answer | 5 to 13 s | 4 to 6 s |
+| Starting a session | about 4 s, once per chat | about 5 s model load |
+
+## Tests
+
+- Python 154, Swift 208, all passing. The Claude service is tested against a stand-in program, so tests use none of the plan.
+- Live, on the plan, with a made-up calendar: `OMNIS_LIVE_TESTS=1 swift test --filter liveClaude`. Reading, a follow-up move with no day named, delete, create, search, search switched off, a refused file request and a switch to Sonnet all behaved; no answer claimed a change was made; nothing was left on disk.
+
+## Limits and things not verified
+
+- The sliders, usage reading and "answer on this Mac" button have not been seen on screen.
+- Whether the effort setting changes mid-chat is accepted by Claude Code but its effect was not measured.
+- Attached pictures are sent to Claude in the standard form; not tried live.
+- The retired API-key lane is still in the code, unused. Removing it is a clean-up step.
+- Project mode is not built.
+- The numbered source marks the local model uses do not apply to Claude's answers; the Sources list is still shown.

@@ -48,13 +48,16 @@ add OMNISPythonPath string "$python"
 ollama="${OMNIS_OLLAMA:-$(command -v ollama || true)}"
 if [ -n "$ollama" ]; then add OMNISOllamaPath string "$ollama"; fi
 # Optional: with Docker present, the local models can search the web.
+claude="${OMNIS_CLAUDE:-$(command -v claude || true)}"
+if [ -n "$claude" ]; then add OMNISClaudePath string "$claude"; fi
+
 docker="${OMNIS_DOCKER:-$(command -v docker || true)}"
 if [ -n "$docker" ]; then add OMNISDockerPath string "$docker"; fi
 # The search service is reached over plain HTTP on this Mac's own loopback
 # address. This permits that and nothing else.
 plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$plist"
 # Shown by macOS when OMNIS first asks to read the calendar.
-add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to answer questions about your schedule. Events are read on this Mac and are never sent to Claude or used in a web search."
+add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to answer questions about your schedule, and changes it only when you confirm a change."
 
 # Ad-hoc signature: enough to run on this Mac, not for distribution.
 codesign --force --sign - "$app" >/dev/null 2>&1

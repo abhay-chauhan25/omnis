@@ -7,6 +7,8 @@ struct ChatView: View {
     @ObservedObject var model: ChatModel
     let onClose: () -> Void
     @FocusState private var inputFocused: Bool
+    @State private var showModel = false
+    @State private var showEffort = false
     @State private var dropTargeted = false
 
     static let corner: CGFloat = 26
@@ -59,11 +61,19 @@ struct ChatView: View {
                 .help("Hide OMNIS (Esc)")
                 .accessibilityLabel("Hide OMNIS")
                 Spacer()
-                if model.conversation.staysLocal {
+                if model.usesLocal {
                     Label("On this Mac", systemImage: "lock.fill")
                         .font(.system(size: 11, weight: .medium))
-                        .help("This chat is staying on this Mac, because you kept it local or it holds a file or your calendar. Start a new chat to use Claude.")
-                        .accessibilityLabel("This chat is staying on this Mac")
+                        .help("Questions are being answered by the model on this Mac. Nothing is sent to Claude.")
+                        .accessibilityLabel("Answering on this Mac")
+                } else if let usage = model.usageLabel {
+                    // How much of your Claude plan is used: the current five hours, and this week.
+                    Text(usage)
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(model.usageIsHigh ? Color.orange : Color.secondary)
+                        .help("How much of your Claude plan has been used: the current five-hour window and this week. OMNIS stops using Claude at 80% and 70%.")
+                        .accessibilityLabel("Claude usage: \(usage)")
                 }
                 Button(action: model.newChat) {
                     Image(systemName: "square.and.pencil").font(.system(size: 16, weight: .medium))
@@ -89,7 +99,8 @@ struct ChatView: View {
                         emptyState
                     }
                     ForEach(model.conversation.messages) { message in
-                        MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline)
+                        MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline,
+                                    answerLocally: model.answerLocally)
                     }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -216,21 +227,33 @@ struct ChatView: View {
                 .accessibilityLabel(model.webEnabled ? "Web search on" : "Web search off")
             }
 
-            Menu {
-                Picker("Answer with", selection: $model.lane) {
-                    ForEach(ChatModel.Lane.allCases) { lane in
-                        Text(lane.title).tag(lane)
+            SettingPill(name: "Model", value: model.usesLocal ? "Local" : model.modelChoice.title, isOpen: $showModel) {
+                StepSlider(title: "Model", choices: ModelChoice.allCases.map(\.title),
+                           index: Binding(get: { ModelChoice.allCases.firstIndex(of: model.modelChoice) ?? 0 },
+                                          set: { model.modelChoice = ModelChoice.allCases[$0] }),
+                           note: "Auto uses Haiku for ordinary questions and Sonnet for harder ones.")
+                    .disabled(model.usesLocal)
+                Divider()
+                Toggle(isOn: $model.offGrid) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Off the grid").font(.system(size: 12, weight: .medium))
+                        Text("Answer on this Mac. Nothing is sent to Claude.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
-                .pickerStyle(.inline)
-            } label: {
-                Text(model.lane.title)
+                .toggleStyle(.switch)
+                .controlSize(.small)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .help("Auto lets OMNIS choose. Local keeps the question on this Mac. Claude sends it to Claude.")
-            .accessibilityLabel("Answer with \(model.lane.title)")
+            .help("Which Claude model answers. You can also type /model sonnet, or /local on.")
+
+            SettingPill(name: "Effort", value: model.usesLocal ? "\u{2013}" : model.effortChoice.title, isOpen: $showEffort) {
+                StepSlider(title: "Effort", choices: EffortChoice.allCases.map(\.title),
+                           index: Binding(get: { EffortChoice.allCases.firstIndex(of: model.effortChoice) ?? 0 },
+                                          set: { model.effortChoice = EffortChoice.allCases[$0] }),
+                           note: "How hard the model thinks. Higher is slower and uses more of your plan.")
+                    .disabled(model.usesLocal)
+            }
+            .help("How hard the model thinks. You can also type /effort high.")
 
             Spacer()
 
@@ -263,6 +286,7 @@ private struct MessageView: View {
     let open: (SearchResult) -> Void
     let confirm: (UUID) -> Void
     let decline: (UUID) -> Void
+    let answerLocally: (UUID) -> Void
 
     var body: some View {
         switch message.role {
@@ -302,6 +326,11 @@ private struct MessageView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+            }
+            if message.offersLocal {
+                Button("Answer on this Mac instead") { answerLocally(message.id) }
+                    .controlSize(.small)
+                    .help("Use the model on this Mac for this question and the rest of this chat.")
             }
             ForEach(message.proposals) { proposal in
                 EventCard(proposal: proposal, confirm: { confirm(proposal.id) }, decline: { decline(proposal.id) })
@@ -388,6 +417,69 @@ private struct MessageView: View {
                 .help(source.url.absoluteString)
                 .accessibilityLabel("Source \(index + 1): \(source.title), \(source.host). Opens in your browser.")
             }
+        }
+    }
+}
+
+/// A small label in the input bar showing one setting. Clicking it opens a slider above it.
+private struct SettingPill<Content: View>: View {
+    let name: String
+    let value: String
+    @Binding var isOpen: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Button {
+            isOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Text(name).foregroundStyle(.tertiary)
+                Text(value).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.primary.opacity(isOpen ? 0.12 : 0.06)))
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel("\(name): \(value)")
+        .popover(isPresented: $isOpen, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 10) { content() }
+                .padding(14)
+                .frame(width: 280)
+        }
+    }
+}
+
+/// A slider that snaps to a few named positions.
+private struct StepSlider: View {
+    let title: String
+    let choices: [String]
+    @Binding var index: Int
+    let note: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(choices.indices.contains(index) ? choices[index] : "").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Slider(value: Binding(get: { Double(index) }, set: { index = Int($0.rounded()) }),
+                   in: 0...Double(max(choices.count - 1, 1)), step: 1)
+                .accessibilityLabel(title)
+                .accessibilityValue(choices.indices.contains(index) ? choices[index] : "")
+            HStack(spacing: 0) {
+                ForEach(Array(choices.enumerated()), id: \.offset) { position, choice in
+                    Text(choice)
+                        .font(.system(size: 10, weight: position == index ? .semibold : .regular))
+                        .foregroundStyle(position == index ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: position == 0 ? .leading : position == choices.count - 1 ? .trailing : .center)
+                        .contentShape(Rectangle())
+                        .onTapGesture { index = position }
+                }
+            }
+            Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

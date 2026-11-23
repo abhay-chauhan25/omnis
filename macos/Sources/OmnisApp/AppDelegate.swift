@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem!
     private var backend: BackendService?
+    private var claude: ClaudeService?
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
     private let ledger = UsageLedger(url: OmnisPaths.usageLedger, mirror: .standard)
@@ -24,11 +25,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The calendar is read by the app through EventKit. macOS asks for
         // permission the first time a question needs it.
         let calendar = EventKitCalendar()
+        // One set of calendar tools serves both the model on this Mac and
+        // Claude, so both go through the same checks.
+        let tools = CalendarTools(reader: calendar)
         backend = AppEnvironment.backendConfig().map {
-            BackendService(config: $0, webSearch: web?.search, calendar: calendar)
+            BackendService(config: $0, webSearch: web?.search, tools: tools)
         }
-        // Adding an event goes through the chat model, on the user's click.
-        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar)
+        // Claude answers by default, through Claude Code on the user's own plan.
+        claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools) }
+        // Changing the calendar goes through the chat model, on the user's click.
+        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude)
         chat = ChatWindowController(model: model)
 
         buildMainMenu()
@@ -55,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         backend?.stop()
+        claude?.endSession()
         // Leave nothing running: stop the search container if it is up.
         searchContainer?.stopNow()
         audit.flush()
@@ -135,9 +142,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let open = NSMenuItem(title: "Open OMNIS", action: #selector(openPopup), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        let key = NSMenuItem(title: "Claude API Key\u{2026}", action: #selector(setClaudeKey), keyEquivalent: "")
-        key.target = self
-        menu.addItem(key)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit OMNIS", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu

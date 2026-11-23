@@ -78,6 +78,9 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var calendarNotes: [String] = []
     /// Why the calendar could not be read, if a read failed.
     public var calendarProblem: String?
+    /// True when Claude could not be used for this answer and the local
+    /// model is offered instead.
+    public var offersLocal = false
     /// New events proposed in this answer, each waiting for the user's decision.
     public var proposals: [EventProposal] = []
     /// Why an event could not be prepared, if one failed.

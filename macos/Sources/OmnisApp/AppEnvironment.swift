@@ -32,6 +32,31 @@ enum AppEnvironment {
         return config
     }
 
+    /// Claude is used through Claude Code, signed in with the user's own Claude
+    /// plan. Returns nil if Claude Code or the tool list cannot be found; the
+    /// app then answers on this Mac only.
+    static func claudeConfig() -> ClaudeConfig? {
+        let environment = ProcessInfo.processInfo.environment
+        let info = Bundle.main.infoDictionary ?? [:]
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        let candidates = [environment["OMNIS_CLAUDE"], info["OMNISClaudePath"] as? String,
+                          home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+        guard let claude = candidates.compactMap({ $0 }).first(where: {
+            $0.hasPrefix("/") && fileManager.isExecutableFile(atPath: $0)
+        }) else { return nil }
+        let directory = environment["OMNIS_BACKEND_DIR"] ?? info["OMNISBackendDirectory"] as? String
+        let python = environment["OMNIS_PYTHON"] ?? info["OMNISPythonPath"] as? String
+        guard let directory, let python, directory.hasPrefix("/"), fileManager.isExecutableFile(atPath: python),
+              fileManager.fileExists(atPath: directory + "/omnis_backend/claude_tools.py") else { return nil }
+        return ClaudeConfig(
+            executable: URL(fileURLWithPath: claude),
+            python: URL(fileURLWithPath: python),
+            backendDirectory: URL(fileURLWithPath: directory, isDirectory: true),
+            workingDirectory: OmnisPaths.supportDirectory.appendingPathComponent("claude-session", isDirectory: true)
+        )
+    }
+
     /// Web search runs SearXNG in Docker. Returns nil if Docker cannot be found;
     /// the popup then says web search is not set up.
     static func webSearch() -> (search: SearXNGSearch, container: SearXNGContainer)? {

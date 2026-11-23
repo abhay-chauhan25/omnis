@@ -131,17 +131,19 @@ public final class BackendService: @unchecked Sendable {
     private var greeted = false
 
     private let webSearch: (any WebSearching)?
-    private let calendar: (any CalendarReading)?
-    private let refs = EventRefs()
+    private let tools: CalendarTools
     private var personalDataHandler: (@Sendable () -> Void)?
 
     /// `webSearch` is what carries out a search when the model asks for one,
     /// and `calendar` what reads the calendar. Without one, the model is told
     /// that it is unavailable.
-    public init(config: BackendConfig, webSearch: (any WebSearching)? = nil, calendar: (any CalendarReading)? = nil) {
+    ///
+    /// `tools` may be shared with the Claude service, so both name events by the same ids.
+    public init(config: BackendConfig, webSearch: (any WebSearching)? = nil, calendar: (any CalendarReading)? = nil,
+                tools: CalendarTools? = nil) {
         self.config = config
         self.webSearch = webSearch
-        self.calendar = calendar
+        self.tools = tools ?? CalendarTools(reader: calendar)
         // Writing to a backend that has just exited must raise an error, not kill the app.
         signal(SIGPIPE, SIG_IGN)
     }
@@ -201,7 +203,7 @@ public final class BackendService: @unchecked Sendable {
             queue.async {
                 self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
                                            attachments: attachments, personal: personal,
-                                           calendar: calendar && self.calendar != nil,
+                                           calendar: calendar && self.tools.reader != nil,
                                            calendarWrite: calendarWrite,
                                            deletes: calendarWrite ? deletes : .none, continuation: continuation)
                 self.send(id)
@@ -421,16 +423,6 @@ public final class BackendService: @unchecked Sendable {
         }
     }
 
-    private enum CalendarOutcome: Sendable {
-        case read(content: String, summary: String, events: Int)
-        case proposal(CalendarChange)
-    }
-
-    static let calendarWriteTools: Set<String> = [
-        "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-        "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar",
-    ]
-
     /// Handles every calendar request from the model.
     ///
     /// A read returns text to the model. A change returns nothing but "a
@@ -439,10 +431,10 @@ public final class BackendService: @unchecked Sendable {
     /// Each kind is refused unless the app offered it for this question.
     private func calendarTool(requestID: String, callID: String, tool: String, arguments: [String: String]) {
         guard let request = pending[requestID] else { return }
-        let writing = Self.calendarWriteTools.contains(tool)
+        let writing = CalendarTools.writeTools.contains(tool)
 
         var replied = false
-        func reply(_ result: Result<CalendarOutcome, Error>) {
+        func reply(_ result: Result<CalendarToolOutcome, Error>) {
             guard !replied, pending[requestID] != nil else { return }
             replied = true
             switch result {
@@ -470,109 +462,11 @@ public final class BackendService: @unchecked Sendable {
             }
         }
 
-        guard request.calendar, let calendar else {
-            reply(.failure(CalendarError.refused("the calendar is not available")))
-            return
-        }
-        guard !writing || request.calendarWrite else {
-            reply(.failure(CalendarError.refused("changing the calendar is not available")))
-            return
-        }
-        // Deleting needs the user's own message to have asked for it.
-        if (tool == "calendar_delete_event" && request.deletes == .none)
-            || (tool == "calendar_delete_calendar" && request.deletes != .all) {
-            reply(.failure(CalendarError.refused("deleting was not asked for in the user's message. Ask them to say plainly what to delete")))
-            return
-        }
-
-        // What can be checked without the calendar is checked first.
-        let refs = self.refs
-        let work: @Sendable () async throws -> CalendarOutcome
+        let work: @Sendable () async throws -> CalendarToolOutcome
         do {
-            func key() throws -> String {
-                guard let key = refs.key(for: arguments["event"] ?? "") else {
-                    throw CalendarError.refused("that event id is not known. Read the calendar for that day again and use the id shown there")
-                }
-                return key
-            }
-            func name(_ argument: String) throws -> String {
-                let value = CalendarFormatter.clean(arguments[argument] ?? "")
-                guard !value.isEmpty else { throw CalendarError.refused("the calendar needs a name") }
-                return value
-            }
-            let future = arguments["scope"] == "future"
-            switch tool {
-            case "calendar_events":
-                let range = try CalendarFormatter.range(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
-                let label = Self.summary(start: arguments["start"] ?? "", end: arguments["end"] ?? "")
-                let search = arguments["search"] ?? ""
-                work = {
-                    let events = CalendarFormatter.filter(try await calendar.events(from: range.0, to: range.1), search: search)
-                    return .read(content: CalendarFormatter.text(for: events, ref: { refs.ref(for: $0.key) }),
-                                 summary: label, events: events.count)
-                }
-            case "calendar_event_details":
-                let key = try key()
-                work = {
-                    .read(content: CalendarFormatter.details(try await calendar.snapshot(key: key)),
-                          summary: "one event's details", events: -1)
-                }
-            case "calendar_list":
-                work = {
-                    .read(content: CalendarFormatter.text(for: try await calendar.calendars()),
-                          summary: "your list of calendars", events: -1)
-                }
-            case "calendar_create_event":
-                let change = CalendarChange.create(try EventDraft.parse(arguments))
-                let namesCalendar = arguments["calendar"] != nil
-                work = {
-                    if namesCalendar { try change.check(against: try await calendar.calendars()) }
-                    return .proposal(change)
-                }
-            case "calendar_update_event":
-                let key = try key()
-                work = {
-                    let original = try await calendar.snapshot(key: key)
-                    let after = try original.draft.applying(arguments)
-                    let change = CalendarChange.update(original: original, after: after, future: future && original.recurring)
-                    try change.check(against: try await calendar.calendars())
-                    return .proposal(change)
-                }
-            case "calendar_delete_event":
-                let key = try key()
-                work = {
-                    let snapshot = try await calendar.snapshot(key: key)
-                    let change = CalendarChange.delete(snapshot, future: future && snapshot.recurring)
-                    try change.check(against: try await calendar.calendars())
-                    return .proposal(change)
-                }
-            case "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar":
-                let change: CalendarChange
-                switch tool {
-                case "calendar_create_calendar": change = .createCalendar(name: try name("name"))
-                case "calendar_rename_calendar": change = .renameCalendar(from: try name("name"), to: try name("new_name"))
-                default: change = .deleteCalendar(name: try name("name"))
-                }
-                work = {
-                    let list = try await calendar.calendars()
-                    try change.check(against: list)
-                    // The preview says which account is involved and how much would go.
-                    switch change {
-                    case .createCalendar(let name, _):
-                        return .proposal(.createCalendar(name: name,
-                                                         account: try CalendarAccounts.choose(arguments["account"], from: list)))
-                    case .deleteCalendar(let name, _, _, _):
-                        let info = list.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                        let count = try? await calendar.eventCount(calendarNamed: info?.name ?? name)
-                        return .proposal(.deleteCalendar(name: info?.name ?? name, account: info?.account ?? "",
-                                                         events: count ?? nil, isDefault: info?.isDefault ?? false))
-                    default:
-                        return .proposal(change)
-                    }
-                }
-            default:
-                throw CalendarError.refused("that is not something OMNIS can do with the calendar")
-            }
+            work = try tools.prepare(tool: tool, arguments: arguments,
+                                     access: CalendarToolAccess(calendar: request.calendar, write: request.calendarWrite,
+                                                                deletes: request.deletes))
         } catch {
             reply(.failure(error))
             return
@@ -588,7 +482,7 @@ public final class BackendService: @unchecked Sendable {
             reply(.failure(CalendarError.refused("reading the calendar took too long")))
         }
         Task { [weak self] in
-            let outcome: Result<CalendarOutcome, Error>
+            let outcome: Result<CalendarToolOutcome, Error>
             do {
                 outcome = .success(try await work())
             } catch {

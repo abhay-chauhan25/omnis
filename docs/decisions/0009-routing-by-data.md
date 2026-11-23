@@ -1,6 +1,6 @@
 # ADR-0009 — Route by what data a request touches
 
-- **Status:** Accepted
+- **Status:** Accepted; replaced by ADR-0013 (Claude through Claude Code)
 - **Date:** 2026-11-17
 - **Replaces:** the "local-only by default" rule of ADR-0006 and the routing-by-difficulty plan in `CLAUDE.md` §3
 
