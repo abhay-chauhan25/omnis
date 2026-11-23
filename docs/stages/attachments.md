@@ -1,5 +1,8 @@
 # Image and file attachments
 
+> Since 2026-11-23 Claude is the default and personal information may be sent to it (ADR-0013). Statements here that something is never sent to Claude describe answering on this Mac.
+
+
 Built on 2026-11-17 at the user's request. The attach button was part of the chat window design in ADR-0010; the rules below follow ADR-0009.
 
 ## What was built

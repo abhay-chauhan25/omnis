@@ -1,5 +1,8 @@
 # Calendar, step 1 — Reading
 
+> Since 2026-11-23 Claude is the default and personal information may be sent to it (ADR-0013). Statements here that something is never sent to Claude describe answering on this Mac.
+
+
 **Status:** built, reviewed and review findings fixed on 2026-11-17. Waiting for the user's test with the real calendar. Decision record: ADR-0011.
 
 ## What was built

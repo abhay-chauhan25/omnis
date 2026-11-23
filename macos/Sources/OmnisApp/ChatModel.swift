@@ -19,7 +19,10 @@ final class ChatModel: ObservableObject {
     /// How hard the model thinks. Auto lets OMNIS choose per question.
     @Published var effortChoice: EffortChoice = .auto
     /// "Off the grid": everything is answered by the model on this Mac.
-    @Published var offGrid = false
+    @Published var offGrid = false {
+        // Switching back to Claude also ends a chat's own move to this Mac.
+        didSet { if !offGrid { chatLocal = false } }
+    }
     /// This one chat was moved to the local model, after Claude could not be used.
     @Published private(set) var chatLocal = false
     /// How much of the Claude plan has been used, as last reported.
@@ -304,6 +307,7 @@ final class ChatModel: ObservableObject {
             show(notice: "Effort: \(choice.title)", seconds: 3)
         case .local(let on):
             offGrid = on
+            if !on { chatLocal = false }
             show(notice: on ? "Off the grid: questions are answered on this Mac." : "Back to Claude.", seconds: 4)
         case .unknown(let help):
             show(notice: help, seconds: 8)
@@ -324,6 +328,10 @@ final class ChatModel: ObservableObject {
         // The typed prefixes still work for one message.
         let options = RoutePrefix.split(text)
         let local = onThisMac || usesLocal || options.route == "local"
+        if local, options.route == "claude" {
+            show(notice: claude == nil ? "Claude Code was not found, so this is answered on this Mac."
+                 : "This is being answered on this Mac. Type /local off to use Claude.", seconds: 6)
+        }
         if !attachments.isEmpty {
             let images = attachments.filter { $0.kind == .image }.count
             audit.record(action: "attach", outcome: "ok",

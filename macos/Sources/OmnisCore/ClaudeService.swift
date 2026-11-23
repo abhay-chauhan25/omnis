@@ -18,6 +18,20 @@ public struct ClaudeConfig: Sendable {
     /// The most web searches and calendar lookups in one answer.
     public var maxSearches = 4
     public var maxCalendarCalls = 8
+    /// An answer with no sign of life for this long is given up on.
+    public var silenceSeconds: Double = 150
+
+    /// Built-in tools that are refused by name as well as left out, so that
+    /// one setting changing in a Claude Code update cannot open them.
+    public static let refusedTools = [
+        "Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS", "WebFetch", "Task",
+        "Agent", "TodoWrite", "Skill", "SlashCommand", "KillShell", "BashOutput", "ExitPlanMode",
+    ]
+
+    /// The only tools a session may report having. Anything else and the session is not used.
+    public static func isExpected(tool: String) -> Bool {
+        tool == "WebSearch" || tool.hasPrefix("mcp__omnis__calendar_")
+    }
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -41,7 +55,8 @@ public struct ClaudeConfig: Sendable {
     public func arguments(model: ClaudeModel, effort: String, systemPrompt: String) -> [String] {
         let tools: [String: Any] = ["mcpServers": ["omnis": [
             "command": python.path,
-            "args": ["-m", "omnis_backend.claude_tools"],
+            // -P keeps the session folder off Python's module path.
+            "args": ["-P", "-m", "omnis_backend.claude_tools"],
             "env": ["PYTHONPATH": backendDirectory.path],
         ]]]
         let toolsJSON = (try? JSONSerialization.data(withJSONObject: tools, options: [.sortedKeys]))
@@ -51,6 +66,7 @@ public struct ClaudeConfig: Sendable {
             "--model", model.rawValue,
             "--effort", effort,
             "--tools", "WebSearch",
+            "--disallowedTools", Self.refusedTools.joined(separator: ","),
             "--strict-mcp-config", "--mcp-config", toolsJSON,
             "--setting-sources", "",
             "--no-session-persistence",
@@ -97,6 +113,7 @@ public enum ClaudeError: Error, Equatable, LocalizedError {
     case failed(String)
     case stopped
     case busy
+    case unexpectedTools(String)
 
     public var errorDescription: String? {
         switch self {
@@ -107,6 +124,8 @@ public enum ClaudeError: Error, Equatable, LocalizedError {
         case .failed(let why): return "Claude could not answer: \(why)"
         case .stopped: return "Claude stopped before it finished answering."
         case .busy: return "Claude is still answering the last question."
+        case .unexpectedTools(let names):
+            return "Claude Code started with tools OMNIS does not allow (\(names)), so the session was closed. This can happen after a Claude Code update."
         }
     }
 }
@@ -147,6 +166,7 @@ public final class ClaudeService: @unchecked Sendable {
     private var sessionEffort: String?
     private var needsHistory = true
     private var idleTimer: DispatchWorkItem?
+    private var silenceTimer: DispatchWorkItem?
     private var usage = UsageWindows()
     private var usageHandler: (@Sendable (UsageWindows) -> Void)?
     private var personalDataHandler: (@Sendable () -> Void)?
@@ -195,6 +215,21 @@ public final class ClaudeService: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Ends the session and waits until Claude Code has gone. For quitting the app.
+    public func shutdown() {
+        let child: Process? = queue.sync {
+            let running = self.process
+            self.active?.continuation.finish(throwing: ClaudeError.stopped)
+            self.active = nil
+            self.closeProcess()
+            return running
+        }
+        guard let child, child.isRunning else { return }
+        let deadline = Date().addingTimeInterval(1.5)
+        while child.isRunning, Date() < deadline { usleep(20_000) }
+        if child.isRunning { kill(child.processIdentifier, SIGKILL) }
     }
 
     /// Ends the session. The next question starts a fresh one that knows nothing of this chat.
@@ -258,6 +293,7 @@ public final class ClaudeService: @unchecked Sendable {
 
     private func closeProcess() {
         idleTimer?.cancel()
+        silenceTimer?.cancel()
         generation += 1
         try? input?.close()
         process?.terminate()
@@ -306,6 +342,7 @@ public final class ClaudeService: @unchecked Sendable {
         }
         try write(["type": "user", "message": ["role": "user", "content": Self.content(for: request, withHistory: needsHistory)]])
         needsHistory = false
+        watchForSilence()
     }
 
     /// The message as Claude receives it: earlier turns if this is a new
@@ -340,6 +377,19 @@ public final class ClaudeService: @unchecked Sendable {
         return blocks
     }
 
+    /// Restarted whenever Claude Code says anything. If it says nothing for
+    /// a long time while a question is open, the answer is given up on.
+    private func watchForSilence() {
+        silenceTimer?.cancel()
+        guard active != nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active != nil else { return }
+            self.finish(throwing: ClaudeError.failed("it stopped responding"))
+        }
+        silenceTimer = work
+        queue.asyncAfter(deadline: .now() + config.silenceSeconds, execute: work)
+    }
+
     // MARK: Receiving
 
     private func received(_ data: Data, generation received: Int) {
@@ -349,7 +399,10 @@ public final class ClaudeService: @unchecked Sendable {
             let line = buffer.subdata(in: buffer.startIndex..<newline)
             buffer.removeSubrange(buffer.startIndex...newline)
             guard !line.isEmpty, let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            watchForSilence()
             handle(object)
+            // Handling a line can end the session; what was buffered after it is then not for us.
+            guard received == generation else { return }
         }
         // A line that never ends would otherwise grow without limit.
         if buffer.count > 32 * 1024 * 1024 { buffer = Data() }
@@ -373,6 +426,15 @@ public final class ClaudeService: @unchecked Sendable {
                 // Anything else Claude Code asks of its host is declined.
                 try? write(["type": "control_response", "response": ["subtype": "error", "request_id": id,
                                                                      "error": "not supported by OMNIS"]])
+            }
+        case "system":
+            // At the start Claude Code lists the tools the session has. If
+            // anything is there that OMNIS did not ask for, such as a file or
+            // shell tool, the session is not used.
+            guard event["subtype"] as? String == "init", let listed = event["tools"] as? [String] else { return }
+            let extra = listed.filter { !ClaudeConfig.isExpected(tool: $0) }
+            if !extra.isEmpty {
+                finish(throwing: ClaudeError.unexpectedTools(extra.prefix(6).joined(separator: ", ")))
             }
         case "user":
             searchResults(in: event)
@@ -409,6 +471,7 @@ public final class ClaudeService: @unchecked Sendable {
         current.continuation.yield(.finished(model: model, details: details))
         current.continuation.finish()
         active = nil
+        silenceTimer?.cancel()
         scheduleIdleClose()
     }
 
@@ -442,10 +505,12 @@ public final class ClaudeService: @unchecked Sendable {
         if lowered.contains("/login") || lowered.contains("not logged in") || lowered.contains("authentication") {
             return .notSignedIn
         }
-        if lowered.contains("limit") && (lowered.contains("reached") || lowered.contains("hit") || lowered.contains("usage")) {
+        // Only the plan's own limits, not for instance a message that is too long.
+        if ["usage limit", "session limit", "weekly limit", "rate limit"].contains(where: lowered.contains) {
             return .limitReached(String(text.prefix(200)))
         }
-        if case .stopped = fallback, !text.isEmpty { return .failed(String(text.prefix(300))) }
+        if case .stopped = fallback, !text.isEmpty { return .failed(String(text.prefix(200))) }
+        if case .failed(let why) = fallback { return .failed(String(why.prefix(200))) }
         return fallback
     }
 

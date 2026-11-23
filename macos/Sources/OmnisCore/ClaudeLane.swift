@@ -225,6 +225,10 @@ public enum ClaudeToolArguments {
             out[key] = String(tidy.prefix(16))
         }
         if let until = out["repeat_until"] { out["repeat_until"] = String(until.prefix(10)) }
+        // Reading takes whole days, whatever time was sent with them.
+        if tool == "calendar_events" {
+            for key in ["start", "end"] { if let text = out[key] { out[key] = String(text.prefix(10)) } }
+        }
 
         switch tool {
         case "calendar_create_event":

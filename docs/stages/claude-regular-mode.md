@@ -30,8 +30,27 @@
 
 ## Tests
 
-- Python 154, Swift 208, all passing. The Claude service is tested against a stand-in program, so tests use none of the plan.
+- Python 154, Swift 211, all passing. The Claude service is tested against a stand-in program, so tests use none of the plan.
 - Live, on the plan, with a made-up calendar: `OMNIS_LIVE_TESTS=1 swift test --filter liveClaude`. Reading, a follow-up move with no day named, delete, create, search, search switched off, a refused file request and a switch to Sonnet all behaved; no answer claimed a change was made; nothing was left on disk.
+
+## Review findings
+
+Independent review: pass with warnings. The tool gate was found sound: nothing is allowed without the access checks, a result forged by the model is dropped, and a late request cannot use the next question's permissions.
+
+| Finding | Action |
+|---|---|
+| Keeping file and shell tools out rested on one option | Fixed. They are also refused by name, and a session that reports any tool OMNIS did not ask for is closed and not used. |
+| Quitting could leave Claude Code running | Fixed. Quitting waits for it to go, and forces it if needed. |
+| A hung answer would wait for ever | Fixed. Given up on after 150 seconds of silence. |
+| `/local off` did nothing after "Answer on this Mac instead" | Fixed. |
+| A calendar read failed if a time was sent with the date | Fixed. |
+| `claude:` typed while off the grid was silently ignored | Fixed. A notice says so. |
+| Any error mentioning "limit" was called a usage limit; error text had no length cap | Fixed. |
+| The first question of a run goes through even above a limit, because usage is not known until Claude Code reports it | Left as is. One question at most. |
+| A long answer is not cut off when it crosses a limit | Left as is. |
+| If OMNIS crashes, Claude Code may keep running until it notices | Not checked. |
+
+The fixes were re-run live but not reviewed a second time.
 
 ## Limits and things not verified
 

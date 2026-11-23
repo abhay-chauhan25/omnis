@@ -61,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         backend?.stop()
-        claude?.endSession()
+        // Waits until Claude Code has gone, so nothing is left running.
+        claude?.shutdown()
         // Leave nothing running: stop the search container if it is up.
         searchContainer?.stopNow()
         audit.flush()

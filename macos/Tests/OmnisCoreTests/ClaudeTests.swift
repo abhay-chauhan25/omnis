@@ -38,6 +38,9 @@ for line in sys.stdin:
     blocks = message["message"]["content"]
     text = blocks[-1]["text"]
     note(user=text, blocks=[b["type"] for b in blocks], first=blocks[0].get("text", "")[:60])
+    emit({"type": "system", "subtype": "init", "tools": ["WebSearch", "mcp__omnis__calendar_events"] + ([os.environ["FAKE_EXTRA_TOOL"]] if os.environ.get("FAKE_EXTRA_TOOL") else [])})
+    if text == "hang":
+        continue
     emit({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
         "five_hour": {"utilization": 0.31, "resetsAt": 1900000000}, "seven_day": {"utilization": 0.58, "resetsAt": 1900500000}}}})
     if text == "die":
@@ -88,8 +91,10 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
     }
 
-    func service(calendar: StubCalendar? = StubCalendar(), idle: Double = 600, deadline: Double = 5) -> ClaudeService {
+    func service(calendar: StubCalendar? = StubCalendar(), idle: Double = 600, deadline: Double = 5,
+                 silence: Double = 60, extraTool: String? = nil) -> ClaudeService {
         var environment = ProcessInfo.processInfo.environment
+        environment["FAKE_EXTRA_TOOL"] = extraTool
         environment["FAKE_CLAUDE_LOG"] = log.path
         environment["ANTHROPIC_API_KEY"] = "sk-should-never-be-passed-on"
         environment["CLAUDE_CODE_OAUTH_TOKEN"] = "nor-this"
@@ -98,6 +103,7 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
                                   workingDirectory: folder.appendingPathComponent("session"), environment: environment)
         config.idleSeconds = idle
         config.toolDeadline = deadline
+        config.silenceSeconds = silence
         return ClaudeService(config: config, tools: CalendarTools(reader: calendar))
     }
 
@@ -136,6 +142,9 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         let argv = try #require(start["argv"] as? [String])
         func value(after flag: String) -> String? { argv.firstIndex(of: flag).map { argv[$0 + 1] } }
         #expect(value(after: "--tools") == "WebSearch")                 // no file, shell or other built-in tool
+        let refused = value(after: "--disallowedTools")?.split(separator: ",").map(String.init) ?? []
+        for tool in ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "Task"] { #expect(refused.contains(tool)) }
+        #expect(value(after: "--mcp-config")?.contains("\"-P\"") == true)
         #expect(value(after: "--setting-sources") == "")                // none of the user's settings, memory or hooks
         #expect(value(after: "--permission-prompt-tool") == "stdio")    // every tool call asks OMNIS first
         #expect(argv.contains("--strict-mcp-config") && argv.contains("--no-session-persistence"))
@@ -276,6 +285,30 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         config.idleSeconds = 1
         let missing = ClaudeService(config: config, tools: CalendarTools(reader: nil))
         await #expect(throws: ClaudeError.notInstalled) { try await trace(missing.ask(ClaudeRequest(text: "hi"))) }
+    }
+
+    @Test func aSessionThatReportsAnUnexpectedToolIsNotUsed() async throws {
+        for tool in ["Bash", "Read", "mcp__gmail__send", "mcp__omnis__run_shell"] {
+            let claude = service(extraTool: tool)
+            await #expect(throws: ClaudeError.unexpectedTools(tool)) { try await trace(claude.ask(ClaudeRequest(text: "hi"))) }
+            #expect(await waitUntil { !claude.isSessionOpen })
+        }
+        #expect(ClaudeConfig.isExpected(tool: "WebSearch") && ClaudeConfig.isExpected(tool: "mcp__omnis__calendar_delete_event"))
+        #expect(!ClaudeConfig.isExpected(tool: "WebFetch") && !ClaudeConfig.isExpected(tool: "mcp__omnisx__calendar_events"))
+    }
+
+    @Test func aSilentAnswerIsGivenUpOnAndQuittingLeavesNothingRunning() async throws {
+        let quiet = service(silence: 0.4)
+        await #expect(throws: ClaudeError.failed("it stopped responding")) { try await trace(quiet.ask(ClaudeRequest(text: "hang"))) }
+        #expect(!quiet.isSessionOpen)
+
+        let claude = service()
+        _ = try await trace(claude.ask(ClaudeRequest(text: "hi")))
+        let pid = try #require(entries().last { $0["start"] != nil }?["start"] as? Int)
+        #expect(kill(pid_t(pid), 0) == 0)            // running
+        claude.shutdown()
+        #expect(await waitUntil(timeout: 3) { kill(pid_t(pid), 0) != 0 })     // gone by the time shutdown returns, or just after
+        #expect(!claude.isSessionOpen)
     }
 
     @Test func anIdleSessionIsClosedAndAStoppedAnswerEndsIt() async throws {
@@ -493,6 +526,11 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         #expect(changed == ["event": "e3", "location": "", "alert_minutes": "-1", "repeat": "none", "start": "2026-11-18T15:00", "scope": "future"])
         #expect(ClaudeToolArguments.normalise(tool: "calendar_delete_event", input: ["event": "e2", "scope": ["x"]]) == ["event": "e2", "scope": "this"])
         #expect(ClaudeToolArguments.normalise(tool: "calendar_create_calendar", input: ["name": "Gym", "account": ""]) == ["name": "Gym"])
+        // A read takes whole days even if a time was sent.
+        #expect(ClaudeToolArguments.normalise(tool: "calendar_events", input: ["start": "2026-11-18T00:00:00Z", "end": "2026-11-19 23:59"])
+                == ["start": "2026-11-18", "end": "2026-11-19"])
+        #expect(ClaudeService.error(from: "context limit reached for this model", fallback: .failed("x")) == .failed("x"))
+        #expect(ClaudeService.error(from: "You've hit your weekly limit", fallback: .stopped) == .limitReached("You've hit your weekly limit"))
     }
 
     @Test func whatClaudeIsToldAndGiven() throws {
