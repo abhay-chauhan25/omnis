@@ -125,8 +125,14 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
         known = params.get("name") in {tool["name"] for tool in tools()}
         ok = known and isinstance(text, str) and bool(text)
         content: list[dict[str, Any]] = [{"type": "text", "text": text if ok else UNAVAILABLE}]
-        if ok:
-            content += _pictures(arguments.get("_images"))
+        # Only the tool that shows photos may carry pictures.
+        if ok and params.get("name") == "photos_show":
+            sent = arguments.get("_images")
+            pictures = _pictures(sent)
+            content += pictures
+            missing = (len(sent) if isinstance(sent, list) else 0) - len(pictures)
+            if missing > 0:
+                content.append({"type": "text", "text": f"{missing} of the pictures could not be passed on. Say so; do not describe them."})
         result = {"content": content, "isError": not ok}
     elif method == "ping":
         result = {}

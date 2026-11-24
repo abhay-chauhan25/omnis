@@ -34,17 +34,23 @@ class ClaudeToolsTests(unittest.TestCase):
         reply = self.call("tools/call", {"name": "photos_show", "arguments": {
             "_result": "Two photos.", "_images": [good, "not base64!", 7, "abc", "", good]}})["result"]
         self.assertFalse(reply["isError"])
-        self.assertEqual(reply["content"], [{"type": "text", "text": "Two photos."},
-                                            {"type": "image", "data": good, "mimeType": "image/jpeg"}])
-        # Only the first four are looked at, and a picture is never sent without the app's text.
+        self.assertEqual(reply["content"][:2], [{"type": "text", "text": "Two photos."},
+                                                {"type": "image", "data": good, "mimeType": "image/jpeg"}])
+        # The model is told when pictures were left out, so it does not describe what it never saw.
+        self.assertEqual(len(reply["content"]), 3)
+        self.assertIn("5 of the pictures could not be passed on", reply["content"][2]["text"])
+        # Only the first four are passed on, and a picture is never sent without the app's text.
         many = self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": [good] * 9}})["result"]
-        self.assertEqual(len(many["content"]), 5)
+        self.assertEqual([part["type"] for part in many["content"]], ["text"] + ["image"] * 4 + ["text"])
+        # No other tool can carry a picture.
+        other = self.call("tools/call", {"name": "calendar_events", "arguments": {"_result": "x", "_images": [good]}})["result"]
+        self.assertEqual(other["content"], [{"type": "text", "text": "x"}])
         alone = self.call("tools/call", {"name": "photos_show", "arguments": {"_images": [good]}})["result"]
         self.assertEqual(alone["content"], [{"type": "text", "text": claude_tools.UNAVAILABLE}])
         for odd in ("text", {"a": 1}, None):
             self.assertEqual(len(self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": odd}})["result"]["content"]), 1)
         big = "A" * (claude_tools.MAX_IMAGE_CHARS + 4)
-        self.assertEqual(len(self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": [big]}})["result"]["content"]), 1)
+        self.assertEqual(len(self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": [big]}})["result"]["content"]), 2)
 
     def test_without_the_apps_text_or_for_an_unknown_tool_nothing_happens(self):
         for params in ({"name": "calendar_delete_calendar", "arguments": {"name": "Work"}},

@@ -1,5 +1,6 @@
 import AppKit
 import OmnisCore
+import OmnisHelperLink
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -22,6 +23,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if AppEnvironment.checkWebSearch {
             runWebSearchCheck(web?.search)
             return
+        }
+        if AppEnvironment.checkMessagesReader {
+            guard let reader = AppEnvironment.messagesReader() else {
+                print("messages reader check: this build has no reader (it needs the stable signing identity)")
+                exit(2)
+            }
+            do {
+                let reply = try reader.ask(ReaderRequest(op: "chats", limit: 40))
+                print("messages reader check: ok, it is the real reader and it can see \(reply.chats?.count ?? 0) recent conversations")
+                exit(0)
+            } catch {
+                print("messages reader check: \(error.localizedDescription)")
+                exit(1)
+            }
         }
         // The calendar is read by the app through EventKit. macOS asks for
         // permission the first time a question needs it.

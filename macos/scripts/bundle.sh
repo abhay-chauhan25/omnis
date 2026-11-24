@@ -74,6 +74,35 @@ identity_name="OMNIS Local Signing"
 identity="$(security find-certificate -c "$identity_name" -Z 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}')"
 signed=""
 if [ -n "$identity" ]; then
+    # The Messages reader: a separate small program, so that it and not OMNIS
+    # holds the permission to read messages. Each recognises the other by this
+    # Mac's signing identity, so it is built only when that identity exists.
+    leaf="$(printf '%s' "$identity" | tr 'A-F' 'a-f')"
+    reader="$package/build/OMNIS Messages Reader.app"
+    swift build --package-path "$package" -c release --product OmnisMessagesReader
+    rm -rf "$reader"
+    mkdir -p "$reader/Contents/MacOS"
+    cp "$(swift build --package-path "$package" -c release --show-bin-path)/OmnisMessagesReader" "$reader/Contents/MacOS/OMNIS Messages Reader"
+    reader_plist="$reader/Contents/Info.plist"
+    plutil -create xml1 "$reader_plist"
+    radd() { plutil -insert "$1" "-$2" "$3" "$reader_plist"; }
+    radd CFBundleName string "OMNIS Messages Reader"
+    radd CFBundleIdentifier string local.omnis.messages-reader
+    radd CFBundleExecutable string "OMNIS Messages Reader"
+    radd CFBundlePackageType string APPL
+    radd CFBundleShortVersionString string 0.1.0
+    radd CFBundleVersion string 1
+    radd LSMinimumSystemVersion string 26.0
+    # No Dock icon and no window: it only answers OMNIS.
+    radd LSUIElement bool YES
+    # The only program it answers: OMNIS, signed with this identity.
+    radd OMNISCallerRequirement string "identifier \"local.omnis.app\" and certificate leaf = H\"$leaf\""
+    if perl -e 'alarm shift; exec @ARGV' 45 codesign --force --sign "$identity" --identifier local.omnis.messages-reader "$reader" >/dev/null 2>&1; then
+        add OMNISMessagesReaderPath string "$reader"
+        add OMNISMessagesReaderRequirement string "identifier \"local.omnis.messages-reader\" and certificate leaf = H\"$leaf\""
+    else
+        rm -rf "$reader"
+    fi
     # The first use makes macOS ask whether codesign may use the key. If
     # nobody answers, give up after a while and fall back, so a build never hangs.
     if perl -e 'alarm shift; exec @ARGV' 45 codesign --force --sign "$identity" --identifier local.omnis.app "$app" >/dev/null 2>&1; then

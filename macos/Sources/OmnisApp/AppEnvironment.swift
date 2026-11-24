@@ -76,6 +76,21 @@ enum AppEnvironment {
     /// proves the packaged app is allowed to reach the search service.
     static var checkWebSearch: Bool { CommandLine.arguments.contains("--check-web-search") }
 
+    /// The Messages reader, if this build has one. It is built only when OMNIS
+    /// has a signature that stays the same, because each must recognise the other by it.
+    static func messagesReader() -> MessagesReaderClient? {
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard let path = info["OMNISMessagesReaderPath"] as? String, path.hasPrefix("/"),
+              let requirement = info["OMNISMessagesReaderRequirement"] as? String, requirement.contains("certificate leaf") else { return nil }
+        return MessagesReaderClient(helper: URL(fileURLWithPath: path), socketPath: MessagesReaderClient.standardSocket,
+                                    helperRequirement: requirement)
+    }
+
+    /// Development aid: `--check-messages-reader` starts the reader, checks it
+    /// is the real one, and prints how many conversations it can see. It
+    /// prints no names, numbers or messages.
+    static var checkMessagesReader: Bool { CommandLine.arguments.contains("--check-messages-reader") }
+
     /// Development aid: `--show-on-launch` opens the popup immediately, and
     /// `--query <text>` pre-fills it. Used for screenshots and manual checks.
     static var showOnLaunch: Bool { CommandLine.arguments.contains("--show-on-launch") }

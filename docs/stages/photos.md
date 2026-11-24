@@ -26,6 +26,18 @@ macOS has no read-only level for Photos: the one permission also covers changes.
 - Swift 256, Python 120, all passing. New: listings carry dates only and never the library's identifiers; bad dates are refused; pictures are made smaller; unknown ids load nothing; four per answer; showing a photo makes the next search ask.
 - Live, once: `OMNIS_LIVE_TESTS=1 swift test --filter livePhotos`. Claude was handed a plain red test picture through OMNIS and said it was red.
 
+## Review findings
+
+Independent review: pass with warnings. Nothing was found that changes a photo, and location does not survive the smaller copy (now tested).
+
+| Finding | Action |
+|---|---|
+| An id from an earlier chat could still be used to look at a photo | Fixed. An id works for ten minutes after a search listed it. |
+| Loading a photo kept only in iCloud could wait for ever | Fixed. Given up on after 30 seconds; answered once only. |
+| A picture dropped on the way was not mentioned to the model | Fixed. It is told how many were left out. |
+| Any tool's reply could have carried pictures | Fixed. Only `photos_show` can. |
+| Album names are given to the model, and a name can say where photos were taken | Left as is, for the user to decide. |
+
 ## Limits and things not verified
 
 - The real library has not been read. Albums, favourites, screenshots and photos kept only in iCloud are untried.

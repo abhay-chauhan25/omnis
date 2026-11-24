@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "OmnisCore", targets: ["OmnisCore"]),
         .executable(name: "OmnisApp", targets: ["OmnisApp"]),
+        .executable(name: "OmnisMessagesReader", targets: ["OmnisMessagesReader"]),
     ],
     dependencies: [
         // A terminal view, used only for the Claude Code terminals in project
@@ -17,10 +18,18 @@ let package = Package(
     targets: [
         // Everything that can be tested without a window: matching, registry,
         // launching, the backend protocol and its supervisor.
-        .target(name: "OmnisCore"),
+        .target(name: "OmnisCore", dependencies: ["OmnisHelperLink"]),
+        // What OMNIS and its Messages reader say to each other, and how each
+        // checks who the other is.
+        .target(name: "OmnisHelperLink"),
+        // Reads the Messages database. Kept apart from OMNIS: only the small
+        // helper program below is built from it.
+        .target(name: "MessagesReaderCore", dependencies: ["OmnisHelperLink"]),
+        // The helper that is given Full Disk Access instead of OMNIS.
+        .executableTarget(name: "OmnisMessagesReader", dependencies: ["MessagesReaderCore"]),
         // The popup, hotkey, menu-bar item and Dock presence.
-        .executableTarget(name: "OmnisApp", dependencies: ["OmnisCore", .product(name: "SwiftTerm", package: "SwiftTerm")]),
-        .testTarget(name: "OmnisCoreTests", dependencies: ["OmnisCore"]),
+        .executableTarget(name: "OmnisApp", dependencies: ["OmnisCore", "OmnisHelperLink", .product(name: "SwiftTerm", package: "SwiftTerm")]),
+        .testTarget(name: "OmnisCoreTests", dependencies: ["OmnisCore", "OmnisHelperLink", "MessagesReaderCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

@@ -50,10 +50,18 @@ public final class PhotosTools: AssistantTools, @unchecked Sendable {
     private let library: any PhotoLibrary
     private let refs = EventRefs(prefix: "p")
     private let calendar: Calendar
+    private let now: @Sendable () -> Date
+    private let lock = NSLock()
+    /// When each photo was last listed. An id can be used to look at a photo
+    /// only for a short while after a search listed it, so an id left over
+    /// from an earlier chat shows nothing.
+    private var listedAt: [String: Date] = [:]
+    static let idLifetime: TimeInterval = 10 * 60
 
-    public init(library: any PhotoLibrary, calendar: Calendar = .current) {
+    public init(library: any PhotoLibrary, calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }) {
         self.library = library
         self.calendar = calendar
+        self.now = now
     }
 
     func when(_ date: Date?) -> String {
@@ -88,6 +96,11 @@ public final class PhotosTools: AssistantTools, @unchecked Sendable {
             query.favouritesOnly = arguments["favourites"] == "true"
             query.screenshotsOnly = arguments["screenshots"] == "true"
             let found = try await library.search(query)
+            let moment = now()
+            lock.withLock {
+                listedAt = listedAt.filter { moment.timeIntervalSince($0.value) < Self.idLifetime }
+                for item in found.prefix(query.limit) { listedAt[item.key] = moment }
+            }
             let lines = found.prefix(query.limit).map { item -> String in
                 var line = "[\(refs.ref(for: item.key))] \(when(item.taken))"
                 if item.screenshot { line += ", screenshot" }
@@ -105,7 +118,8 @@ public final class PhotosTools: AssistantTools, @unchecked Sendable {
             guard wanted.count <= Self.maxShown else { throw ToolRefusal("at most \(Self.maxShown) photos can be shown at once") }
             var pictures: [Attachment] = []
             for (index, ref) in wanted.enumerated() {
-                guard let key = refs.key(for: ref) else {
+                guard let key = refs.key(for: ref),
+                      let listed = lock.withLock({ listedAt[key] }), now().timeIntervalSince(listed) < Self.idLifetime else {
                     throw ToolRefusal("the photo id \(String(ref.prefix(12))) is not known. Search first and use the ids shown there")
                 }
                 // Made smaller and stored again as a JPEG, which also drops where it was taken.
@@ -130,7 +144,15 @@ public final class PhotosTools: AssistantTools, @unchecked Sendable {
 /// read-only level for this, so the permission also covers changes; this
 /// class contains no call that makes one.
 public final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
+    static let loadSeconds = 30.0
+
     public init() {}
+
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var used = false
+        func claim() -> Bool { lock.withLock { if used { return false }; used = true; return true } }
+    }
 
     private func ensureAccess() async throws {
         var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -192,13 +214,21 @@ public final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         options.deliveryMode = .highQualityFormat
         // A photo kept only in iCloud is fetched from the user's own library there.
         options.isNetworkAccessAllowed = true
+        // Answered once only, whichever comes first: the picture, a failure, or the time limit.
+        let once = Once()
         return try await withCheckedThrowingContinuation { continuation in
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
+            let request = PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
+                guard once.claim() else { return }
                 if let data, !data.isEmpty {
                     continuation.resume(returning: data)
                 } else {
                     continuation.resume(throwing: ToolRefusal("that photo could not be loaded"))
                 }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.loadSeconds) {
+                guard once.claim() else { return }
+                PHImageManager.default().cancelImageRequest(request)
+                continuation.resume(throwing: ToolRefusal("that photo took too long to load; it may be kept only in iCloud"))
             }
         }
     }

@@ -29,6 +29,47 @@ final class StubPhotos: PhotoLibrary, @unchecked Sendable {
 
     func tools(_ library: StubPhotos) -> PhotosTools { PhotosTools(library: library, calendar: Self.calendar) }
 
+    @Test func anIdStopsWorkingAWhileAfterItWasListed() async throws {
+        let library = StubPhotos()
+        library.items = [PhotoItem(key: "key1", taken: nil)]
+        let clock = Collected<Date>()
+        clock.add(Zone.date("2026-11-24T10:00:00Z"))
+        let photos = PhotosTools(library: library, calendar: Self.calendar, now: { clock.values.last! })
+        _ = try await photos.run(tool: "photos_search", arguments: [:], access: ToolAccess())
+        clock.add(Zone.date("2026-11-24T10:09:00Z"))
+        guard case .images = try await photos.run(tool: "photos_show", arguments: ["photos": "p1"], access: ToolAccess()) else {
+            Issue.record("should still work"); return
+        }
+        // Later, in what may be another chat, the old id shows nothing until a search lists the photo again.
+        clock.add(Zone.date("2026-11-24T10:11:00Z"))
+        await #expect(throws: ToolRefusal.self) { try await photos.run(tool: "photos_show", arguments: ["photos": "p1"], access: ToolAccess()) }
+        #expect(library.loaded.values.count == 1)
+        _ = try await photos.run(tool: "photos_search", arguments: [:], access: ToolAccess())
+        guard case .images = try await photos.run(tool: "photos_show", arguments: ["photos": "p1"], access: ToolAccess()) else {
+            Issue.record("should work again"); return
+        }
+    }
+
+    @Test func whereAPhotoWasTakenDoesNotLeaveWithIt() async throws {
+        // A picture carrying a location, as a camera would write it.
+        let image = Make.bitmap(width: 40, height: 30) { $0.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1)); $0.fill(CGRect(x: 0, y: 0, width: 40, height: 30)) }
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        let located: [CFString: Any] = [kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 51.5, kCGImagePropertyGPSLatitudeRef: "N",
+                                                                        kCGImagePropertyGPSLongitude: 0.12, kCGImagePropertyGPSLongitudeRef: "W"]]
+        CGImageDestinationAddImage(destination, image, located as CFDictionary)
+        CGImageDestinationFinalize(destination)
+        let original = try #require(CGImageSourceCreateWithData(data, nil))
+        let before = try #require(CGImageSourceCopyPropertiesAtIndex(original, 0, nil) as? [CFString: Any])
+        #expect(before[kCGImagePropertyGPSDictionary] != nil)
+
+        let sent = try AttachmentLoader.image(from: data as Data, name: "photo 1")
+        let bytes = try #require(sent.imageData)
+        let source = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        let after = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect(after[kCGImagePropertyGPSDictionary] == nil)
+    }
+
     @Test func searchingListsWhenPhotosWereTakenAndNothingElse() async throws {
         let library = StubPhotos()
         library.items = [PhotoItem(key: "ABC-123/L0/001", taken: Zone.date("2026-11-20T14:02:00Z"), favourite: true),
