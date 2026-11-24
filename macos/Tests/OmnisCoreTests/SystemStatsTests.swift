@@ -50,9 +50,12 @@ import Testing
         ])
         #expect(EnergyUse.parse(output, limit: 10).map(\.name) == ["BTLEServer", "Code", "WindowServer", "2.1.326", "SpaceJump"])
         #expect(EnergyUse.parse("").isEmpty && EnergyUse.parse("COMMAND POWER\n").isEmpty)
-        #expect(EnergyUse.current(run: { program, arguments in
-            #expect(program == "/usr/bin/top" && arguments.contains("power"))
+        let asked = Collected<[String]>()
+        let items = EnergyUse.current(run: { program, arguments in
+            asked.add([program] + arguments)
             return output
-        }).first?.name == "BTLEServer")
+        })
+        #expect(items.first?.name == "BTLEServer")
+        #expect(asked.values.first?.first == "/usr/bin/top" && asked.values.first?.contains("power") == true)
     }
 }
