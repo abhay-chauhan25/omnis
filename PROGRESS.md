@@ -14,7 +14,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Web search | Built and reviewed 2026-11-17 | ADR-0008 |
 | Local model `gemma4:12b` | Chosen by measurement 2026-11-17 | ADR-0007, `docs/benchmarks/model-bake-off.md` |
 | Chat window with conversation memory | Built and reviewed 2026-11-17; user testing in progress | ADR-0010 |
-| Claude lane | Built against a stand-in and reviewed 2026-11-17; review findings fixed, fixes not yet re-reviewed; never run live | ADR-0009 |
+| Claude lane through an API key | Retired 2026-11-23, never run live. Replaced by Claude Code on the user's plan (ADR-0013). Its code is still in the repo, unused | ADR-0009 |
 | Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
 | Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
 | Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
@@ -23,9 +23,40 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; reviewed, findings fixed; the view not yet seen on screen and no real project set up | ADR-0014, `docs/stages/project-mode.md` |
 | Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; not yet run against the real Reminders or Spotify | `docs/stages/services.md` |
 | Services: Gmail, Messages, browser | Not started. Each needs a decision from the user | — |
-| Dashboard (main window) | First version built 2026-11-23 from the approved mock; waiting for the user's look; review pending. Voice and mail not built | `docs/stages/dashboard.md` |
+| Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
+| Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
+
+## Picking this up in a new session
+
+Read `CLAUDE.md` first: it is the contract. Then this file, then the stage document for whatever is being worked on.
+
+**What is waiting on the user right now**
+
+1. Gmail, one account. Through Apple's Mail app (no setup; recommended to start) or Gmail's own service (fuller, needs a Google Cloud project made by the user). Which account, and which way. Reading freely; every send a preview to confirm.
+2. Messages. Reading needs Full Disk Access for OMNIS, which is a lot. Read and send, or send only.
+3. Browser. Chrome or Safari; and light (address and title, reads public pages) or full (reads what is on screen, needs a developer setting switched on in the browser).
+4. Voice ("Hey OMNIS"). The user will decide. Proposed: Apple's own on-device speech, only while the dashboard is open, switched on by the user.
+5. Whether macOS still asks for permissions after a rebuild, now that the app has a stable signature.
+
+**How the work is done here**
+
+- Build the app with `macos/scripts/bundle.sh`; the user quits and reopens OMNIS to get a new build. The assistant cannot see the app's windows: the look is judged from the user's screenshots.
+- Tests: `cd macos && swift test` and `cd backend && python3 -m unittest discover -s tests -t .`. Live tests (`OMNIS_LIVE_TESTS=1 swift test --filter live…`) use the real local model, real web search or the user's Claude plan, so they are run sparingly and one at a time.
+- Tests never touch the user's real calendar, reminders, Spotify or GitHub account beyond reading GitHub. Anything that needs a macOS permission prompt is left for the user to try.
+- After each meaningful piece: an independent review by the verification agent (read-only, told not to run real services), then fix what it finds, then record the findings and actions in the stage document.
+- Every change to the user's data goes through a preview the user confirms. New services follow `OmnisCore/AssistantTools.swift`.
+- Design mocks are on two private canvases the user owns: the dashboard (https://claude.ai/artifact/UhokCmEDyfwy1vFDrJLMAL) and the logo (https://claude.ai/artifact/PjxtwYqD2NC3mTf4ExFwhz).
+- `image/` and `personal-notes.md` in the repo root are the user's own and are not committed.
+
+**Known loose ends**
+
+- The unused API-key lane (`backend/omnis_backend/claude.py`, `CloudLane.swift`, the ledger, the Keychain key code) is still to be removed.
+- The new services have no dashboard panels yet. The Mail panel is a placeholder.
+- Spotify cannot pick and play a named song (needs Spotify's web service and a developer key).
+- The new services and project setup are offered to Claude only, not to the model on this Mac.
+- Several things have never run for real and are listed in their stage documents under "not verified": calendar writes, the first project set-up, Reminders and Spotify.
 
 ## Tests
 
@@ -41,6 +72,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
 - [ ] User's look at the Model and Effort sliders, usage reading and typed commands.
 - [ ] Remove the retired API-key lane from the code.
+- [ ] Gmail, Messages and browser: waiting on the user's choices (see the top of this file).
+- [ ] User's first use of Reminders and Spotify (each asks for a macOS permission once).
 - [ ] User's look at the dashboard on screen.
 - [ ] User's first run of project mode: open a terminal session, try the advisor, set up one real project.
 - [ ] Voice ("Hey OMNIS"): the user will decide separately. Not built.
