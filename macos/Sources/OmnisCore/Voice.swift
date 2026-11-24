@@ -4,7 +4,7 @@ import Foundation
 public enum VoicePhrases {
     // "Omnis" is not a word a recogniser knows, so near misses count: it is often heard as "Omnes".
     private static let wake = try! NSRegularExpression(
-        pattern: #"\b(?:hey|hay|hi|okay|ok|kay|k)[\s,.!]*(?:omn[iea]s|omni's|omnus|omniss|omness|amnis|omnious)\b[\s,.!?:;\-]*"#,
+        pattern: #"\b(?:hey|hay|hi|okay|ok|kay|k)[\s,.!]*(?:omn[iea]s|omni's|omni|omnus|omniss|omness|amnis|omnious)\b[\s,.!?:;\-]*"#,
         options: [.caseInsensitive])
 
     /// What was said after "Hey OMNIS", or nil if the phrase is not there.
@@ -79,6 +79,9 @@ public struct UtteranceBuffer: Equatable, Sendable {
     private var growing = ""
     private var cutoff = -1.0
     private var latest = 0.0
+    /// Set after OMNIS has spoken: nothing still growing is believed until a
+    /// settled stretch has gone by, because it may be the end of OMNIS's own voice.
+    private var wary = false
     /// True when everything heard so far has been settled.
     public private(set) var isSettled = true
 
@@ -90,11 +93,14 @@ public struct UtteranceBuffer: Equatable, Sendable {
         guard start.isFinite, end.isFinite else { return }
         if final {
             latest = max(latest, end)
-            // A settled stretch that ends before the cut was already acted on.
-            if end > cutoff + 0.001 { settled.append((end, text)) }
+            // A settled stretch is kept only if it began after the cut. One that
+            // began before it was already acted on, or was OMNIS's own voice.
+            if wary ? start >= cutoff - 0.05 : end > cutoff + 0.001 { settled.append((end, text)) }
+            wary = false
             growing = ""
             isSettled = true
         } else {
+            guard !wary else { return }
             growing = text
             isSettled = text.trimmingCharacters(in: .whitespaces).isEmpty
         }
@@ -106,11 +112,14 @@ public struct UtteranceBuffer: Equatable, Sendable {
     }
 
     /// Forgets what has been heard. `upTo` is how far into the sound that covers.
-    public mutating func cut(upTo time: Double? = nil) {
+    /// `afterOwnVoice` is for the moment OMNIS stops speaking: from then only
+    /// speech that begins after `time` is believed.
+    public mutating func cut(upTo time: Double? = nil, afterOwnVoice: Bool = false) {
         cutoff = max(cutoff, time ?? latest)
         settled.removeAll()
         growing = ""
         isSettled = true
+        if afterOwnVoice { wary = true }
     }
 }
 
@@ -240,8 +249,8 @@ public struct VoiceFlow: Equatable, Sendable {
 
     public mutating func switchOff() -> [Effect] {
         let wasTalking = state == .speaking
-        state = .off
-        question = nil
+        // Nothing is carried over to the next time it is switched on.
+        self = VoiceFlow()
         return wasTalking ? [.hush] : []
     }
 
@@ -281,7 +290,12 @@ public struct VoiceFlow: Equatable, Sendable {
                 state = .thinking
                 return [.settleSearch(yes)]
             case .action:
-                return [.settleAction(yes)] + say(yes ? "Done. Anything else?" : "Okay, I have left it. Anything else?", then: .followUp)
+                if yes {
+                    // Nothing is said to be done until it is: `acted` is told how it went.
+                    state = .thinking
+                    return [.settleAction(true)]
+                }
+                return [.settleAction(false)] + say("Okay, I have left it. Anything else?", then: .followUp)
             }
         }
     }
@@ -310,16 +324,25 @@ public struct VoiceFlow: Equatable, Sendable {
         case .searchQuestion:
             question = .search
             retried = false
-            return say("This chat holds personal information. Shall I search the web?", then: .confirming)
+            return say("This chat holds personal information. Shall I search the web? Yes or no?", then: .confirming)
         case .confirmable(let summary):
             question = .action
             retried = false
-            return say([answer, summary, "Shall I go ahead?"].filter { !$0.isEmpty }.joined(separator: " "), then: .confirming)
+            // The question ends on words that are not themselves an answer, in case OMNIS hears the end of its own voice.
+            return say([answer, summary, "Shall I do that? Yes or no?"].filter { !$0.isEmpty }.joined(separator: " "), then: .confirming)
         case .onScreen:
             return say([answer, "It is on screen for you to confirm. Anything else?"].filter { !$0.isEmpty }.joined(separator: " "), then: .followUp)
         case nil:
             return say([answer.isEmpty ? "I have nothing to say to that." : answer, "Anything else?"].joined(separator: " "), then: .followUp)
         }
+    }
+
+    /// Something confirmed aloud has been carried out, or could not be.
+    public mutating func acted(success: Bool, detail: String = "") -> [Effect] {
+        guard state == .thinking else { return [] }
+        let why = VoicePhrases.spoken(detail, limit: 200)
+        return say(success ? "Done. Anything else?" : "That did not work. \(why) Anything else?".replacingOccurrences(of: "  ", with: " "),
+                   then: .followUp)
     }
 
     /// The answer could not be given.

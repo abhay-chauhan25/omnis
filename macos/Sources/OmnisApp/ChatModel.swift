@@ -199,6 +199,15 @@ final class ChatModel: ObservableObject {
         hiddenAt = Date()
     }
 
+    /// Starts a new chat for a spoken conversation, leaving alone anything
+    /// the user has typed or attached but not yet sent.
+    func startFreshForVoice() {
+        guard !isAnswering else { return }
+        claude?.endSession()
+        chatLocal = false
+        conversation.clear()
+    }
+
     /// Forgets the conversation and starts again.
     func newChat() {
         askTask?.cancel()

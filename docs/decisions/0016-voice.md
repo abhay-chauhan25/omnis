@@ -28,7 +28,7 @@ The user wants to say "Hey OMNIS", talk back and forth, give OMNIS a personality
 
 ## Consequences / risks
 
-- While the switch is on the microphone is in use and macOS shows its orange dot. Everything heard is turned into text on the Mac; talk that does not begin with the phrase is discarded at once and never logged.
+- While the switch is on the microphone is in use and macOS shows its orange dot. Everything heard is turned into text on the Mac and never logged. Talk that does not begin with the phrase is discarded at once, except in the few seconds after OMNIS asks something, when whatever is said is taken as the reply and sent to Claude.
 - Only the text of a request goes to Claude, as typed text does.
 - A message can be sent on a spoken yes. OMNIS reads out who it is for and every word first, and only a short, clear yes straight after its question counts. Someone else in the room could still say it.
 - The personality text is the user's own and is passed to Claude as tone only.

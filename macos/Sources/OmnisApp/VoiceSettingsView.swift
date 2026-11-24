@@ -11,7 +11,7 @@ struct VoiceSettingsView: View {
             Toggle(isOn: $voice.isOn) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Listen for \u{201C}Hey OMNIS\u{201D}").font(.system(size: 13, weight: .semibold))
-                    Text("The microphone is used only while this is on. What is heard is turned into text on this Mac; other talk is thrown away at once.")
+                    Text("The microphone is used only while this is on. What is heard is turned into text on this Mac. Talk that does not begin with the phrase is thrown away at once, except in the few seconds after OMNIS asks you something, when whatever is said is taken as your reply.")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }

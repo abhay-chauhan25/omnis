@@ -90,6 +90,43 @@ import Testing
     }
 }
 
+@Suite struct OwnVoiceTests {
+    @Test func theEndOfOMNISsOwnVoiceIsNeverTakenAsAReply() {
+        // OMNIS finished speaking at 20.0 seconds of sound. Its last words are still being worked out.
+        var buffer = UtteranceBuffer()
+        buffer.cut(upTo: 20.0, afterOwnVoice: true)
+        buffer.take(" go ahead", start: 18.9, end: 21.0, final: false)                 // still growing: not believed
+        #expect(buffer.current == "")
+        buffer.take(" Shall I go ahead?", start: 18.9, end: 20.4, final: true)        // began before OMNIS stopped: its own voice
+        #expect(buffer.current == "")
+        // The user's reply, which began afterwards, is believed.
+        buffer.take(" Yes", start: 20.4, end: 22.0, final: false)
+        #expect(buffer.current == "Yes")
+        buffer.take(" Yes.", start: 21.1, end: 22.0, final: true)
+        #expect(buffer.current == "Yes.")
+        // Neither question OMNIS asks is itself a yes or a no, however much of it is overheard.
+        for tail in ["Shall I do that? Yes or no?", "yes or no", "or no", "Shall I search the web? Yes or no?", "was that a yes or a no?"] {
+            #expect(VoicePhrases.yesOrNo(tail) != true, "\(tail)")
+        }
+        #expect(VoicePhrases.yesOrNo("yes or no") == nil)
+    }
+
+    @Test func switchingOffForgetsEverythingAboutTheConversation() {
+        var flow = VoiceFlow()
+        _ = flow.switchOn()
+        _ = flow.heard("hey omnis hello")
+        _ = flow.answered("Hi.", pending: nil)
+        _ = flow.finishedSpeaking()
+        _ = flow.heard("that's all")                    // "Okay." is being said, and the end is due after it
+        _ = flow.switchOff()
+        _ = flow.switchOn()
+        _ = flow.heard("hey omnis what's the weather")
+        _ = flow.answered("Sunny.", pending: nil)
+        // The new answer gets its "anything else?" and its listening, not the old ending.
+        #expect(flow.finishedSpeaking() == [.listen(seconds: 8)] && flow.state == .followUp)
+    }
+}
+
 @Suite struct VoiceFlowTests {
     func on() -> VoiceFlow {
         var flow = VoiceFlow()
@@ -130,7 +167,7 @@ import Testing
         var flow = on()
         _ = flow.heard("hey omnis text Sam I'm late")
         #expect(flow.answered("Ready.", pending: .confirmable(summary: "A message to Sam Lee, saying: I'm late.")) ==
-                [.speak("Ready. A message to Sam Lee, saying: I'm late. Shall I go ahead?")])
+                [.speak("Ready. A message to Sam Lee, saying: I'm late. Shall I do that? Yes or no?")])
         #expect(flow.finishedSpeaking() == [.listen(seconds: 8)] && flow.state == .confirming)
         // Not a clear yes: asked once more, then left on screen, never sent.
         #expect(flow.heard("yes but say ten minutes") == [.speak("Sorry, was that a yes or a no?")])
@@ -142,7 +179,9 @@ import Testing
         _ = flow.heard("text Sam I'm late")
         _ = flow.answered("Ready.", pending: .confirmable(summary: "A message."))
         _ = flow.finishedSpeaking()
-        #expect(flow.heard("Yes, send it") == [.settleAction(true), .speak("Done. Anything else?")])
+        // A clear yes carries it out, and "Done" is said only once it has been.
+        #expect(flow.heard("Yes, send it") == [.settleAction(true)] && flow.state == .thinking)
+        #expect(flow.acted(success: true) == [.speak("Done. Anything else?")])
     }
 
     @Test func yesNoAndSilenceEachSettleAPreviewTheRightWay() {
@@ -154,7 +193,8 @@ import Testing
             return flow
         }
         var yes = asked()
-        #expect(yes.heard("Go ahead") == [.settleAction(true), .speak("Done. Anything else?")])
+        #expect(yes.heard("Go ahead") == [.settleAction(true)])
+        #expect(yes.acted(success: false, detail: "Messages could not send it") == [.speak("That did not work. Messages could not send it Anything else?")])
         var no = asked()
         #expect(no.heard("No") == [.settleAction(false), .speak("Okay, I have left it. Anything else?")])
         var quiet = asked()
@@ -170,7 +210,7 @@ import Testing
     @Test func theSearchQuestionIsAskedAloudAndTheAnswerCarriesOn() {
         var flow = on()
         _ = flow.heard("hey omnis what's on today and look up the venue")
-        #expect(flow.answered("", pending: .searchQuestion) == [.speak("This chat holds personal information. Shall I search the web?")])
+        #expect(flow.answered("", pending: .searchQuestion) == [.speak("This chat holds personal information. Shall I search the web? Yes or no?")])
         _ = flow.finishedSpeaking()
         #expect(flow.heard("yeah") == [.settleSearch(true)] && flow.state == .thinking)
         #expect(flow.answered("It opens at nine.", pending: nil) == [.speak("It opens at nine. Anything else?")])

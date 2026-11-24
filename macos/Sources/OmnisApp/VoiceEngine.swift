@@ -43,6 +43,24 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var speaking = false
     private(set) var isRunning = false
+    /// Goes up each time listening is started or stopped, so that work left
+    /// over from an earlier start can tell it is no longer wanted.
+    private var session = 0
+    private var starting = false
+    /// How many seconds of sound have been handed to the recogniser. Written from the audio thread.
+    private let fed = FedClock()
+    private var speakTimeout: Task<Void, Never>?
+    private var deviceWatch: NSObjectProtocol?
+    /// Called when the microphone changes (headphones in or out), so listening can be started again.
+    var onDeviceChange: (() -> Void)?
+
+    private final class FedClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seconds = 0.0
+        func add(_ more: Double) { lock.withLock { seconds += more } }
+        func reset() { lock.withLock { seconds = 0 } }
+        var now: Double { lock.withLock { seconds } }
+    }
     /// A pause this long means the speaker has finished.
     static let pauseSeconds = 1.1
 
@@ -75,8 +93,15 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     // MARK: Listening
 
     func start() async throws {
-        guard !isRunning else { return }
+        guard !isRunning, !starting else { return }
+        starting = true
+        session += 1
+        let mine = session
+        defer { if mine == session { starting = false } }
+        // After every wait: was listening switched off, or started again, in the meantime?
+        func stillWanted() throws { if mine != session { throw CancellationError() } }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw VoiceProblem.noMicrophone }
+        try stillWanted()
         let transcriber = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .progressiveTranscription)
         switch await AssetInventory.status(forModules: [transcriber]) {
         case .unsupported: throw VoiceProblem.notSupported
@@ -87,11 +112,13 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
                 try await request.downloadAndInstall()
             }
         }
+        try stillWanted()
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let context = AnalysisContext()
         context.contextualStrings[.general] = ["OMNIS", "Hey OMNIS"]
         try? await analyzer.setContext(context)
         guard let wanted = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { throw VoiceProblem.notSupported }
+        try stillWanted()
 
         let input = audio.inputNode
         let native = input.outputFormat(forBus: 0)
@@ -103,6 +130,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         self.analyzer = analyzer
         buffer = UtteranceBuffer()
         soundTime = 0
+        fed.reset()
+        let fed = self.fed
 
         input.installTap(onBus: 0, bufferSize: 4096, format: native) { [weak self] buffer, _ in
             // Loudness, for the picture on screen.
@@ -125,7 +154,10 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
                 status.pointee = .haveData
                 return buffer
             }
-            if failure == nil, converted.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: converted)) }
+            if failure == nil, converted.frameLength > 0 {
+                continuation.yield(AnalyzerInput(buffer: converted))
+                fed.add(Double(converted.frameLength) / wanted.sampleRate)
+            }
             Task { @MainActor [weak self] in
                 guard let self, !self.speaking else { return }
                 self.onLevel?(level)
@@ -139,28 +171,50 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             teardown()
             throw VoiceProblem.couldNotStart(error.localizedDescription)
         }
+        // Switched off while it was starting: let go of the microphone again.
+        guard mine == session else {
+            teardown()
+            throw CancellationError()
+        }
         isRunning = true
+        deviceWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRunning, mine == self.session else { return }
+                self.onDeviceChange?()
+            }
+        }
         resultsTask = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
                     let start = result.range.start.seconds, end = result.range.end.seconds
                     let text = String(result.text.characters), final = result.isFinal
-                    await MainActor.run { self?.took(text, from: start, to: end, final: final) }
+                    await MainActor.run {
+                        guard let self, mine == self.session else { return }
+                        self.took(text, from: start, to: end, final: final)
+                    }
                 }
             } catch {
-                await MainActor.run { self?.onProblem?("Listening stopped: \(error.localizedDescription)") }
+                await MainActor.run {
+                    // Only a failure of the listening that is still wanted is worth reporting.
+                    guard let self, mine == self.session, self.isRunning else { return }
+                    self.onProblem?("Listening stopped: \(error.localizedDescription)")
+                }
             }
         }
     }
 
     func stop() {
-        guard isRunning else { return }
+        // Also stops a start that is still under way.
+        session += 1
+        starting = false
         isRunning = false
         teardown()
         hush()
     }
 
     private func teardown() {
+        if let deviceWatch { NotificationCenter.default.removeObserver(deviceWatch) }
+        deviceWatch = nil
         pauseTask?.cancel()
         resultsTask?.cancel()
         resultsTask = nil
@@ -184,10 +238,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         guard isRunning, start.isFinite, end.isFinite else { return }
         soundTime = max(soundTime, end)
         // OMNIS does not listen to itself.
-        if speaking {
-            cut()
-            return
-        }
+        guard !speaking else { return }
         buffer.take(text, start: start, end: end, final: final)
         let current = buffer.current
         guard !current.isEmpty else { return }
@@ -215,13 +266,36 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         speaking = true
         cut()
         synthesizer.speak(utterance)
+        // If the voice never reports that it finished, the conversation must not wait for ever.
+        speakTimeout?.cancel()
+        speakTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((20 + Double(words.count) / 8) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.speaking else { return }
+            self.synthesizer.stopSpeaking(at: .immediate)
+            self.finishedSpeaking()
+        }
+    }
+
+    private func finishedSpeaking() {
+        guard speaking else { return }
+        speakTimeout?.cancel()
+        speaking = false
+        // From here only speech that begins after this moment is believed.
+        // The end of OMNIS's own voice may still be on its way through the recogniser.
+        pauseTask?.cancel()
+        buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
+        onLevel?(0)
+        onSpeechFinished?()
     }
 
     /// Stops speaking at once. Nothing is reported as finished.
     func hush() {
         guard speaking else { return }
+        speakTimeout?.cancel()
         speaking = false
         synthesizer.stopSpeaking(at: .immediate)
+        pauseTask?.cancel()
+        buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
         onLevel?(0)
     }
 
@@ -238,13 +312,14 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor [weak self] in
-            guard let self, self.speaking else { return }
-            // A moment for the room to go quiet, so the end of its own voice is not heard as a reply.
+            // A moment for the room to go quiet.
             try? await Task.sleep(nanoseconds: 250_000_000)
-            self.speaking = false
-            self.cut()
-            self.onLevel?(0)
-            self.onSpeechFinished?()
+            self?.finishedSpeaking()
         }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        // Cut off by the system rather than by OMNIS: treated as finished, so nothing waits on it.
+        Task { @MainActor [weak self] in self?.finishedSpeaking() }
     }
 }
