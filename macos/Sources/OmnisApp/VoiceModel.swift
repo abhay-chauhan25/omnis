@@ -200,6 +200,16 @@ final class VoiceModel: ObservableObject {
         engine.stop()
     }
 
+    /// Ends the conversation now, from a button. It always works, whatever was heard or not heard.
+    func endConversation() {
+        replyTimer?.cancel()
+        awaited = nil
+        actingAction = nil
+        actingEvent = nil
+        run(flow.end())
+        level = 0
+    }
+
     /// Cuts short what is being read aloud.
     func interrupt() {
         run(flow.interrupt())

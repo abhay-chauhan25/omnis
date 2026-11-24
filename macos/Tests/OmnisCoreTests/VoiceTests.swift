@@ -16,10 +16,16 @@ import Testing
     }
 
     @Test func endingsAndYesOrNoMustBeTheWholeOfWhatWasSaid() {
-        for said in ["That's all.", "that\u{2019}s all, thanks", "No", "Nope!", "nothing else", "That's it", "Goodbye", "No, I'm good."] {
+        for said in ["That's all.", "that\u{2019}s all, thanks", "No", "Nope!", "nothing else", "That's it", "Goodbye", "No, I'm good.",
+                     // However a recogniser writes it, and however it is padded out.
+                     "Thats all", "That\u{02BC}s all!", "Okay, that's all.", "Yeah that's all for now", "Um, that's it, thanks", "That is all, OMNIS.",
+                     "No, that's all, thank you.", "Alright that'll be all", "I'm done", "OK I'm all set", "Thanks, OMNIS", "Thank you.", "Stop listening",
+                     "Nothing else, thanks", "No more", "That's everything", "Hey Omnis, that's all"] {
             #expect(VoicePhrases.isEnding(said), "\(said)")
         }
-        for said in ["no I meant Tuesday", "that's all I know about him, what else is there", "what's next", "know anything about Rome?"] {
+        for said in ["no I meant Tuesday", "that's all I know about him, what else is there", "what's next", "know anything about Rome?",
+                     "is that it?", "thanks, and what about tomorrow", "that's it for the budget, now tell me about the travel plans",
+                     "tell me a joke", "", "okay"] {
             #expect(!VoicePhrases.isEnding(said), "\(said)")
         }
         for said in ["Yes", "yeah.", "Go ahead", "Send it!", "Yes, please"] { #expect(VoicePhrases.yesOrNo(said) == true, "\(said)") }
@@ -220,6 +226,19 @@ import Testing
         _ = unsure.answered("", pending: .searchQuestion)
         _ = unsure.finishedSpeaking()
         #expect(unsure.silence() == [.settleSearch(false)] && unsure.state == .thinking)       // no clear yes, no search
+    }
+
+    @Test func theEndButtonEndsAConversationFromAnyPointInIt() {
+        var speaking = on()
+        _ = speaking.heard("hey omnis tell me a story")
+        _ = speaking.answered("Once.", pending: nil)
+        #expect(speaking.end() == [.hush, .endChat] && speaking.state == .waiting)
+        var thinking = on()
+        _ = thinking.heard("hey omnis hello")
+        #expect(thinking.end() == [.endChat] && thinking.state == .waiting)
+        // Nothing to end while only waiting for the phrase, and it listens for the phrase again afterwards.
+        #expect(thinking.end() == [])
+        #expect(thinking.heard("hey omnis again") == [.chime, .ask("again")])
     }
 
     @Test func switchingOffStopsEverythingAndAKeyCutsAnAnswerShort() {

@@ -256,6 +256,8 @@ struct DashboardView: View {
                             .keyboardShortcut(.escape, modifiers: [])
                             .help("Stop reading this aloud (Esc)")
                     }
+                    Button("End") { voice.endConversation() }.buttonStyle(.plain).font(.mono(11)).foregroundStyle(Ink.muted)
+                        .help("End this conversation")
                 } else {
                     Text(chat.isAnswering ? "ANSWERING" : voice.isOn ? "READY \u{00B7} SAY \u{201C}HEY OMNIS\u{201D}" : "READY")
                         .font(.mono(12)).tracking(1.5).foregroundStyle(Ink.muted)

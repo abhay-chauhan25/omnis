@@ -74,6 +74,10 @@ The user saw the first version and called it plain and ugly, and sent a referenc
 
 Not re-checked after the redesign: opening and closing by hover (checked before it, see above), the tiles row, the cover picture, and the real calendar's dots.
 
+## Smoother, and closing at once (2026-11-24)
+
+At the user's request: the panel now closes as soon as the pointer leaves it (it used to wait half a second), grows out of the notch with a spring and slips back with a short ease, and the window keeps its size until the panel has gone so the closing movement is not cut off. Tile icons are looked up once, not on every redraw. Not run on screen: the user's OMNIS was open.
+
 ## Tests
 
 - Swift 300, Python 120, all passing. New: the next-event line and its "in 40 min"; reminders due today and overdue; reading the playing track; where the panel sits on a notched screen, a plain one, and one too small for it.

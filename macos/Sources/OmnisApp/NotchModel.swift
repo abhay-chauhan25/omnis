@@ -29,7 +29,7 @@ final class NotchModel: ObservableObject {
     /// True while the ask box is being typed in, so the panel does not close under the user.
     var typing = false {
         // When the typing stops and the pointer has already gone, the panel closes as usual.
-        didSet { if oldValue, !typing, !hovering { scheduleClose(after: 0.5) } }
+        didSet { if oldValue, !typing, !hovering { scheduleClose(after: 0.06) } }
     }
 
     let dashboard: DashboardModel
@@ -89,7 +89,7 @@ final class NotchModel: ObservableObject {
         // A short wait, so brushing past the notch does not open it.
         openTask?.cancel()
         openTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            try? await Task.sleep(nanoseconds: 110_000_000)
             guard !Task.isCancelled, let self, self.hovering, self.showing == .nothing else { return }
             self.showing = .everyday
             self.refresh()
@@ -99,7 +99,8 @@ final class NotchModel: ObservableObject {
     func pointerLeft() {
         hovering = false
         openTask?.cancel()
-        scheduleClose(after: 0.5)
+        // At once, bar a moment that covers the pointer crossing the panel's own edge as it changes size.
+        scheduleClose(after: 0.06)
     }
 
     /// Esc, or a click on something that leads elsewhere.

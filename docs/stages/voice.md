@@ -62,6 +62,16 @@ Reproduced and confirmed with a new development aid, `OMNIS --rehearse-voice "li
 
 The rehearsal does not cover the microphone, the recogniser or the speaking voice.
 
+### "That's all" did not end the conversation (reported by the user, 2026-11-24)
+
+The user said "that's all" and was asked "Anything else?" again. The exact words the recogniser produced are not known: nothing heard is kept. The likeliest cause is that an ending had to be the whole of what was heard, written one particular way, so "Okay, that's all for now", or an apostrophe written differently, was sent to Claude as a request.
+
+Changed: apostrophes and fillers ("okay", "yeah", "um") are ignored; a short remark (six words or fewer) containing an ending phrase ends the conversation; a few ways a short "no" is misheard are accepted. A longer sentence is still a request. Rehearsed against real Claude with three wordings; each ended the conversation.
+
+Also added, so there is always a way out whatever is heard: an End button beside the voice status on the dashboard and in the notch's voice view.
+
+If it happens again, the words as OMNIS heard them are in the chat window as the user's own message; that text is what is needed to pin it down.
+
 ## Tests
 
 - Swift 296, Python 120, all passing. New: the wake phrase and its near misses; endings and yes or no as whole utterances only; answers tidied for speech; the personality text; which previews a spoken yes may confirm; a whole conversation from wake to "that's all"; silence; unclear answers; the search question; switching off; and the recogniser's real pattern of growing and settled results.

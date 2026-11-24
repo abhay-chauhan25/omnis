@@ -10,6 +10,17 @@ struct NotchView: View {
     let notchHeight: CGFloat
     let notchWidth: CGFloat
     @FocusState private var askFocused: Bool
+    /// How long the panel takes to slip away. The window waits this long before it shrinks.
+    static let closeSeconds = 0.2
+
+    /// Icons are looked up once each, not on every redraw.
+    private static var icons: [String: NSImage] = [:]
+    private static func icon(for entry: RegistryEntry) -> NSImage {
+        if let known = icons[entry.url.path] { return known }
+        let found = NSWorkspace.shared.icon(forFile: entry.url.path)
+        icons[entry.url.path] = found
+        return found
+    }
 
     private var voice: VoiceModel { model.voice }
     private var chat: ChatModel { model.chat }
@@ -38,7 +49,9 @@ struct NotchView: View {
                 .background(shape.fill(Color.black).shadow(color: .black.opacity(0.55), radius: 18, y: 10))
                 .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.0), Color.white.opacity(0.12)], startPoint: .top, endPoint: .bottom)))
                 .foregroundStyle(Ink.text)
-                .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+                // It grows out of the notch and slips back into it.
+                .transition(.asymmetric(insertion: .scale(scale: 0.55, anchor: .top).combined(with: .opacity),
+                                        removal: .scale(scale: 0.72, anchor: .top).combined(with: .opacity)))
             } else {
                 // Behind the notch itself, something all but invisible for the pointer to land on.
                 // The margins either side stay truly clear, so menu-bar items there still take clicks.
@@ -61,7 +74,7 @@ struct NotchView: View {
         // The panel sits under the notch on purpose; macOS must not push its contents down a second time.
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
-        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.showing)
+        .animation(model.isOpen ? .spring(response: 0.36, dampingFraction: 0.84) : .easeIn(duration: NotchView.closeSeconds), value: model.showing)
         .onExitCommand { model.close() }
     }
 
@@ -88,7 +101,11 @@ struct NotchView: View {
                 if voice.state == .speaking {
                     Button("Stop") { voice.interrupt() }.buttonStyle(NotchButton(prominent: false))
                         .help("Stop reading this aloud")
-                } else if !voice.inConversation {
+                }
+                if voice.inConversation {
+                    Button("End") { voice.endConversation() }.buttonStyle(NotchButton(prominent: false))
+                        .help("End this conversation")
+                } else {
                     // The conversation is over and something is still waiting: it can be put away for later.
                     Button("Hide") { model.close() }.buttonStyle(NotchButton(prominent: false))
                         .help("Hide this. It stays in the chat window.")
@@ -170,7 +187,7 @@ struct NotchView: View {
                         ForEach(model.dashboard.tiles.prefix(8)) { entry in
                             Button { model.launch(entry) } label: {
                                 HStack(spacing: 6) {
-                                    Image(nsImage: NSWorkspace.shared.icon(forFile: entry.url.path)).resizable().frame(width: 18, height: 18)
+                                    Image(nsImage: Self.icon(for: entry)).resizable().frame(width: 18, height: 18)
                                     Text(entry.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
                                 }
                             }

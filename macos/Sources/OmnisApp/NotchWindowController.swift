@@ -35,6 +35,8 @@ final class NotchWindowController {
     private let model: NotchModel
     private let panel: NotchPanel
     private var geometry: NotchGeometry?
+    private var shrink: Task<Void, Never>?
+    private var closing = 0
     private var watching: Set<AnyCancellable> = []
     /// The everyday view is wide, like a shelf; a conversation needs less room.
     private var openWidth: Double { model.showing == .voice ? 540 : 720 }
@@ -129,9 +131,28 @@ final class NotchWindowController {
 
     private func resize() {
         guard let geometry else { return }
-        let rect = model.isOpen ? geometry.open(width: openWidth, height: openHeight) : geometry.resting
-        let frame = NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
-        if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+        if model.isOpen {
+            // Room is made first; the panel then grows into it.
+            shrink?.cancel()
+            shrink = nil
+            closing += 1
+            let rect = geometry.open(width: openWidth, height: openHeight)
+            let frame = NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+            if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+        } else if panel.frame.height > geometry.resting.height + 1, shrink == nil {
+            // The panel is slipping away: the window keeps its size until it has gone, so the
+            // movement is not cut off, then takes up only the strip at the notch again.
+            closing += 1
+            let mine = closing
+            shrink = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64((NotchView.closeSeconds + 0.04) * 1_000_000_000))
+                // Opened again, or closed again, since this was set going: that one is in charge now.
+                guard let self, mine == self.closing else { return }
+                self.shrink = nil
+                guard !self.model.isOpen, let resting = self.geometry?.resting else { return }
+                self.panel.setFrame(NSRect(x: resting.x, y: resting.y, width: resting.width, height: resting.height), display: true, animate: false)
+            }
+        }
         // Closed, the panel must not be left holding the keyboard: typing goes back to the app in front.
         if !model.isOpen, panel.isKeyWindow {
             panel.makeFirstResponder(nil)

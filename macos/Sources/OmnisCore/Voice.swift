@@ -15,28 +15,53 @@ public enum VoicePhrases {
         return String(heard[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// What was said, reduced to its words: no capitals, no punctuation, and no
+    /// apostrophes, which a recogniser writes in more than one way ("that's", "that’s", "thats").
     private static func plain(_ text: String) -> String {
-        text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
-            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "' ")).inverted).joined()
-            .split(separator: " ").joined(separator: " ")
+        var kept = ""
+        for character in text.lowercased() {
+            if "'\u{2019}\u{2018}\u{02BC}`".contains(character) { continue }
+            if character.isLetter || character.isNumber { kept.append(character) } else { kept.append(" ") }
+        }
+        return kept.split(separator: " ").joined(separator: " ")
     }
 
+    // Said alone, each of these ends the conversation.
     private static let endings: Set<String> = [
-        "no", "nope", "no thanks", "no thank you", "nah", "that's all", "that is all", "thats all", "that's all thanks", "that's all thank you",
-        "that's it", "that is it", "that'll be all", "that will be all", "nothing else", "nothing", "nothing thanks", "i'm done", "we're done", "all done",
-        "i'm good", "all good", "goodbye", "bye", "bye bye", "thanks that's all", "thank you that's all", "no that's all", "no that's it",
-        "no i'm good", "that's everything", "stop listening", "end chat", "end the chat",
+        "no", "nope", "nah", "no thanks", "no thank you", "no thats all", "no thats it", "no im good", "nothing", "nothing thanks",
+        // How a short "no" is sometimes heard.
+        "know", "no no", "noo",
+        "bye", "bye bye", "goodbye", "good bye", "thanks", "thank you", "thanks omnis", "thank you omnis", "stop", "done", "all done",
+        "im done", "im good", "all good", "were done", "we are done", "i am done", "end chat", "end the chat", "stop listening",
+    ]
+    // Said anywhere in a short remark, each of these ends it too: "okay, that's all for now", "yeah that's it thanks".
+    private static let endingPhrases = [
+        "thats all", "that is all", "that will be all", "thatll be all", "that would be all", "thats it", "that is it", "thats everything",
+        "nothing else", "nothing more", "no more", "im done", "i am done", "were done", "we are done", "im all set", "all set",
+        "goodbye", "good bye", "stop listening", "end chat", "end the chat", "that is everything", "im good", "all good",
     ]
 
-    /// True when what was said is nothing more than a way of ending the conversation.
+    /// True when what was said is a way of ending the conversation: one of the
+    /// endings on its own, or a short remark with an ending phrase in it. A
+    /// longer sentence is a request, whatever words it happens to contain.
     public static func isEnding(_ heard: String) -> Bool {
-        endings.contains(plain(heard))
+        var said = plain(heard)
+        // Fillers at the start do not change what is meant.
+        for filler in ["okay ", "ok ", "yeah ", "yes ", "yep ", "um ", "uh ", "oh ", "well ", "so ", "alright ", "all right ", "right ", "omnis ", "hey omnis "] {
+            while said.hasPrefix(filler) { said.removeFirst(filler.count) }
+        }
+        guard !said.isEmpty else { return false }
+        if endings.contains(said) { return true }
+        guard said.split(separator: " ").count <= 6 else { return false }
+        let padded = " \(said) "
+        return endingPhrases.contains { padded.contains(" \($0) ") }
     }
 
     private static let yes: Set<String> = ["yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go ahead", "do it", "send it", "please do", "yes please",
-                                           "confirm", "confirmed", "that's right", "correct", "go for it", "yes go ahead", "yes send it", "yes do it", "absolutely"]
-    private static let no: Set<String> = ["no", "nope", "nah", "don't", "do not", "cancel", "stop", "no thanks", "no thank you", "don't send it",
-                                          "no don't", "never mind", "nevermind", "leave it", "not now", "no cancel"]
+                                           "confirm", "confirmed", "thats right", "correct", "go for it", "yes go ahead", "yes send it", "yes do it", "absolutely",
+                                           "yes thats right", "yeah go ahead", "yeah send it", "sure go ahead"]
+    private static let no: Set<String> = ["no", "nope", "nah", "dont", "do not", "cancel", "stop", "no thanks", "no thank you", "dont send it",
+                                          "no dont", "never mind", "nevermind", "leave it", "not now", "no cancel", "no dont send it"]
 
     /// Whether a spoken reply to a yes-or-no question was a yes, a no, or neither.
     /// Only a clear, short yes counts: "yes but change the time" is neither.
@@ -360,6 +385,15 @@ public struct VoiceFlow: Equatable, Sendable {
         }
         state = afterSpeaking
         return [.listen(seconds: Self.replySeconds)]
+    }
+
+    /// The user ended the conversation with a button, whatever was going on.
+    public mutating func end() -> [Effect] {
+        guard state != .off, state != .waiting else { return [] }
+        let wasSpeaking = state == .speaking
+        self = VoiceFlow()
+        state = .waiting
+        return (wasSpeaking ? [.hush] : []) + [.endChat]
     }
 
     /// The user cut the reading short with a key.
