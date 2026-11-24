@@ -40,6 +40,8 @@ Questions are answered by Claude by default, through Claude Code signed in with 
 
 In the input bar, the globe turns web search on or off. **Model** and **Effort** each open a slider; Auto lets OMNIS choose. The Model slider also holds the **Off the grid** switch, which answers everything with the model on this Mac. The same from the keyboard: `/model sonnet`, `/effort high`, `/local on`, `/local off`. The top strip shows how much of your Claude plan is used; ordinary chats stop using Claude at 80% of the five-hour window or 70% of the week and offer to answer on this Mac.
 
+The Dock icon opens the dashboard, OMNIS's main window. Its **Project** switch shows Claude Code terminals for one of your projects, with OMNIS beside them as an advisor that can read the project's files. Asking OMNIS to "set up a project called …" creates the folder, the git repository and the GitHub repository from a preview you confirm; that needs `git` and a signed-in `gh`.
+
 Launchers, aliases, project folders and the editor are set in `~/Library/Application Support/OMNIS/registry.json`, created on first run. Beside it, `audit.log` records what OMNIS did (never what was typed or answered).
 
 Tests:

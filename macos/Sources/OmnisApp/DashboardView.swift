@@ -53,6 +53,7 @@ private extension Panel where Trailing == EmptyView {
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject var chat: ChatModel
+    @ObservedObject var project: ProjectModeModel
     @FocusState private var askFocused: Bool
     /// Whether the extra usage facts are showing. Hidden until asked for.
     @AppStorage("OMNISShowMoreFacts") private var showMoreFacts = false
@@ -62,15 +63,20 @@ struct DashboardView: View {
         // there is, and a side column scrolls only if the window is too short for it.
         VStack(spacing: 18) {
             header
-            HStack(alignment: .top, spacing: 18) {
-                ScrollView(showsIndicators: false) { VStack(spacing: 18) { today; focusAndCapture; mail } }
-                    .frame(minWidth: 280, maxWidth: 360)
-                centre.frame(minWidth: 420, maxWidth: .infinity)
-                ScrollView(showsIndicators: false) { VStack(spacing: 18) { usage; system; activity } }
-                    .frame(minWidth: 280, maxWidth: 360)
+            if project.isActive {
+                // Project mode replaces the panels with terminals and the advisor.
+                ProjectModeView(model: project).frame(maxHeight: .infinity)
+            } else {
+                HStack(alignment: .top, spacing: 18) {
+                    ScrollView(showsIndicators: false) { VStack(spacing: 18) { today; focusAndCapture; mail } }
+                        .frame(minWidth: 280, maxWidth: 360)
+                    centre.frame(minWidth: 420, maxWidth: .infinity)
+                    ScrollView(showsIndicators: false) { VStack(spacing: 18) { usage; system; activity } }
+                        .frame(minWidth: 280, maxWidth: 360)
+                }
+                .frame(maxHeight: .infinity)
+                projects
             }
-            .frame(maxHeight: .infinity)
-            projects
         }
         .padding(.horizontal, 24)
         .padding(.top, 40)
@@ -90,6 +96,18 @@ struct DashboardView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 16) {
             Text("OMNIS").font(.system(size: 17, weight: .semibold)).tracking(5.5)
+            HStack(spacing: 2) {
+                modeButton("Dashboard", on: !project.isActive) { project.isActive = false }
+                modeButton("Project", on: project.isActive) { project.isActive = true }
+            }
+            .padding(3)
+            .background(Capsule().fill(Color.white.opacity(0.05)))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("View")
+            if project.runningCount > 0 {
+                Text(project.runningCount == 1 ? "1 session running" : "\(project.runningCount) sessions running")
+                    .font(.mono(11)).foregroundStyle(Ink.gold)
+            }
             Spacer()
             chip(chat.usesLocal ? "This Mac" : "Claude \u{00B7} \(chat.modelChoice.title)", color: Ink.text)
             if let usage = chat.usageLabel { chip(usage, color: chat.usageIsHigh ? .orange : Ink.text) }
@@ -99,6 +117,17 @@ struct DashboardView: View {
             }
             .accessibilityElement(children: .combine)
         }
+    }
+
+    private func modeButton(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: on ? .semibold : .regular))
+            .foregroundStyle(on ? Ink.ground : Ink.muted)
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(Capsule().fill(on ? Ink.gold : .clear))
+            .contentShape(Capsule())
+            .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     private func chip(_ text: String, color: Color) -> some View {

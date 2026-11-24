@@ -18,6 +18,23 @@ public struct ClaudeConfig: Sendable {
     /// The most web searches and calendar lookups in one answer.
     public var maxSearches = 4
     public var maxCalendarCalls = 8
+    /// What the session is for. The assistant answers questions and uses the
+    /// calendar tools. The advisor reads one project's files and nothing else.
+    public enum Profile: Equatable, Sendable {
+        case assistant
+        case advisor(folder: URL, project: String)
+    }
+
+    public var profile: Profile = .assistant
+
+    /// Whether a tool the session reports having is one this kind of session should have.
+    public func expects(tool: String) -> Bool {
+        switch profile {
+        case .assistant: return Self.isExpected(tool: tool)
+        case .advisor: return ["Read", "Glob", "Grep"].contains(tool)
+        }
+    }
+
     /// An answer with no sign of life for this long is given up on.
     public var silenceSeconds: Double = 150
 
@@ -27,6 +44,11 @@ public struct ClaudeConfig: Sendable {
         "Bash", "Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS", "WebFetch", "Task",
         "Agent", "TodoWrite", "Skill", "SlashCommand", "KillShell", "BashOutput", "ExitPlanMode",
     ]
+
+    /// Files the advisor may never read, wherever they are in a project.
+    public static let secretFiles: [String] = [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.keystore", "id_rsa*", "id_ed25519*",
+                                               ".netrc", ".npmrc", "credentials.json", "secrets.*"]
+        .flatMap { ["Read(./\($0))", "Read(./**/\($0))"] } + ["Read(./.git/**)"]
 
     /// The only tools a session may report having. Anything else and the session is not used.
     public static func isExpected(tool: String) -> Bool {
@@ -53,6 +75,27 @@ public struct ClaudeConfig: Sendable {
     /// connected tools of the user's are loaded. Nothing is saved to disk. And
     /// every tool call, web search included, asks OMNIS first.
     public func arguments(model: ClaudeModel, effort: String, systemPrompt: String) -> [String] {
+        if case .advisor = profile {
+            // Reading only, and only files: no editing, no commands, no web, no other tools.
+            // Files that usually hold secrets are refused by Claude Code itself:
+            // it lets reads inside the folder through without asking OMNIS.
+            let refused = Self.refusedTools.filter { !["Read", "Glob", "Grep"].contains($0) } + ["WebSearch"] + Self.secretFiles
+            return [
+                "-p",
+                "--model", model.rawValue,
+                "--effort", effort,
+                "--tools", "Read,Glob,Grep",
+                "--disallowedTools", refused.joined(separator: ","),
+                "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+                "--setting-sources", "",
+                "--no-session-persistence",
+                "--permission-prompt-tool", "stdio",
+                "--system-prompt", systemPrompt,
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose", "--include-partial-messages",
+            ]
+        }
         let tools: [String: Any] = ["mcpServers": ["omnis": [
             "command": python.path,
             // -P keeps the session folder off Python's module path.
@@ -257,7 +300,12 @@ public final class ClaudeService: @unchecked Sendable {
                                          attributes: [.posixPermissions: 0o700])
         let child = Process()
         child.executableURL = config.executable
-        child.arguments = config.arguments(model: request.model, effort: request.effort, systemPrompt: ClaudePrompt.system())
+        let prompt: String
+        switch config.profile {
+        case .assistant: prompt = ClaudePrompt.system()
+        case .advisor(_, let project): prompt = ClaudePrompt.advisor(project: project)
+        }
+        child.arguments = config.arguments(model: request.model, effort: request.effort, systemPrompt: prompt)
         child.currentDirectoryURL = config.workingDirectory
         child.environment = config.environment
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -439,7 +487,7 @@ public final class ClaudeService: @unchecked Sendable {
             // anything is there that OMNIS did not ask for, such as a file or
             // shell tool, the session is not used.
             guard event["subtype"] as? String == "init", let listed = event["tools"] as? [String] else { return }
-            let extra = listed.filter { !ClaudeConfig.isExpected(tool: $0) }
+            let extra = listed.filter { !config.expects(tool: $0) }
             if !extra.isEmpty {
                 finish(throwing: ClaudeError.unexpectedTools(extra.prefix(6).joined(separator: ", ")))
             }
@@ -542,6 +590,22 @@ public final class ClaudeService: @unchecked Sendable {
             return
         }
         active?.breakBeforeText = true
+
+        if case .advisor(let folder, _) = config.profile {
+            // Claude Code lets reads inside its folder through without asking.
+            // What reaches here is a read somewhere else, or a file to be careful with.
+            guard ["Read", "Glob", "Grep"].contains(name) else {
+                deny(id, "The advisor can only read files. It cannot change anything or run commands.")
+                return
+            }
+            let path = (input["file_path"] as? String) ?? (input["path"] as? String)
+            if ProjectFiles.mayRead(path, in: folder) {
+                allow(id, input: input)
+            } else {
+                deny(id, "The advisor can only read files inside the project folder, and not files that hold secrets.")
+            }
+            return
+        }
 
         if name == "WebSearch" {
             guard current.request.web else {

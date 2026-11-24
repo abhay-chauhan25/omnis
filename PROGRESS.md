@@ -1,6 +1,6 @@
 # OMNIS — Progress
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## Where things stand
 
@@ -20,14 +20,14 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
 | Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
 | Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; controls not yet seen on screen | ADR-0013, `docs/stages/claude-regular-mode.md` |
-| Project mode | Not started. Plan and approval first | — |
+| Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; the view not yet seen on screen and no real project set up; review pending | ADR-0014, `docs/stages/project-mode.md` |
 | Dashboard (main window) | First version built 2026-11-23 from the approved mock; waiting for the user's look; review pending. Voice and mail not built | `docs/stages/dashboard.md` |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 154. Swift: 224. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 154. Swift: 238. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -40,6 +40,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] User's look at the Model and Effort sliders, usage reading and typed commands.
 - [ ] Remove the retired API-key lane from the code.
 - [ ] User's look at the dashboard on screen.
+- [ ] User's first run of project mode: open a terminal session, try the advisor, set up one real project.
 - [ ] Voice ("Hey OMNIS"): the user will decide separately. Not built.
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
@@ -80,6 +81,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | Full calendar control: every command, including deleting. Each change still confirmed. | ADR-0012 |
 | 2026-11-23 | Claude by default through Claude Code on the user's plan; local model as an off-the-grid switch; ordinary chats stop at 70% weekly and 80% five-hour usage. Replaces ADR-0009. | ADR-0013 |
 | 2026-11-23 | New tools are connected to OMNIS, not straight to Claude, so confirmations and rules apply. | `docs/stages/claude-regular-mode.md` |
+| 2026-11-24 | Project mode: real Claude Code terminals in the dashboard with OMNIS as a read-only advisor; SwiftTerm added as the first third-party dependency; edits and safe commands free in the project folder, the rest asked. | ADR-0014 |
 
 ## Things worth knowing
 
@@ -100,4 +102,4 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Next step
 
-The user tries Claude mode in the window. Then: project mode, the dashboard, or email.
+The user tries project mode and the dashboard. Then: voice, mail, or removing the unused API-key code.

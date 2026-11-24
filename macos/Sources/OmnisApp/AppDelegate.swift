@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backend: BackendService?
     private var claude: ClaudeService?
     private var dashboard: DashboardWindowController!
+    private var projectMode: ProjectModeModel!
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
     private let ledger = UsageLedger(url: OmnisPaths.usageLedger, mirror: .standard)
@@ -55,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The dashboard is the main window. A question typed there is answered in the chat window.
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
                                             openChat: { [weak self] in self?.chat.show() })
-        dashboard = DashboardWindowController(model: dashboardModel, chat: model)
+        projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
+        dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode)
 
         buildMainMenu()
         buildStatusItem()
@@ -83,7 +85,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    /// Quitting ends any Claude Code sessions in project mode, so it asks first.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let projectMode, projectMode.runningCount > 0 else { return .terminateNow }
+        let alert = NSAlert()
+        let count = projectMode.runningCount
+        alert.messageText = count == 1 ? "A Claude Code session is still running" : "\(count) Claude Code sessions are still running"
+        alert.informativeText = "Quitting OMNIS ends them. Their work so far is kept, and you can pick a session up again with \u{201C}Resume the last one\u{201D}."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        projectMode?.closeAll()
         backend?.stop()
         // Waits until Claude Code has gone, so nothing is left running.
         claude?.shutdown()
