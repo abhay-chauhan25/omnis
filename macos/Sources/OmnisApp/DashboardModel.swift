@@ -80,6 +80,12 @@ final class DashboardModel: ObservableObject {
         refreshTimer = timer
     }
 
+    /// The clock and today's events only: enough for a glance from the notch.
+    func refreshGlance() {
+        now = Date()
+        refreshAgenda()
+    }
+
     func refresh() {
         now = Date()
         claudeSessionOpen = claude?.isSessionOpen ?? false

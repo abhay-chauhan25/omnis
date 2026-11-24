@@ -44,6 +44,16 @@ Independent review, by reading the code: not fit for a first live use as first b
 | Esc stops an answer only while the dashboard is in front | The notch panel has a Stop button; there is still no key for it when another app is in front. |
 | The personality is not applied off the grid | Left as is. |
 
+A second review confirmed the fixes above by reading the code, and found no path by which OMNIS's own voice could become a spoken yes. It found more, fixed the same day and not reviewed again:
+
+| Finding | Action |
+|---|---|
+| Headphones connecting while OMNIS was speaking left the conversation stuck | Fixed. The answer is cut short and listening carries on. |
+| Any loud sound kept "Anything else?" open without end | Fixed. Only recognised words give the speaker more time. |
+| Switching off and on very quickly could leave the switch on with a dead microphone | Fixed. |
+| The limit on waiting for an answer was pushed back by anything overheard | Fixed. |
+| Opening an app by voice is answered "Okay" even if it could not be opened; a preview declined on screen is spoken as "That did not work" | Left as is. |
+
 ## Tests
 
 - Swift 296, Python 120, all passing. New: the wake phrase and its near misses; endings and yes or no as whole utterances only; answers tidied for speech; the personality text; which previews a spoken yes may confirm; a whole conversation from wake to "that's all"; silence; unclear answers; the search question; switching off; and the recogniser's real pattern of growing and settled results.

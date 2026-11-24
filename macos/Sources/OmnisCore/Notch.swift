@@ -5,7 +5,9 @@ import Foundation
 public enum NotchData {
     /// "Dentist · 10:00 (in 40 min)", from today's agenda, or nil if nothing is left today.
     public static func nextEvent(in agenda: [DashboardData.AgendaRow], now: Date = Date()) -> String? {
-        guard let next = agenda.first(where: \.isNext) ?? agenda.first(where: { $0.start > now }) else { return nil }
+        // The list may be a little old, so "next" is judged against the time now, not the time it was made.
+        guard let next = agenda.first(where: { $0.start > now })
+                ?? agenda.last(where: { $0.start <= now && now.timeIntervalSince($0.start) < 300 }) else { return nil }
         let minutes = Int((next.start.timeIntervalSince(now) / 60).rounded())
         let when: String
         if minutes <= 0 { when = "now" }
@@ -28,7 +30,9 @@ public enum NotchData {
         for (prefix, playing) in [("Playing: ", true), ("Paused on: ", false)] where description.hasPrefix(prefix) {
             var title = String(description.dropFirst(prefix.count))
             if title.hasSuffix(".") { title.removeLast() }
-            return title.isEmpty ? nil : (title.replacingOccurrences(of: " by ", with: " \u{2014} "), playing)
+            // Only the last " by " divides the song from the artist: "Stand by Me by Ben E. King".
+            if let divider = title.range(of: " by ", options: .backwards) { title.replaceSubrange(divider, with: " \u{2014} ") }
+            return title.isEmpty ? nil : (title, playing)
         }
         return nil
     }
@@ -57,7 +61,7 @@ public struct NotchGeometry: Equatable, Sendable {
 
     /// The strip that is always there: the notch plus a little either side, where the glow shows.
     public var resting: Rect {
-        let width = max(notchWidth, 180) + 44
+        let width = max(notchWidth, 180) + 28
         let height = max(notchHeight, 24)
         return Rect(x: screen.x + (screen.width - width) / 2, y: screen.y + screen.height - height, width: width, height: height)
     }

@@ -29,6 +29,26 @@
 - Only when it opens: the dashboard's own refresh (at most twice a minute), what Spotify is playing, and reminders. Nothing is polled while it is closed.
 - Reminders are read only if OMNIS is already allowed to; the panel never makes macOS ask for a permission.
 
+## Review findings (2026-11-24)
+
+Independent review, by reading the code: not fit for a first run as first built. Each of these was fixed the same day; the fixes have not been reviewed again, and none has been seen running.
+
+| Finding | Action |
+|---|---|
+| Clicking any button in the panel could leave it holding the keyboard, so typing went nowhere | Fixed. It takes the keyboard only for the ask box, and gives it back when it closes. |
+| The resting strip was fully see-through, so hovering might never register; or it might swallow clicks on menu-bar items beside the notch | Fixed. There is an all-but-invisible patch behind the notch itself for the pointer to land on; the margins either side are truly clear, and narrower (14 points). |
+| macOS might push the contents down by the notch's height a second time | Fixed. |
+| Over a full-screen app, a preview was sent to a panel that could not be seen | Fixed. If the panel is not on the desktop in front, the chat window is used. |
+| A long preview could be cut off at the bottom, hiding its buttons | Fixed. The estimate is more generous and previews scroll inside the panel. |
+| The panel could stay open after typing in the ask box, and a waiting preview could not be put away | Fixed. It closes when typing stops, and a Hide button puts a waiting preview away once the conversation is over. |
+| Resting the pointer on the notch could make macOS ask to control Spotify | Fixed. Spotify is asked only if it is open and OMNIS is already allowed. |
+| Music controls from the notch left no record | Fixed. |
+| An old list could show a past event as "now" | Fixed. |
+| The closed panel redrew on every word of an answer and every change in voice level | Fixed. It follows only the voice switch while closed. |
+| VoiceOver could not reach the Stop button | Fixed. |
+| A question typed while an answer was being written was lost | Fixed. It stays in the box. |
+| No keyboard or VoiceOver way to open the panel; a new preview is not announced | Left as is. Everything in the panel is also in the dashboard and the chat window. |
+
 ## Tests
 
 - Swift 300, Python 120, all passing. New: the next-event line and its "in 40 min"; reminders due today and overdue; reading the playing track; where the panel sits on a notched screen, a plain one, and one too small for it.

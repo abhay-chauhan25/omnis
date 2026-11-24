@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import EventKit
 import Foundation
@@ -18,7 +19,10 @@ final class NotchModel: ObservableObject {
     /// True while the pointer is over the panel.
     private(set) var hovering = false
     /// True while the ask box is being typed in, so the panel does not close under the user.
-    var typing = false
+    var typing = false {
+        // When the typing stops and the pointer has already gone, the panel closes as usual.
+        didSet { if oldValue, !typing, !hovering { scheduleClose(after: 0.5) } }
+    }
 
     let dashboard: DashboardModel
     let chat: ChatModel
@@ -43,10 +47,18 @@ final class NotchModel: ObservableObject {
         voice.$state.combineLatest(dashboard.$isVisible).sink { [weak self] _, _ in
             Task { @MainActor in self?.voiceChanged() }
         }.store(in: &watching)
-        // The panel redraws when what it borrows changes.
+        // The panel redraws when what it borrows changes, but only while it is open:
+        // closed, it costs nothing however busy the chat or the voice is.
         for publisher in [dashboard.objectWillChange, chat.objectWillChange, voice.objectWillChange] {
-            publisher.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &watching)
+            publisher.sink { [weak self] _ in
+                guard let self, self.isOpen else { return }
+                self.objectWillChange.send()
+            }.store(in: &watching)
         }
+        // The light beside the notch follows the voice switch even while closed.
+        voice.$isOn.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.objectWillChange.send() }
+        }.store(in: &watching)
     }
 
     var isOpen: Bool { showing != .nothing }
@@ -84,6 +96,7 @@ final class NotchModel: ObservableObject {
 
     /// Esc, or a click on something that leads elsewhere.
     func close() {
+        closeTask?.cancel()
         typing = false
         ask = ""
         if voice.inConversation && !dashboard.isVisible { showing = .voice } else { showing = .nothing }
@@ -112,6 +125,8 @@ final class NotchModel: ObservableObject {
     private func voiceChanged() {
         if voice.inConversation, !dashboard.isVisible {
             closeTask?.cancel()
+            // A conversation takes the panel over, even from a half-typed question.
+            typing = false
             if showing != .everyday || !hovering { showing = .voice }
         } else if showing == .voice {
             // The conversation is over, or the dashboard has taken over showing it.
@@ -122,8 +137,10 @@ final class NotchModel: ObservableObject {
     // MARK: Everyday contents
 
     private func refresh() {
-        // The dashboard's own figures, at most twice a minute.
-        if Date().timeIntervalSince(lastRefresh) > 30 {
+        // The clock and today's events every time; the dashboard's heavier figures
+        // (launch tiles among them) only now and then.
+        dashboard.refreshGlance()
+        if dashboard.tiles.isEmpty || Date().timeIntervalSince(lastRefresh) > 300 {
             lastRefresh = Date()
             dashboard.refresh()
         }
@@ -132,7 +149,9 @@ final class NotchModel: ObservableObject {
     }
 
     private func loadMusic() async {
-        guard let music else {
+        // Only if OMNIS is already allowed to control Spotify and Spotify is open:
+        // resting the pointer on the notch never makes macOS ask for anything.
+        guard let music, Self.mayAskSpotify() else {
             musicNote = nil
             track = nil
             return
@@ -146,8 +165,18 @@ final class NotchModel: ObservableObject {
         musicNote = track == nil ? content : nil
     }
 
+    /// True when macOS would let OMNIS talk to Spotify without asking the user first.
+    private static func mayAskSpotify() -> Bool {
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.spotify.client").isEmpty else { return false }
+        let target = NSAppleEventDescriptor(bundleIdentifier: "com.spotify.client")
+        guard let descriptor = target.aeDesc else { return false }
+        return AEDeterminePermissionToAutomateTarget(descriptor, typeWildCard, typeWildCard, false) == noErr
+    }
+
     func music(_ action: String) {
         guard let music else { return }
+        // Which control, and that it came from here. Never what was playing.
+        audit.record(action: "service", outcome: "ok", detail: "Controlled Spotify")
         Task { [weak self] in
             _ = try? await music.run(tool: "spotify_control", arguments: ["action": action], access: ToolAccess())
             await self?.loadMusic()
@@ -166,7 +195,8 @@ final class NotchModel: ObservableObject {
 
     func submitAsk() {
         let text = ask.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // While an answer is being written the question is kept in the box, not lost.
+        guard !text.isEmpty, !chat.isAnswering else { return }
         dashboard.ask = text
         dashboard.submit()
         close()

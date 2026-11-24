@@ -26,19 +26,27 @@ struct NotchView: View {
                 .overlay(shape.strokeBorder(Color.white.opacity(0.07)))
                 .foregroundStyle(Ink.text)
                 .transition(.opacity)
-            } else if voice.isOn {
-                // A small light beside the notch: voice is on.
-                HStack {
-                    Spacer()
-                    Circle().fill(Ink.gold).frame(width: 5, height: 5)
-                        .shadow(color: Ink.gold.opacity(0.9), radius: 4)
-                        .padding(.trailing, 8)
-                        .accessibilityLabel("OMNIS voice is on")
+            } else {
+                // Behind the notch itself, something all but invisible for the pointer to land on.
+                // The margins either side stay truly clear, so menu-bar items there still take clicks.
+                Rectangle().fill(Color.black.opacity(0.02)).frame(width: notchWidth, height: notchHeight)
+                if voice.isOn {
+                    // A small light beside the notch: voice is on.
+                    HStack {
+                        Spacer()
+                        Circle().fill(Ink.gold).frame(width: 5, height: 5)
+                            .shadow(color: Ink.gold.opacity(0.9), radius: 3)
+                            .padding(.trailing, 4)
+                            .accessibilityLabel("OMNIS voice is on")
+                    }
+                    .frame(height: notchHeight)
+                    .allowsHitTesting(false)
                 }
-                .frame(height: notchHeight)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The panel sits under the notch on purpose; macOS must not push its contents down a second time.
+        .ignoresSafeArea()
         .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.18), value: model.showing)
         .onExitCommand { model.close() }
@@ -62,14 +70,21 @@ struct NotchView: View {
                     Text(voice.inConversation ? voice.stateLine : "Finished").font(.system(size: 14)).lineLimit(3)
                         .truncationMode(.head).fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityElement(children: .combine)
                 Spacer(minLength: 0)
                 if voice.state == .speaking {
                     Button("Stop") { voice.interrupt() }.buttonStyle(NotchButton(prominent: false))
                         .help("Stop reading this aloud")
+                } else if !voice.inConversation {
+                    // The conversation is over and something is still waiting: it can be put away for later.
+                    Button("Hide") { model.close() }.buttonStyle(NotchButton(prominent: false))
+                        .help("Hide this. It stays in the chat window.")
                 }
             }
-            .accessibilityElement(children: .combine)
-            if let answer = model.waitingAnswer { waiting(answer) }
+            if let answer = model.waitingAnswer {
+                // However long a preview is, all of it can be reached before anything is clicked.
+                ScrollView { VStack(alignment: .leading, spacing: 10) { waiting(answer) } }
+            }
         }
     }
 

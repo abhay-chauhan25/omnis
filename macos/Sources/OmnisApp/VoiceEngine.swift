@@ -168,12 +168,15 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             try audio.start()
             try await analyzer.start(inputSequence: stream)
         } catch {
-            teardown()
+            // Only this start's own things are undone: a newer start may already be using the microphone.
+            if mine == session { teardown() } else { continuation.finish() }
             throw VoiceProblem.couldNotStart(error.localizedDescription)
         }
-        // Switched off while it was starting: let go of the microphone again.
+        // Switched off, or started afresh, while this one was starting. `stop` has already let go of
+        // the microphone; what is left belongs to this start alone.
         guard mine == session else {
-            teardown()
+            continuation.finish()
+            await analyzer.cancelAndFinishNow()
             throw CancellationError()
         }
         isRunning = true

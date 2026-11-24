@@ -42,6 +42,8 @@ final class NotchWindowController {
         self.model = model
         panel = NotchPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isFloatingPanel = true
+        // It takes the keyboard only for the ask box, never because a button was clicked.
+        panel.becomesKeyOnlyIfNeeded = true
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -61,8 +63,9 @@ final class NotchWindowController {
         }.store(in: &watching)
     }
 
-    /// True when there is a built-in screen for the panel to live on.
-    var isAvailable: Bool { geometry != nil }
+    /// True when the panel can be seen right now: there is a built-in screen, and the
+    /// desktop in front is not an app in full screen, where the panel stays away.
+    var isAvailable: Bool { geometry != nil && panel.isOnActiveSpace }
 
     private static func builtInScreen() -> NSScreen? {
         NSScreen.screens.first { screen in
@@ -102,19 +105,22 @@ final class NotchWindowController {
         panel.orderFrontRegardless()
     }
 
-    /// How tall the open panel needs to be for what it is showing.
+    /// How tall the open panel needs to be for what it is showing. Generous for
+    /// previews, which scroll inside the panel if they are longer still.
     private var openHeight: Double {
         switch model.showing {
         case .nothing: return 0
         case .voice:
             guard let answer = model.waitingAnswer else { return 124 }
-            let cards = (answer.searchAsk?.state == .waiting ? 1 : 0) + min(2, answer.actions.filter { $0.state == .waiting }.count)
-                + min(2, answer.proposals.filter { $0.state == .waiting }.count)
-            let lines = answer.actions.filter { $0.state == .waiting }.prefix(2).reduce(0) { total, action in
-                // A long message wraps: allow a line for every forty-five characters.
-                total + action.rows.reduce(0) { $0 + max(1, ($1.value.count + $1.label.count) / 45 + $1.value.filter { $0 == "\n" }.count + 1) }
+            func lines(_ text: String) -> Double { Double(max(1, text.count / 42 + 1 + text.filter { $0 == "\n" }.count)) }
+            var height = 140.0
+            if let ask = answer.searchAsk, ask.state == .waiting { height += 88 + lines(ask.query) * 17 }
+            for action in answer.actions.filter({ $0.state == .waiting }).prefix(2) {
+                height += 82 + lines(action.title) * 18 + action.rows.reduce(0) { $0 + lines("\($1.label): \($1.value)") * 17 }
             }
-            return 136 + Double(cards) * 96 + Double(lines) * 17
+            for proposal in answer.proposals.filter({ $0.state == .waiting }).prefix(2) { height += 82 + lines(proposal.change.line()) * 18 }
+            if answer.projects.contains(where: { $0.state == .waiting }) { height += 26 }
+            return min(height, 560)
         case .everyday:
             return 196 + (model.reminders.isEmpty ? 0 : 24) + (model.track != nil || model.musicNote != nil ? 24 : 0)
                 + (model.dashboard.tiles.isEmpty ? 0 : 36)
@@ -126,7 +132,11 @@ final class NotchWindowController {
         let rect = model.isOpen ? geometry.open(width: Self.openWidth, height: openHeight) : geometry.resting
         let frame = NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
         if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
-        // Typing in the ask box needs the panel to take the keyboard; otherwise it never does.
-        if model.showing == .everyday, !panel.isKeyWindow, model.typing { panel.makeKey() }
+        // Closed, the panel must not be left holding the keyboard: typing goes back to the app in front.
+        if !model.isOpen, panel.isKeyWindow {
+            panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
     }
 }

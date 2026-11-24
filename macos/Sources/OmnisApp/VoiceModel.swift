@@ -43,7 +43,7 @@ final class VoiceModel: ObservableObject {
     private var freshNext = false
     private var watchdog: Task<Void, Never>?
     private var lastListen = VoiceFlow.replySeconds
-    private var lastExtended = Date.distantPast
+    private var wasThinking = false
     /// The longest an answer is waited for before the conversation gives up on it.
     static let answerSeconds = 240.0
     private static let personaKey = "OMNISVoicePersona"
@@ -79,24 +79,21 @@ final class VoiceModel: ObservableObject {
         engine.onPartial = { [weak self] words in
             guard let self, self.inConversation else { return }
             self.hearing = String(words.suffix(120))
-            // Someone is speaking: do not give up on them mid-sentence.
-            self.replyTimer?.cancel()
+            // Words are being recognised: the speaker is given the full time again from here.
+            // Sound alone does not count, so a television cannot hold the conversation open.
+            if [.listening, .followUp, .confirming].contains(self.state) { self.listen(for: self.lastListen) }
         }
         engine.onLevel = { [weak self] level in
             // Outside a conversation nothing is drawn, so nothing is published.
             guard let self, self.inConversation else { return }
             // Smoothed, so the picture swells and settles rather than flickers.
             self.level = self.level * 0.6 + level * 0.4
-            // Someone is talking: they are not cut off for being slow to finish.
-            if level > 0.15, [.listening, .followUp, .confirming].contains(self.state),
-               Date().timeIntervalSince(self.lastExtended) > 1 {
-                self.lastExtended = Date()
-                self.listen(for: self.lastListen)
-            }
         }
         engine.onDeviceChange = { [weak self] in
             // Headphones in or out: listening is started again on the new microphone.
             guard let self, self.isOn else { return }
+            // An answer being read is cut short, so the conversation is not left waiting for it to finish.
+            self.run(self.flow.interrupt())
             self.engine.stop()
             Task {
                 do { try await self.engine.start() } catch is CancellationError {} catch {
@@ -215,13 +212,19 @@ final class VoiceModel: ObservableObject {
         }
         state = flow.state
         if state == .waiting || state == .off { hearing = "" }
-        watchdog?.cancel()
+        let entering = state == .thinking && !wasThinking
+        wasThinking = state == .thinking
+        if state != .thinking { watchdog?.cancel() }
         if state == .thinking {
             // The answer may already be there, or the chat may have been cleared from the window.
             Task { @MainActor [weak self] in
                 guard let self, self.flow.state == .thinking else { return }
                 self.chatChanged(self.chat.conversation)
             }
+        }
+        // The limit runs from the moment thinking began, whatever else is heard meanwhile.
+        if entering {
+            watchdog?.cancel()
             // And nothing is waited for without end.
             watchdog = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.answerSeconds * 1_000_000_000))
