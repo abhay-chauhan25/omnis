@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var backend: BackendService?
     private var claude: ClaudeService?
+    private var dashboard: DashboardWindowController!
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
     private let ledger = UsageLedger(url: OmnisPaths.usageLedger, mirror: .standard)
@@ -36,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Changing the calendar goes through the chat model, on the user's click.
         let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude)
         chat = ChatWindowController(model: model)
+        // The dashboard is the main window. A question typed there is answered in the chat window.
+        let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
+                                            openChat: { [weak self] in self?.chat.show() })
+        dashboard = DashboardWindowController(model: dashboardModel, chat: model)
 
         buildMainMenu()
         buildStatusItem()
@@ -48,12 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let query = AppEnvironment.initialQuery { model.input = query }
             print("window \(chat.windowNumber)")
             fflush(stdout)
+        } else {
+            // Opening OMNIS shows its main window.
+            dashboard.show()
         }
     }
 
     /// Clicking the Dock icon opens the chat window.
+    /// Clicking the Dock icon opens the dashboard. Control+Space is still the quick chat.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        chat.show()
+        dashboard.show()
         return false
     }
 
@@ -131,6 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chat.show()
     }
 
+    @objc private func openDashboard() {
+        dashboard.show()
+    }
+
     // MARK: Menus
 
     private func buildStatusItem() {
@@ -140,7 +153,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.toolTip = "OMNIS"
         }
         let menu = NSMenu()
-        let open = NSMenuItem(title: "Open OMNIS", action: #selector(openPopup), keyEquivalent: "")
+        let board = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: "")
+        board.target = self
+        menu.addItem(board)
+        let open = NSMenuItem(title: "Open Chat", action: #selector(openPopup), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
         menu.addItem(.separator())

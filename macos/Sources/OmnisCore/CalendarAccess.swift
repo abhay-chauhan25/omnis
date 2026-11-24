@@ -694,6 +694,9 @@ public final class EventKitCalendar: CalendarReading, CalendarWriting, @unchecke
 
     public init() {}
 
+    /// Whether the user has already allowed calendar access. Asking this never shows a prompt.
+    public static var isAllowed: Bool { EKEventStore.authorizationStatus(for: .event) == .fullAccess }
+
     private func ensureAccess() async throws {
         switch EKEventStore.authorizationStatus(for: .event) {
         case .fullAccess:

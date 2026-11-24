@@ -21,13 +21,13 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
 | Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; controls not yet seen on screen | ADR-0013, `docs/stages/claude-regular-mode.md` |
 | Project mode | Not started. Plan and approval first | — |
-| Stage 2: main window | Not started. Waits for a design conversation | — |
+| Dashboard (main window) | First version built 2026-11-23 from the approved mock; waiting for the user's look; review pending. Voice and mail not built | `docs/stages/dashboard.md` |
 
 The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-search-chat-claude.md`.
 
 ## Tests
 
-- Python: 154. Swift: 211. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 154. Swift: 219. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -39,7 +39,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
 - [ ] User's look at the Model and Effort sliders, usage reading and typed commands.
 - [ ] Remove the retired API-key lane from the code.
-- [ ] Dashboard: first mock-up shown 2026-11-23; waiting for the user's choices (direction, accent, panels, voice, borrowed ideas).
+- [ ] User's look at the dashboard on screen.
+- [ ] Voice ("Hey OMNIS"): the user will decide separately. Not built.
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
 - [ ] Icon design for the Dock and menu bar (placeholders are in use).
