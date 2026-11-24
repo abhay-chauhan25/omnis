@@ -46,6 +46,8 @@ public enum ToolOutcome: Equatable, Sendable {
     case read(content: String, note: String)
     /// A harmless action was carried out at once, such as pausing music.
     case done(content: String, note: String)
+    /// Pictures the model asked to see, with a line of text about them.
+    case images(content: String, images: [Attachment], note: String)
     /// A change for the user to confirm. Nothing has been done.
     case proposal(ActionProposal)
 }

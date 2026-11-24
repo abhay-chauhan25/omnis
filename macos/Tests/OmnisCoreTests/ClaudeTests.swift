@@ -64,7 +64,8 @@ for line in sys.stdin:
                         'Web search results for query: "x"\n\nLinks: [{"title":"Python 3.15 [final]","url":"https://python.org/a"},{"title":"","url":"https://example.com/b"},{"title":"Plain","url":"http://plain.example/c"}]\n\nMore text ] here.'}]}})
                     say("Searched.")
                 else:
-                    say("TOOL SAID: " + str(reply["updatedInput"].get("_result")))
+                    pictures = reply["updatedInput"].get("_images")
+                    say("TOOL SAID: " + str(reply["updatedInput"].get("_result")) + (f" PICTURES: {len(pictures)}" if pictures else ""))
             else:
                 say("DENIED: " + reply["message"])
     else:
@@ -451,6 +452,29 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         let allowed = try await traceAnswering(claude, sensitive, allow: true)
         #expect(music.searches.values == ["my address is 4 Elm Road"])
         #expect(allowed.text.contains("TOOL SAID: searched"))
+        claude.endSession()
+    }
+
+    @Test func photosAreHandedOverFewAtATimeAndMakeTheChatPersonal() async throws {
+        let library = StubPhotos()
+        library.items = (1...6).map { PhotoItem(key: "key\($0)", taken: nil) }
+        let claude = service(services: [PhotosTools(library: library)])
+        let personal = Collected<Bool>()
+        claude.onPersonalDataDelivered { personal.add(true) }
+
+        // Looking, then a search in the same answer: the search is held, because a photo was shown.
+        let look = #"tool: mcp__omnis__photos_search {} ;; mcp__omnis__photos_show {"photos": "p1,p2,p3"} ;; WebSearch {"query": "dentist reviews"}"#
+        let run = try await traceAnswering(claude, ClaudeRequest(text: look), allow: false)
+        #expect(run.text.contains("PICTURES: 3"))
+        #expect(run.events.contains(.serviceNote("Showed 3 photos to Claude")))
+        #expect(asked(run) && !searched(run))
+        #expect(!personal.values.isEmpty)
+
+        // One answer is shown four at most, however the requests are split up.
+        let greedy = #"tool: mcp__omnis__photos_show {"photos": "p1,p2,p3"} ;; mcp__omnis__photos_show {"photos": "p4,p5"}"#
+        let capped = try await traceAnswering(claude, ClaudeRequest(text: greedy), allow: nil)
+        #expect(capped.text.contains("PICTURES: 3") && !capped.text.contains("PICTURES: 2"))
+        #expect(capped.text.contains("more photos than one answer may be shown"))
         claude.endSession()
     }
 

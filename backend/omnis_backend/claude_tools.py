@@ -13,12 +13,14 @@ does is hand that text over. Called without it, a tool says it is unavailable.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any, TextIO
 
 from .engine import CALENDAR_READ_TOOLS, CALENDAR_WRITE_TOOLS
 
 SERVER_NAME = "omnis"
+_BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
 
 PROJECT_TOOL = {
     "name": "project_create",
@@ -64,7 +66,19 @@ SERVICE_TOOLS = [
     _tool("spotify_now_playing", "Say what Spotify is playing.", {}),
     _tool("spotify_control", "Control Spotify playback at once.", {"action": "One of: play, pause, toggle, next, previous."}),
     _tool("spotify_search", "Open Spotify showing search results for something.", {"query": "What to search for."}),
+    _tool("photos_search", "List photos in the user's library, newest first, by when they were taken. Each has an id like p3. "
+          "This does not show what is in them.",
+          {"from": "Earliest day, as YYYY-MM-DD. Leave out for no limit.", "to": "Latest day, as YYYY-MM-DD. Leave out for no limit.",
+           "album": "Only this album, by its name. Leave out for the whole library.",
+           "favourites": "\"true\" for favourites only.", "screenshots": "\"true\" for screenshots only."}, []),
+    _tool("photos_albums", "List the names of the user's photo albums.", {}),
+    _tool("photos_show", "Look at up to four photos. Reading only.",
+          {"photos": "The ids from photos_search, separated by commas, like p1,p4."}),
 ]
+
+# Pictures the app hands over with a result: at most this many, each at most this long as base64 text.
+MAX_IMAGES = 4
+MAX_IMAGE_CHARS = 6_000_000
 
 
 def tools() -> list[dict[str, Any]]:
@@ -77,6 +91,18 @@ def tools() -> list[dict[str, Any]]:
         schema["additionalProperties"] = True
         listed.append({"name": function["name"], "description": function["description"], "inputSchema": schema})
     return listed + [PROJECT_TOOL] + SERVICE_TOOLS
+
+
+def _pictures(raw: Any) -> list[dict[str, Any]]:
+    """Pictures the app chose to show the model, as JPEGs in base64. Anything
+    that is not plain base64 of a sensible size is left out."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:MAX_IMAGES]:
+        if isinstance(item, str) and 0 < len(item) <= MAX_IMAGE_CHARS and len(item) % 4 == 0 and _BASE64.fullmatch(item):
+            out.append({"type": "image", "data": item, "mimeType": "image/jpeg"})
+    return out
 
 
 def handle(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -98,7 +124,10 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
         text = arguments.get("_result")
         known = params.get("name") in {tool["name"] for tool in tools()}
         ok = known and isinstance(text, str) and bool(text)
-        result = {"content": [{"type": "text", "text": text if ok else UNAVAILABLE}], "isError": not ok}
+        content: list[dict[str, Any]] = [{"type": "text", "text": text if ok else UNAVAILABLE}]
+        if ok:
+            content += _pictures(arguments.get("_images"))
+        result = {"content": content, "isError": not ok}
     elif method == "ping":
         result = {}
     else:

@@ -49,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Other services Claude can use through OMNIS. Each is offered only if it can work on this Mac.
         var services: [any AssistantTools] = [RemindersTools(store: EventKitReminders())]
+        // Photos are read through Apple's own interface; macOS asks the first time one is wanted.
+        services.append(PhotosTools(library: PhotoKitLibrary()))
         if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
         if FileManager.default.fileExists(atPath: "/Applications/Spotify.app") { services.append(SpotifyTools()) }
         claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }

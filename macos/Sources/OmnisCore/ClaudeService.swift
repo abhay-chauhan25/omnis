@@ -18,6 +18,8 @@ public struct ClaudeConfig: Sendable {
     /// The most web searches and calendar lookups in one answer.
     public var maxSearches = 4
     public var maxCalendarCalls = 8
+    /// The most pictures from the user's library that one answer may be shown.
+    public var maxPictures = 4
     /// What the session is for. The assistant answers questions and uses the
     /// calendar tools. The advisor reads one project's files and nothing else.
     public enum Profile: Equatable, Sendable {
@@ -63,7 +65,7 @@ public struct ClaudeConfig: Sendable {
     }
 
     /// The services whose tools OMNIS's own tool list may contain.
-    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "mail", "messages", "browser"]
+    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "photos", "mail", "messages", "browser"]
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -211,6 +213,7 @@ public final class ClaudeService: @unchecked Sendable {
         let started: Date
         var searches = 0
         var calendarCalls = 0
+        var pictures = 0
         var calendarReads = 0
         var sources: [SearchResult] = []
         /// True once some text has been shown and a tool has run since, so the next text starts a new paragraph.
@@ -803,6 +806,19 @@ public final class ClaudeService: @unchecked Sendable {
             case .success(.done(let content, let note)):
                 active?.continuation.yield(.serviceNote(note))
                 answer(content)
+            case .success(.images(let content, let images, let note)):
+                let data = images.compactMap(\.imageData)
+                guard !data.isEmpty, (active?.pictures ?? 0) + data.count <= config.maxPictures else {
+                    answer("That is more photos than one answer may be shown (\(config.maxPictures)). Answer from the ones you have seen, "
+                        + "or tell the user they can ask again for the others.")
+                    return
+                }
+                active?.pictures += data.count
+                // A picture can hold anything, so the chat counts as holding personal information from here.
+                personalDataHandler?()
+                active?.sensitive = true
+                active?.continuation.yield(.serviceNote(note))
+                allow(id, input: ["_result": content, "_images": data.map { $0.base64EncodedString() }])
             case .success(.proposal(let proposal)):
                 active?.continuation.yield(.actionProposed(proposal))
                 answer("A preview of this is now shown to the user with a button to confirm. It has NOT been done, and you "

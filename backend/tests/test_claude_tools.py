@@ -18,7 +18,8 @@ class ClaudeToolsTests(unittest.TestCase):
             "calendar_create_event", "calendar_update_event", "calendar_delete_event",
             "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar", "project_create",
             "reminders_list", "reminders_add", "reminders_complete", "reminders_delete", "github_overview",
-            "spotify_now_playing", "spotify_control", "spotify_search"])
+            "spotify_now_playing", "spotify_control", "spotify_search",
+            "photos_search", "photos_albums", "photos_show"])
         for tool in tools:
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertTrue(tool["inputSchema"]["additionalProperties"])
@@ -27,6 +28,23 @@ class ClaudeToolsTests(unittest.TestCase):
     def test_a_call_only_hands_back_the_text_the_app_supplied(self):
         reply = self.call("tools/call", {"name": "calendar_events", "arguments": {"_result": "[e1] 10:00 Dentist"}})
         self.assertEqual(reply["result"], {"content": [{"type": "text", "text": "[e1] 10:00 Dentist"}], "isError": False})
+
+    def test_pictures_the_app_supplied_are_handed_over_and_anything_else_is_left_out(self):
+        good = "aGVsbG8="
+        reply = self.call("tools/call", {"name": "photos_show", "arguments": {
+            "_result": "Two photos.", "_images": [good, "not base64!", 7, "abc", "", good]}})["result"]
+        self.assertFalse(reply["isError"])
+        self.assertEqual(reply["content"], [{"type": "text", "text": "Two photos."},
+                                            {"type": "image", "data": good, "mimeType": "image/jpeg"}])
+        # Only the first four are looked at, and a picture is never sent without the app's text.
+        many = self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": [good] * 9}})["result"]
+        self.assertEqual(len(many["content"]), 5)
+        alone = self.call("tools/call", {"name": "photos_show", "arguments": {"_images": [good]}})["result"]
+        self.assertEqual(alone["content"], [{"type": "text", "text": claude_tools.UNAVAILABLE}])
+        for odd in ("text", {"a": 1}, None):
+            self.assertEqual(len(self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": odd}})["result"]["content"]), 1)
+        big = "A" * (claude_tools.MAX_IMAGE_CHARS + 4)
+        self.assertEqual(len(self.call("tools/call", {"name": "photos_show", "arguments": {"_result": "x", "_images": [big]}})["result"]["content"]), 1)
 
     def test_without_the_apps_text_or_for_an_unknown_tool_nothing_happens(self):
         for params in ({"name": "calendar_delete_calendar", "arguments": {"name": "Work"}},
@@ -50,7 +68,7 @@ class ClaudeToolsTests(unittest.TestCase):
                              text=True, timeout=20)
         replies = [json.loads(line) for line in out.stdout.splitlines()]
         self.assertEqual(len(replies), 1)
-        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 18))
+        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 21))
         self.assertEqual(out.stderr, "")
 
     def test_serve_reads_until_the_input_ends(self):
