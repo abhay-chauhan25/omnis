@@ -22,6 +22,12 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var focus = FocusTimer()
     @Published private(set) var focusDone = false
     @Published private(set) var captureNotice: String?
+    /// The user's Claude Code usage, from the summary Claude Code keeps. Nil if there is none.
+    @Published private(set) var claudeStats: ClaudeStats?
+    /// The span of time the usage statistics show. Remembered between runs.
+    @Published var statsRange: StatsRange = StatsRange(rawValue: UserDefaults.standard.string(forKey: "OMNISStatsRange") ?? "") ?? .all {
+        didSet { UserDefaults.standard.set(statsRange.rawValue, forKey: "OMNISStatsRange") }
+    }
     @Published var ask = ""
     @Published var capture = ""
 
@@ -87,7 +93,8 @@ final class DashboardModel: ObservableObject {
                     tiles: DashboardData.tiles(from: records, entries: entries),
                     recentProjects: DashboardData.tiles(from: records, entries: projectEntries, limit: 5),
                     projectEntries: projectEntries,
-                    sessions: SessionScanner.scan(excluding: [ownSession])
+                    sessions: SessionScanner.scan(excluding: [ownSession]),
+                    stats: ClaudeStats.load()
                 )
             }.value
             guard let self else { return }
@@ -95,6 +102,7 @@ final class DashboardModel: ObservableObject {
             self.history = loaded.history
             self.tiles = loaded.tiles
             self.sessions = loaded.sessions
+            self.claudeStats = loaded.stats
             // Projects with a session running come first, then the ones opened most.
             var shown = loaded.projectEntries.filter { entry in
                 loaded.sessions.contains { $0.folder == entry.url.resolvingSymlinksInPath().path }
@@ -111,7 +119,10 @@ final class DashboardModel: ObservableObject {
         let recentProjects: [RegistryEntry]
         let projectEntries: [RegistryEntry]
         let sessions: [SessionScanner.Session]
+        let stats: ClaudeStats?
     }
+
+    var statsSummary: ClaudeStats.Summary? { claudeStats?.summary(statsRange, now: now) }
 
     /// Reads today and tomorrow from the calendar, but only once the user has
     /// allowed calendar access: opening the dashboard never shows a prompt.

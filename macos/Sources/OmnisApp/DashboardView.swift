@@ -267,31 +267,147 @@ struct DashboardView: View {
             if live.fiveHour == nil && live.sevenDay == nil {
                 Text("Shown after the first question to Claude.").font(.system(size: 12)).foregroundStyle(Ink.faint)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("ALL QUESTIONS, LAST 30 DAYS").font(.mono(10)).foregroundStyle(Ink.faint)
-                    Spacer()
-                    if let hour = model.history.busiestHour {
-                        Text(String(format: "busiest around %02d:00", hour)).font(.mono(10)).foregroundStyle(Ink.faint)
-                    }
-                }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 15), spacing: 4) {
-                    ForEach(Array(model.history.levels.enumerated()), id: \.offset) { _, level in
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(level == 0 ? Color.white.opacity(0.06) : Ink.gold.opacity(0.1 + Double(level) * 0.225))
-                            .aspectRatio(1, contentMode: .fit)
-                    }
-                }
-                .accessibilityElement()
-                .accessibilityLabel("\(model.history.questions) questions in the last thirty days")
-                HStack {
-                    Text("\(model.history.questions) questions \u{00B7} \(DashboardData.compact(model.history.tokens)) tokens")
-                    Spacer()
-                    Text("today \(DashboardData.compact(model.history.tokensToday))")
-                }
-                .font(.mono(10)).foregroundStyle(Ink.faint)
+            Rectangle().fill(Ink.line).frame(height: 1)
+            statistics
+        }
+    }
+
+    /// The user's Claude Code usage over a chosen span: a calendar of busy
+    /// days, then totals and a few facts.
+    @ViewBuilder private var statistics: some View {
+        HStack(spacing: 6) {
+            ForEach(StatsRange.allCases) { range in
+                Button(range.title) { model.statsRange = range }
+                    .buttonStyle(.plain)
+                    .font(.mono(11, weight: model.statsRange == range ? .semibold : .regular))
+                    .foregroundStyle(model.statsRange == range ? Ink.gold : Ink.muted)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(model.statsRange == range ? Ink.gold.opacity(0.12) : .clear))
+                    .accessibilityAddTraits(model.statsRange == range ? .isSelected : [])
             }
         }
+        if let summary = model.statsSummary {
+            heatmap(summary)
+            VStack(alignment: .leading, spacing: 5) {
+                fact("Favourite model", summary.favourite ?? "\u{2013}", highlight: true)
+                fact("Total tokens", DashboardData.compactLarge(model.statsRange == .all ? (summary.breakdown?.all ?? summary.tokens) : summary.tokens),
+                     highlight: true)
+                if summary.models.count > 1 {
+                    fact("Models", summary.models.map { "\($0.name) \($0.percent)%" }.joined(separator: " \u{00B7} "))
+                }
+                fact("Sessions", "\(summary.sessions)")
+                fact("Messages", DashboardData.compact(summary.messages))
+                fact("Active days", "\(summary.activeDays) of \(summary.totalDays)")
+                if let busiest = summary.mostActive {
+                    fact("Most active day", "\(Self.dayName(busiest.date)) \u{00B7} \(DashboardData.compact(busiest.messages)) messages")
+                }
+                fact("Longest streak", summary.longestStreak == 1 ? "1 day" : "\(summary.longestStreak) days")
+                fact("Current streak", summary.currentStreak == 1 ? "1 day" : "\(summary.currentStreak) days")
+                if let longest = summary.longestSession { fact("Longest session", longest) }
+                if let hour = summary.busiestHour { fact("Busiest hour", String(format: "%02d:00", hour)) }
+                if let parts = summary.breakdown {
+                    Text("In \(DashboardData.compactLarge(parts.input)) \u{00B7} out \(DashboardData.compactLarge(parts.output)) \u{00B7} cache read \(DashboardData.compactLarge(parts.cacheRead)) \u{00B7} cache write \(DashboardData.compactLarge(parts.cacheWrite))")
+                        .font(.mono(10)).foregroundStyle(Ink.faint).fixedSize(horizontal: false, vertical: true)
+                }
+                if let novels = summary.novelsWritten {
+                    Text("Claude has written you about \(novels) novels' worth of text.")
+                        .font(.system(size: 12)).foregroundStyle(Ink.data).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            Text("Claude Code has no usage statistics on this Mac yet.").font(.system(size: 12)).foregroundStyle(Ink.faint)
+        }
+        Text("Through OMNIS, last 30 days: \(model.history.questions) questions \u{00B7} \(DashboardData.compact(model.history.tokens)) tokens \u{00B7} today \(DashboardData.compact(model.history.tokensToday))")
+            .font(.mono(10)).foregroundStyle(Ink.faint).fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Busy days as squares. Seven days are shown in a row with their names;
+    /// longer spans as a calendar on its side, a column per week from Monday.
+    @ViewBuilder private func heatmap(_ summary: ClaudeStats.Summary) -> some View {
+        if model.statsRange == .week {
+            HStack(spacing: 6) {
+                ForEach(summary.cells) { cell in
+                    VStack(spacing: 4) {
+                        square(cell.level).frame(height: 26)
+                        Text(Self.weekday(cell.date)).font(.mono(9)).foregroundStyle(Ink.faint)
+                    }
+                }
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Activity on each of the last seven days")
+        } else {
+            let weeks = ClaudeStats.weeks(summary.cells)
+            let labels = ClaudeStats.monthLabels(weeks)
+            GeometryReader { area in
+                let gap: CGFloat = weeks.count > 30 ? 1.5 : 3
+                let side = max(2, min(14, (area.size.width - 26 - gap * CGFloat(weeks.count - 1)) / CGFloat(max(weeks.count, 1))))
+                HStack(alignment: .top, spacing: 4) {
+                    VStack(alignment: .leading, spacing: gap) {
+                        Text(" ").font(.mono(8)).frame(height: 10)
+                        ForEach(0..<7, id: \.self) { row in
+                            Text(row == 0 ? "Mon" : row == 2 ? "Wed" : row == 4 ? "Fri" : "").font(.mono(8)).foregroundStyle(Ink.faint)
+                                .frame(width: 22, height: side, alignment: .leading)
+                        }
+                    }
+                    HStack(alignment: .top, spacing: gap) {
+                        ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
+                            VStack(spacing: gap) {
+                                Text(labels[index]).font(.mono(8)).foregroundStyle(Ink.faint).fixedSize()
+                                    .frame(width: side, height: 10, alignment: .leading)
+                                ForEach(0..<7, id: \.self) { row in
+                                    if let cell = week[row] { square(cell.level).frame(width: side, height: side) }
+                                    else { Color.clear.frame(width: side, height: side) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(height: heatmapHeight(weeks: ClaudeStats.weeks(summary.cells).count))
+            .accessibilityElement()
+            .accessibilityLabel("Activity by day: \(summary.activeDays) active days out of \(summary.totalDays)")
+        }
+        HStack(spacing: 4) {
+            Text("Less").font(.mono(9)).foregroundStyle(Ink.faint)
+            ForEach(1...4, id: \.self) { level in square(level).frame(width: 9, height: 9) }
+            Text("More").font(.mono(9)).foregroundStyle(Ink.faint)
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// Fewer weeks get bigger squares, so the map always fills the panel's width.
+    private func heatmapHeight(weeks: Int) -> CGFloat {
+        let gap: CGFloat = weeks > 30 ? 1.5 : 3
+        let side = max(2, min(14, (290 - 26 - gap * CGFloat(max(weeks - 1, 0))) / CGFloat(max(weeks, 1))))
+        return 10 + 7 * side + 7 * gap
+    }
+
+    private func square(_ level: Int) -> some View {
+        RoundedRectangle(cornerRadius: 2.5).fill(level == 0 ? Color.white.opacity(0.06) : Ink.gold.opacity(0.1 + Double(level) * 0.225))
+    }
+
+    private func fact(_ name: String, _ value: String, highlight: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(name).font(.system(size: 12)).foregroundStyle(Ink.muted)
+            Spacer(minLength: 10)
+            Text(value).font(.mono(12, weight: highlight ? .semibold : .regular)).foregroundStyle(highlight ? Ink.gold : Ink.text)
+                .multilineTextAlignment(.trailing)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private static func weekday(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "EEEEE"
+        return formatter.string(from: date)
+    }
+
+    private static func dayName(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "d MMM"
+        return formatter.string(from: date)
     }
 
     private func meter(_ name: String, used: Double?, stop: Double, resets: Date?) -> some View {

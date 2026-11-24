@@ -13,7 +13,7 @@ Design mock: https://claude.ai/artifact/UhokCmEDyfwy1vFDrJLMAL (private to the u
 | Ask | Sends the question to the chat window, where the answer appears. |
 | Launch | The registry, ordered by what was opened most in the last 30 days. |
 | Claude usage | The five-hour and weekly figures Claude Code reports, with the points where ordinary chats stop. |
-| Last 30 days | Questions per day, tokens and the busiest hour, counted from OMNIS's own activity record. |
+| Usage statistics | For all time, the last 7 days or the last 30: a calendar of busy days, total tokens, favourite model, sessions, streaks and the longest session. Read from the summary Claude Code keeps for its own statistics screen (`~/.claude/stats-cache.json`), which holds totals only and no conversation text. It covers all Claude Code use on this Mac, not only OMNIS. A line below it gives OMNIS's own 30-day count from its activity record. |
 | System | What is answering, whether a Claude session is open, web search, calendar access, running Claude Code sessions. |
 | Recent activity | The activity record, in plain words. |
 | Focus | A 25-minute countdown. |
@@ -50,9 +50,11 @@ Independent review: pass with warnings. Privacy, permissions and the absence of 
 
 ## Tests
 
-- Swift 219, Python 154, all passing. The window and its drawing have no automated tests.
+- Swift 224, Python 154, all passing. The window and its drawing have no automated tests.
 
 ## Limits and things not verified
+
+- The usage statistics depend on a file whose layout belongs to Claude Code and may change. It is as fresh as the last time Claude Code updated it, which can lag behind today. If it cannot be read, the panel says there are no statistics.
 
 - How it looks and feels on screen, at different window sizes, and the cost of the animation.
 - The session scanner on the user's machine (it is tested against sample output).
