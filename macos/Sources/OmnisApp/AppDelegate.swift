@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dashboard: DashboardWindowController!
     private var projectMode: ProjectModeModel!
     private var voice: VoiceModel!
+    private var notchModel: NotchModel!
+    private var notch: NotchWindowController?
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
 
@@ -64,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // Other services Claude can use through OMNIS. Each is offered only if it can work on this Mac.
-        var services: [any AssistantTools] = [RemindersTools(store: EventKitReminders())]
+        let reminderStore = EventKitReminders()
+        var services: [any AssistantTools] = [RemindersTools(store: reminderStore)]
         // Photos are read through Apple's own interface; macOS asks the first time one is wanted.
         services.append(PhotosTools(library: PhotoKitLibrary()))
         // A message is only ever prepared; the user's click on the preview sends it.
@@ -80,8 +83,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
                                             openChat: { [weak self] in self?.chat.show() })
         projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
-        voice = VoiceModel(chat: model, audit: audit, showChat: { [weak self] in self?.chat.show() })
+        // Something that needs the user's eyes during a spoken conversation is shown in
+        // the notch panel when there is one, and in the chat window otherwise.
+        voice = VoiceModel(chat: model, audit: audit, showChat: { [weak self] in
+            guard let self else { return }
+            if let notch = self.notch, notch.isAvailable, !self.dashboard.isVisible { self.notchModel.reveal() } else { self.chat.show() }
+        })
         dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode, voice: voice)
+        // The panel at the notch: voice away from the dashboard, and a few everyday things on hover.
+        notchModel = NotchModel(dashboard: dashboardModel, chat: model, voice: voice,
+                                music: services.first { $0.service == "spotify" }, reminders: reminderStore, audit: audit)
+        notch = NotchWindowController(model: notchModel)
         // "Continue VoyagerAI in project mode", from either window, lands here.
         model.openProjectMode = { [weak self] entry, resume in
             self?.dashboard.show()

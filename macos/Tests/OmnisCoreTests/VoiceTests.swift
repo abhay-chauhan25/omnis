@@ -236,3 +236,53 @@ import Testing
         #expect(failing.failed("Claude's usage limit has been reached.") == [.speak("Sorry, that did not work. Claude's usage limit has been reached. Anything else?")])
     }
 }
+
+@Suite struct NotchTests {
+    func row(_ title: String, _ time: String, _ start: String, next: Bool = false) -> DashboardData.AgendaRow {
+        DashboardData.AgendaRow(id: title, time: time, title: title, calendar: "Home", start: Zone.date(start), isNext: next)
+    }
+
+    @Test func theNextEventSaysHowLongUntilIt() {
+        let now = Zone.date("2026-11-24T09:20:00Z")
+        let agenda = [row("Standup", "09:00", "2026-11-24T09:00:00Z"), row("Dentist", "10:00", "2026-11-24T10:00:00Z", next: true)]
+        #expect(NotchData.nextEvent(in: agenda, now: now) == "Dentist \u{00B7} 10:00 (in 40 min)")
+        #expect(NotchData.nextEvent(in: [row("Lunch", "13:20", "2026-11-24T13:20:00Z", next: true)], now: now) == "Lunch \u{00B7} 13:20 (in 4 h)")
+        #expect(NotchData.nextEvent(in: [row("Call", "09:20", "2026-11-24T09:20:00Z", next: true)], now: now) == "Call \u{00B7} 09:20 (now)")
+        #expect(NotchData.nextEvent(in: [row("Gig", "21:30", "2026-11-24T21:30:00Z", next: true)], now: now) == "Gig \u{00B7} 21:30")
+        #expect(NotchData.nextEvent(in: [row("Standup", "09:00", "2026-11-24T09:00:00Z")], now: now) == nil)
+        #expect(NotchData.nextEvent(in: [], now: now) == nil)
+    }
+
+    @Test func remindersDueTodayAndOverdueAreListedAndLaterOnesAreNot() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Zone.date("2026-11-24T09:00:00Z")
+        let items = [ReminderItem(key: "1", title: "Tomorrow's thing", due: Zone.date("2026-11-25T09:00:00Z")),
+                     ReminderItem(key: "2", title: "Pay rent", due: Zone.date("2026-11-24T18:00:00Z")),
+                     ReminderItem(key: "3", title: "Overdue form", due: Zone.date("2026-11-20T09:00:00Z")),
+                     ReminderItem(key: "4", title: "Someday")]
+        #expect(NotchData.dueToday(items, now: now, calendar: calendar) == ["Overdue form", "Pay rent"])
+        #expect(NotchData.dueToday(items, now: now, calendar: calendar, limit: 1) == ["Overdue form"])
+    }
+
+    @Test func whatIsPlayingIsReadFromSpotifysLine() {
+        #expect(NotchData.track(from: "Playing: Clair de Lune by Debussy.")?.title == "Clair de Lune \u{2014} Debussy")
+        #expect(NotchData.track(from: "Playing: Clair de Lune by Debussy.")?.playing == true)
+        #expect(NotchData.track(from: "Paused on: Song by Band.")?.playing == false)
+        #expect(NotchData.track(from: "Spotify is not open.") == nil && NotchData.track(from: "Nothing is playing in Spotify.") == nil)
+    }
+
+    @Test func thePanelHangsFromTheTopCentredOnTheNotch() {
+        let screen = NotchGeometry.Rect(x: 0, y: 0, width: 1512, height: 982)
+        let geometry = NotchGeometry(screen: screen, notchWidth: 185, notchHeight: 32)
+        let resting = geometry.resting
+        #expect(resting.width == 229 && resting.height == 32 && resting.y == 950)
+        #expect(resting.x + resting.width / 2 == 756)
+        let open = geometry.open(width: 460, height: 300)
+        #expect(open.width == 460 && open.height == 332 && open.y + open.height == 982 && open.x + open.width / 2 == 756)
+        // A screen with no notch, and one too small for the panel.
+        let plain = NotchGeometry(screen: NotchGeometry.Rect(x: 100, y: 50, width: 400, height: 300), notchWidth: 0, notchHeight: 0)
+        #expect(plain.resting == NotchGeometry.Rect(x: 188, y: 326, width: 224, height: 24))
+        #expect(plain.open(width: 460, height: 600).width == 384 && plain.open(width: 460, height: 600).height == 260)
+    }
+}

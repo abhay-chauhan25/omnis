@@ -26,6 +26,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Photos, reading only | Built 2026-11-24; tested with a stand-in and once live with a made-up picture; not yet run against the real library | `docs/stages/photos.md` |
 | Messages | In progress 2026-11-24. Sending built and tested with stand-ins (Contacts lookup, preview to confirm); no real message sent yet. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Security-reviewed and hardened. **Full Disk Access must not be given yet:** the signing key has to be protected first, which is waiting on the user | ADR-0015, `docs/stages/messages.md` |
 | Voice ("Hey OMNIS") | Built 2026-11-24. The conversation rules are tested; the microphone, recogniser and voice have not been run for real. Waiting for the user's first conversation. The notch panel is not designed yet | ADR-0016, `docs/stages/voice.md` |
+| Notch panel | Built 2026-11-24 from the approved design (voice view, everyday view, glow). Placement and content rules tested; never seen on screen | `docs/stages/notch.md` |
 | Services: mail (school Outlook), browser | Not started. Probed 2026-11-24: Outlook answers scripts but shows them no accounts and no messages, so reading through the Outlook app is not possible as it is set up. Open routes: the account in Apple Mail, Outlook's older design if the school allows it, or Microsoft's online service with the school's consent | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
 | Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
@@ -64,7 +65,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 296. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 300. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -81,7 +82,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 - [x] User's look at the dashboard on screen.
 - [x] User's first run of project mode: open a terminal session, try the advisor, set up one real project.
 - [ ] Voice: the user's first real conversation, a better voice downloaded, power use measured.
-- [ ] Notch panel: design to be agreed, then built.
+- [ ] Notch panel: the user's first look (appearance, hover, full-screen apps, menu-bar items beside the notch).
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
 - [ ] The exact Graphify repo or link (needed for the memory stage).
@@ -147,7 +148,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Next step
 
-Voice is built and waiting for the user's first real conversation. The notch panel (voice picture, confirmations, and everyday information) is proposed and waiting on the user's choice of design.
+Voice is built and waiting for the user's first real conversation. The notch panel is built and waiting for the user's first look: nobody has seen it on screen.
 
 Also waiting on the user: running `macos/scripts/protect-signing-key.sh`; trying a real send; whether the school account connects in Apple Mail; hardening OMNIS itself.
 

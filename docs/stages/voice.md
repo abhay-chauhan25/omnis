@@ -41,7 +41,7 @@ Independent review, by reading the code: not fit for a first live use as first b
 | Plugging headphones in or out stopped the listening without saying so | Fixed. Listening starts again on the new microphone. |
 | "Other talk is thrown away at once" was not true in the seconds after OMNIS asks something | The wording was corrected. In those seconds whatever is said is taken as the reply and goes to Claude. |
 | With several previews in one answer only the first is read out | Left as is. A yes confirms only the one that was read. |
-| Esc stops an answer only while the dashboard is in front | Left for the notch panel. |
+| Esc stops an answer only while the dashboard is in front | The notch panel has a Stop button; there is still no key for it when another app is in front. |
 | The personality is not applied off the grid | Left as is. |
 
 ## Tests
@@ -56,5 +56,5 @@ Independent review, by reading the code: not fit for a first live use as first b
 - Only basic voices are installed. A better one is a free download in System Settings (Accessibility, Spoken Content, System Voice, Manage Voices); OMNIS picks the best English female voice it finds. It cannot download one itself.
 - English only.
 - A spoken yes cannot tell your voice from anyone else's.
-- Away from the dashboard there is sound but no picture yet. The notch panel is not built.
+- Away from the dashboard the conversation is shown in the notch panel (`notch.md`), which has not been seen on screen.
 - Off the grid, voice works but the personality is not applied.

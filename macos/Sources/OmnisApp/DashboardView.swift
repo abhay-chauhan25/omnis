@@ -657,7 +657,7 @@ private struct PillButton: ButtonStyle {
 /// The core: a slowly turning sphere of golden points whose surface ripples.
 /// It swells and flares while OMNIS is answering. It is drawn only while the
 /// dashboard is on screen.
-private struct CoreView: View, Animatable {
+struct CoreView: View, Animatable {
     var level: Double
     var running: Bool
 
