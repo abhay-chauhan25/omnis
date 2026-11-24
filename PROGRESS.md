@@ -27,7 +27,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Tests
 
-- Python: 154. Swift: 239. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 154. Swift: 240. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items

@@ -10,6 +10,13 @@
 4. **Advisor.** A side chat that can read the project's files and answer questions. "Put in terminal" places its suggested prompt in the terminal's input for the user to read and send.
 5. **Following along.** The latest steps and task list of the project's most recent session, and the files git reports as changed. The advisor is given the same summary with each question.
 
+## Getting into project mode
+
+- **A project you already have:** type "continue VoyagerAI in project mode" (or "open voyager in project mode") in the chat or the dashboard's ask bar; or click "Work on it" on the project in the dashboard's project bar; or switch to Project and pick it from the menu. "Continue" or "resume" picks up its last session if none is open; otherwise the view offers New session, Resume the last one and From a brief.
+- **A new project:** ask OMNIS to set it up, confirm the card, then click "Open in Project Mode" on the finished card.
+
+The typed form is understood by rule (`ProjectModeRequest`), with no model: the text must say "project mode" and name a project or its alias.
+
 ## How it works
 
 - `OmnisCore/ProjectSetup.swift`: `ProjectPlan` (checked name, folder must not exist, stated visibility), `ProjectSetup.perform` (the fixed steps, each a program with arguments, never a shell).
@@ -26,7 +33,7 @@
 
 ## Tests
 
-- Swift 239, Python 154, all passing. Covered: plan checks, the setup steps and their order, stopping on failure, the session options (a brief cannot become an option), the safe list, reading session files, what the advisor may read, and the confirm-once rule.
+- Swift 240, Python 154, all passing. Covered: plan checks, the setup steps and their order, stopping on failure, the session options (a brief cannot become an option), the safe list, reading session files, what the advisor may read, and the confirm-once rule.
 - Live (`OMNIS_LIVE_TESTS=1 swift test --filter liveAdvisor`): the advisor read a file in a test project, refused a file outside it, refused `.env` (after a first run in which it read one, which led to the fix), did not reveal the secret when asked to search for it, and changed nothing.
 - Checked by hand with the real program: with the session options, an agent edited and created files in its folder and was refused a read outside it.
 

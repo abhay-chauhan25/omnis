@@ -209,7 +209,8 @@ final class DashboardModel: ObservableObject {
         guard !text.isEmpty, !chat.isAnswering else { return }
         ask = ""
         // A clear request to open something is launched at once, with no chat window needed.
-        if LaunchSuggestion.suggest(for: text, registry: Registry(entries: chat.registryEntries, editor: RegistryConfig.standard.editor)).preselect
+        if ProjectModeRequest.parse(text, registry: chat.currentRegistry) != nil
+            || LaunchSuggestion.suggest(for: text, registry: chat.currentRegistry).preselect
             || SlashCommand.parse(text) != nil {
             chat.askFromDashboard(text)
             refreshSoon()

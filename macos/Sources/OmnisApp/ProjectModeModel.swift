@@ -93,6 +93,16 @@ final class ProjectModeModel: ObservableObject {
         }
     }
 
+    /// Switches to project mode for one project. With `resume`, and if no
+    /// session is open for it yet, its last session is picked up.
+    func open(_ project: RegistryEntry, resume: Bool) {
+        isActive = true
+        reloadProjects()
+        guard let match = projects.first(where: { $0.id == project.id }) else { return }
+        select(match)
+        if resume, visibleTabs.isEmpty { openTerminal(resume: true) }
+    }
+
     func select(_ project: RegistryEntry?) {
         guard project != selected else { return }
         selected = project

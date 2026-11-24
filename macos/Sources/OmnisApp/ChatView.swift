@@ -101,7 +101,7 @@ struct ChatView: View {
                     ForEach(model.conversation.messages) { message in
                         MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline,
                                     answerLocally: model.answerLocally, confirmProject: model.confirmProject,
-                                    declineProject: model.declineProject)
+                                    declineProject: model.declineProject, openInProjectMode: model.openInProjectMode)
                     }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -290,6 +290,7 @@ private struct MessageView: View {
     let answerLocally: (UUID) -> Void
     let confirmProject: (UUID) -> Void
     let declineProject: (UUID) -> Void
+    let openInProjectMode: (UUID) -> Void
 
     var body: some View {
         switch message.role {
@@ -336,7 +337,8 @@ private struct MessageView: View {
                     .help("Use the model on this Mac for this question and the rest of this chat.")
             }
             ForEach(message.projects) { proposal in
-                ProjectCard(proposal: proposal, confirm: { confirmProject(proposal.id) }, decline: { declineProject(proposal.id) })
+                ProjectCard(proposal: proposal, confirm: { confirmProject(proposal.id) }, decline: { declineProject(proposal.id) },
+                            openInProjectMode: { openInProjectMode(proposal.id) })
             }
             ForEach(message.proposals) { proposal in
                 EventCard(proposal: proposal, confirm: { confirm(proposal.id) }, decline: { decline(proposal.id) })
@@ -432,6 +434,7 @@ private struct ProjectCard: View {
     let proposal: ProjectProposal
     let confirm: () -> Void
     let decline: () -> Void
+    let openInProjectMode: () -> Void
 
     private var isLive: Bool { proposal.state == .waiting || proposal.state == .saving }
 
@@ -485,8 +488,12 @@ private struct ProjectCard: View {
                 Text(proposal.progress ?? "Working").font(.system(size: 12)).foregroundStyle(.secondary)
             }
         case .done(let result):
-            Label(result, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Label(result, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open in Project Mode", action: openInProjectMode).controlSize(.small)
+                    .help("Shows this project in the dashboard's Project view, ready for a Claude Code session.")
+            }
         case .declined:
             Text("Not created").font(.system(size: 12)).foregroundStyle(.secondary)
         case .replaced:

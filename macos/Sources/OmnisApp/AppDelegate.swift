@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                             openChat: { [weak self] in self?.chat.show() })
         projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
         dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode)
+        // "Continue VoyagerAI in project mode", from either window, lands here.
+        model.openProjectMode = { [weak self] entry, resume in
+            self?.dashboard.show()
+            self?.projectMode.open(entry, resume: resume)
+        }
 
         buildMainMenu()
         buildStatusItem()

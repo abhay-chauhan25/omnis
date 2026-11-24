@@ -46,6 +46,28 @@ final class ChatModel: ObservableObject {
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
     static let idleChatSeconds: TimeInterval = 25 * 60
+    /// Opens a project in project mode. Set by the app once the dashboard exists.
+    var openProjectMode: ((RegistryEntry, _ resume: Bool) -> Void)?
+
+    /// Handles "continue VoyagerAI in project mode" and the like. True if it did.
+    private func openedProjectMode(for text: String) -> Bool {
+        guard let openProjectMode, let request = ProjectModeRequest.parse(text, registry: registry) else { return false }
+        openProjectMode(request.project, request.resume)
+        audit.record(action: "project_mode", target: request.project.name, outcome: "ok", detail: request.resume ? "resume" : "open")
+        show(notice: "Opened \(request.project.name) in project mode", seconds: 3)
+        return true
+    }
+
+    /// Opens the project a finished set-up created, in project mode.
+    func openInProjectMode(_ proposalID: UUID) {
+        guard let plan = conversation.project(proposalID)?.plan else { return }
+        reloadRegistry()
+        guard let entry = registry.entries.first(where: { $0.kind == .project && $0.url.standardizedFileURL == plan.folder.standardizedFileURL }) else {
+            show(notice: "\(plan.name) is not in your projects folder any more.", seconds: 5)
+            return
+        }
+        openProjectMode?(entry, false)
+    }
     private static let usageKey = "OMNISClaudeUsage"
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
@@ -138,6 +160,7 @@ final class ChatModel: ObservableObject {
 
     /// Everything that can be launched, for the dashboard's tiles.
     var registryEntries: [RegistryEntry] { registry.entries }
+    var currentRegistry: Registry { registry }
 
     /// A question typed on the dashboard. It is handled like one typed here:
     /// a clear request to open something is launched without asking a model,
@@ -146,6 +169,7 @@ final class ChatModel: ObservableObject {
     func askFromDashboard(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isAnswering else { return }
+        if openedProjectMode(for: trimmed) { return }
         let suggestion = LaunchSuggestion.suggest(for: trimmed, registry: registry)
         if suggestion.preselect, let entry = suggestion.entries.first {
             launch(entry, clearInput: false)
@@ -330,6 +354,11 @@ final class ChatModel: ObservableObject {
         let attachments = pendingAttachments
         guard !text.isEmpty || !attachments.isEmpty, !isAnswering else { return }
 
+        // "Continue VoyagerAI in project mode" opens it there, with no model involved.
+        if attachments.isEmpty, openedProjectMode(for: text) {
+            input = ""
+            return
+        }
         // A typed command such as "/effort high" changes a setting and is not sent to a model.
         if attachments.isEmpty, let command = SlashCommand.parse(text) {
             input = ""

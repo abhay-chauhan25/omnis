@@ -37,6 +37,36 @@ public enum ProjectSession {
     }
 }
 
+/// A typed request to work on a project in project mode, such as
+/// "continue VoyagerAI in project mode". Worked out by rule, with no model.
+public struct ProjectModeRequest: Equatable, Sendable {
+    public let project: RegistryEntry
+    /// True when the wording asks to carry on where the last session stopped.
+    public let resume: Bool
+
+    private static let filler: Set<String> = [
+        "open", "continue", "resume", "start", "launch", "work", "working", "on", "in", "into", "to", "with", "my", "the", "a",
+        "project", "mode", "session", "claude", "code", "please", "go", "switch", "show", "me", "up", "pick", "carry", "let's", "lets",
+        "where", "i", "left", "off", "from", "again", "back", "want", "would", "like", "can", "you", "and",
+    ]
+
+    /// Nil unless the text says "project mode" and names one of the user's projects.
+    public static func parse(_ text: String, registry: Registry) -> ProjectModeRequest? {
+        let lowered = text.lowercased()
+        guard lowered.contains("project mode"), text.count <= 120 else { return nil }
+        let resume = ["continue", "resume", "pick up", "carry on", "where i left"].contains(where: lowered.contains)
+        let words = lowered.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "_" && $0 != "." && $0 != "'" })
+            .map(String.init).filter { !filler.contains($0) }
+        guard !words.isEmpty else { return nil }
+        // What is left is the project's name or an alias for it.
+        let projects = Registry(entries: registry.entries.filter { $0.kind == .project },
+                                aliases: registry.aliases.filter { $0.value.hasPrefix("project:") }, editor: registry.editor)
+        guard let best = Matcher.rank(query: words.joined(separator: " "), registry: projects, limit: 1).first,
+              best.score > Matcher.substring else { return nil }
+        return ProjectModeRequest(project: best.entry, resume: resume)
+    }
+}
+
 /// What a Claude Code session has been doing, read from the record it keeps of itself.
 public struct SessionActivity: Equatable, Sendable {
     public struct TaskItem: Equatable, Sendable, Identifiable {

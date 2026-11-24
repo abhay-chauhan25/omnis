@@ -18,6 +18,30 @@ import Testing
         #expect(launch.arguments == ["-l", "-i", "-c", "exec \"$0\" \"$@\"", "/Users/me/.local/bin/claude", "--name", "a b; rm -rf ~"])
     }
 
+    @Test func askingForAProjectInProjectModeIsUnderstoodByRule() {
+        func entry(_ kind: EntryKind, _ name: String) -> RegistryEntry {
+            RegistryEntry(kind: kind, name: name, url: URL(fileURLWithPath: "/x/\(name)"))
+        }
+        let registry = Registry(entries: [entry(.project, "VoyagerAI"), entry(.project, "Voyagers"), entry(.project, "omnis"),
+                                          entry(.app, "Notes"), entry(.launcher, "Ghidra")],
+                                aliases: ["voyager": "project:VoyagerAI", "gh": "launcher:Ghidra"], editor: RegistryConfig.standard.editor)
+        func parse(_ text: String) -> (String, Bool)? {
+            ProjectModeRequest.parse(text, registry: registry).map { ($0.project.name, $0.resume) }
+        }
+        #expect(parse("continue my VoyagerAI project in project mode")! == ("VoyagerAI", true))
+        #expect(parse("Open voyager in project mode")! == ("VoyagerAI", false))            // by its alias
+        #expect(parse("work on omnis in project mode please")! == ("omnis", false))
+        #expect(parse("resume Voyagers in project mode")! == ("Voyagers", true))
+        #expect(parse("pick up where I left off on omnis in project mode")?.1 == true)
+        // Not without the words "project mode", not for something that is not a project, not for nothing.
+        #expect(parse("continue my VoyagerAI project") == nil)
+        #expect(parse("open Ghidra in project mode") == nil)
+        #expect(parse("open Notes in project mode") == nil)
+        #expect(parse("what is project mode") == nil)
+        #expect(parse("open project mode") == nil)
+        #expect(parse("open something-unknown in project mode") == nil)
+    }
+
     @Test func aProjectsSessionFolderIsFoundTheWayClaudeCodeNamesIt() {
         let home = URL(fileURLWithPath: "/Users/me")
         #expect(ProjectSession.transcriptFolder(for: URL(fileURLWithPath: "/Users/me/projects/omnis"), home: home).path

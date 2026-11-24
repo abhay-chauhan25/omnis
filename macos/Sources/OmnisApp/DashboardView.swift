@@ -550,7 +550,11 @@ struct DashboardView: View {
                                 Text("CLAUDE CODE RUNNING \u{00B7} \(session.age.uppercased())").font(.mono(10)).foregroundStyle(Ink.gold)
                             }
                             Button("Open") { model.launch(entry) }.buttonStyle(PillButton(compact: true))
+                                .help("Open in \(chat.editorName)")
                                 .accessibilityLabel("Open \(entry.name) in \(chat.editorName)")
+                            Button("Work on it") { project.open(entry, resume: false) }.buttonStyle(PillButton(compact: true))
+                                .help("Open in project mode, with Claude Code terminals")
+                                .accessibilityLabel("Work on \(entry.name) in project mode")
                         }
                         .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 4)
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.10)))
