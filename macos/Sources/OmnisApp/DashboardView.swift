@@ -223,6 +223,10 @@ struct DashboardView: View {
             if model.tiles.isEmpty {
                 Text("Open an app or project from the chat window and it will appear here.").font(.system(size: 12)).foregroundStyle(Ink.faint)
             }
+            if let notice = chat.notice {
+                // What happened when a tile was clicked: "Opened Ghidra", or why it could not be.
+                Text(notice).font(.system(size: 12)).foregroundStyle(Ink.muted).lineLimit(2)
+            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
                 ForEach(model.tiles) { entry in
                     Button { model.launch(entry) } label: {
@@ -247,16 +251,16 @@ struct DashboardView: View {
     // MARK: Right
 
     private var usage: some View {
-        Panel(title: "CLAUDE USAGE", trailing: { Text("regular mode").font(.mono(11)).foregroundStyle(Ink.faint) }) {
+        Panel(title: "CLAUDE USAGE") {
             let live = chat.usage.current()
-            meter("Five-hour window", used: live.fiveHour, stop: 0.80, resets: live.fiveHourResets)
-            meter("This week", used: live.sevenDay, stop: 0.70, resets: live.sevenDayResets)
+            meter("Five-hour window", used: live.fiveHour, stop: chat.limits.fiveHour, resets: live.fiveHourResets)
+            meter("This week", used: live.sevenDay, stop: chat.limits.sevenDay, resets: live.sevenDayResets)
             if live.fiveHour == nil && live.sevenDay == nil {
                 Text("Shown after the first question to Claude.").font(.system(size: 12)).foregroundStyle(Ink.faint)
             }
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("LAST 30 DAYS").font(.mono(10)).foregroundStyle(Ink.faint)
+                    Text("ALL QUESTIONS, LAST 30 DAYS").font(.mono(10)).foregroundStyle(Ink.faint)
                     Spacer()
                     if let hour = model.history.busiestHour {
                         Text(String(format: "busiest around %02d:00", hour)).font(.mono(10)).foregroundStyle(Ink.faint)
@@ -437,7 +441,7 @@ private struct CoreView: View, Animatable {
     }()
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !running || reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !running || reduceMotion)) { timeline in
             Canvas { context, size in
                 let t = reduceMotion ? 1.5 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 10_000)
                 let side = min(size.width, size.height)

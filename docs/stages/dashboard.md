@@ -1,6 +1,6 @@
 # Dashboard — the main window
 
-**Status:** first version built on 2026-11-23 from a design the user approved ("make the dots golden, everything else looks good"). Not yet seen on screen by anyone but the user; independent review pending. Voice is deliberately not built: the user will decide on it separately.
+**Status:** first version built on 2026-11-23 from a design the user approved ("make the dots golden, everything else looks good"). Reviewed; review findings fixed, fixes not re-reviewed. Not yet seen on screen by anyone but the user. Voice is deliberately not built: the user will decide on it separately.
 
 Design mock: https://claude.ai/artifact/UhokCmEDyfwy1vFDrJLMAL (private to the user).
 
@@ -24,13 +24,29 @@ Design mock: https://claude.ai/artifact/UhokCmEDyfwy1vFDrJLMAL (private to the u
 ## How it works
 
 - `OmnisCore/Dashboard.swift` turns existing records into what the panels show: `DashboardData` (activity, tiles, history, agenda), `SessionScanner` (running `claude` programs and their folders, from `ps` and `lsof`), `NotesStore`, `FocusTimer`. All tested.
-- `OmnisApp/DashboardModel.swift` gathers it. It refreshes when the window opens and every 30 seconds while it is open, and not at all when it is closed.
-- `OmnisApp/DashboardView.swift` draws it. `CoreView` draws the sphere 30 times a second only while the window is on screen, and holds still when Reduce Motion is on.
+- `OmnisApp/DashboardModel.swift` gathers it. It refreshes when the window comes onto the screen and every 30 seconds while it can be seen. When it is closed, minimised, covered by other windows or on another desktop, nothing is refreshed or drawn.
+- `OmnisApp/DashboardView.swift` draws it. `CoreView` draws the sphere 24 times a second only while the window can be seen, and holds still when Reduce Motion is on.
 - The Dock icon and "Open Dashboard" in the menu-bar menu open it. Control+Space is still the chat window.
 
-## Nothing new is recorded
+## What is recorded
 
-The 30-day history, launch order and activity all come from the activity record OMNIS already kept. The only new files are `notes.md`, which the user writes, and nothing else.
+The 30-day history, launch order and activity all come from the activity record OMNIS already kept. Two things are added to that record: a line each time the dashboard reads the calendar on appearing (with the number of events, and not shown under Recent activity), and a line each time a note is captured (never its text). The one new file is `notes.md`, which the user writes.
+
+## Review findings
+
+Independent review: pass with warnings. Privacy, permissions and the absence of voice were confirmed.
+
+| Finding | Action |
+|---|---|
+| Launch tiles failed until the chat window had been opened once, with no feedback | Fixed. The list of things to launch is loaded when the dashboard appears, and the result is shown under the tiles. |
+| The ask bar sent "open …" to a model, could overwrite a half-typed chat message, and could send a file waiting in the chat | Fixed. A clear launch request is launched at once; the chat's own text and files are left alone. |
+| Drawing and refreshing continued while the window was covered or on another desktop | Fixed. Both stop whenever the window cannot be seen. |
+| The Dock icon did not restore a minimised dashboard | Fixed. |
+| Refreshing parsed the activity record on the main thread, slowly | Fixed. Done off the main thread with one date reader. |
+| The dashboard's own calendar read appeared as "Read your calendar" | Fixed. |
+| The 80% and 70% marks were written twice in the code | Fixed. |
+| The clock can lag by up to 30 seconds | Left as is. |
+| A Claude Code session in a sub-folder of a project is listed on its own | Left as is. |
 
 ## Tests
 

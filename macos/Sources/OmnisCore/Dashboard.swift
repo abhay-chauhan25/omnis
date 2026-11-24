@@ -25,8 +25,11 @@ extension AuditLog {
 /// What the dashboard shows, worked out from the record OMNIS already keeps
 /// of what it did. Nothing here records anything new about the user.
 public enum DashboardData {
+    /// One formatter for every record: making one per record is slow on a long log.
+    private static let stamps = ISO8601DateFormatter()
+
     static func date(_ record: AuditLog.Record) -> Date? {
-        ISO8601DateFormatter().date(from: record.time)
+        stamps.date(from: record.time)
     }
 
     // MARK: Recent activity
@@ -43,10 +46,12 @@ public enum DashboardData {
         switch record.action {
         case "launch": return record.target.map { "Opened \($0)" }
         case "web_search": return "Searched the web" + (record.detail.map { ", \($0)" } ?? "")
-        case "calendar_read": return "Read your calendar"
+        case "calendar_read":
+            // The dashboard's own look at today is not something the user asked for.
+            return record.detail?.hasSuffix("for the dashboard") == true ? nil : "Read your calendar"
         case "attach": return "Read an attached file"
         case "note": return "Captured a note"
-        case "calendar_change", "calendar_create":
+        case "calendar_change":
             switch record.detail {
             case "update_event": return "Changed an event, after you confirmed"
             case "delete_event": return "Deleted an event, after you confirmed"

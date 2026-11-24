@@ -45,55 +45,72 @@ final class DashboardModel: ObservableObject {
 
     // MARK: Lifecycle
 
-    func windowOpened() {
-        isVisible = true
-        // The calendar read is noted once each time the window opens, not on every refresh.
-        logNextAgendaRead = true
-        refresh()
-        refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
-    }
-
-    func windowClosed() {
-        isVisible = false
+    /// Called whenever the window comes onto, or leaves, the screen: opened,
+    /// closed, minimised, covered by other windows, or moved to another
+    /// desktop. Nothing is refreshed or drawn while it cannot be seen.
+    func setOnScreen(_ onScreen: Bool) {
+        guard onScreen != isVisible else { return }
+        isVisible = onScreen
         refreshTimer?.invalidate()
         refreshTimer = nil
+        guard onScreen else { return }
+        // The calendar read is noted once each time the window appears, not on every refresh.
+        logNextAgendaRead = true
+        chat.reloadRegistry()
+        refresh()
+        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        timer.tolerance = 5
+        refreshTimer = timer
     }
 
     func refresh() {
         now = Date()
         claudeSessionOpen = claude?.isSessionOpen ?? false
         notesToday = notes.countToday()
+        refreshAgenda()
 
-        let entries: [RegistryEntry]
-        if let config = try? ConfigStore.loadOrCreate(at: OmnisPaths.registryFile), let registry = try? Registry.load(config: config) {
-            entries = registry.entries
-        } else {
-            entries = []
-        }
-        audit.flush()
-        let records = AuditLog.recent(at: OmnisPaths.auditLog)
-        activity = DashboardData.activity(from: records)
-        history = DashboardData.history(from: records)
-        tiles = DashboardData.tiles(from: records, entries: entries)
-
-        // Running Claude Code sessions are looked up off the main thread.
+        let entries = chat.registryEntries
+        let audit = self.audit
         let ownSession = OmnisPaths.supportDirectory.appendingPathComponent("claude-session", isDirectory: true)
-        let projectEntries = entries.filter { $0.kind == .project }
-        let recent = DashboardData.tiles(from: records, entries: projectEntries, limit: 5)
+        // Reading the activity record and looking for running sessions both
+        // happen off the main thread, so the window never stutters.
         Task { [weak self] in
-            let found = await Task.detached(priority: .utility) { SessionScanner.scan(excluding: [ownSession]) }.value
+            let loaded = await Task.detached(priority: .utility) { () -> Loaded in
+                audit.flush()
+                let records = AuditLog.recent(at: OmnisPaths.auditLog)
+                let projectEntries = entries.filter { $0.kind == .project }
+                return Loaded(
+                    activity: DashboardData.activity(from: records),
+                    history: DashboardData.history(from: records),
+                    tiles: DashboardData.tiles(from: records, entries: entries),
+                    recentProjects: DashboardData.tiles(from: records, entries: projectEntries, limit: 5),
+                    projectEntries: projectEntries,
+                    sessions: SessionScanner.scan(excluding: [ownSession])
+                )
+            }.value
             guard let self else { return }
-            self.sessions = found
+            self.activity = loaded.activity
+            self.history = loaded.history
+            self.tiles = loaded.tiles
+            self.sessions = loaded.sessions
             // Projects with a session running come first, then the ones opened most.
-            let live = projectEntries.filter { entry in found.contains { $0.folder == entry.url.standardizedFileURL.path } }
-            var shown = live
-            for entry in recent where !shown.contains(entry) { shown.append(entry) }
+            var shown = loaded.projectEntries.filter { entry in
+                loaded.sessions.contains { $0.folder == entry.url.resolvingSymlinksInPath().path }
+            }
+            for entry in loaded.recentProjects where !shown.contains(entry) { shown.append(entry) }
             self.projects = Array(shown.prefix(6))
         }
-        refreshAgenda()
+    }
+
+    private struct Loaded: Sendable {
+        let activity: [DashboardData.ActivityLine]
+        let history: DashboardData.History
+        let tiles: [RegistryEntry]
+        let recentProjects: [RegistryEntry]
+        let projectEntries: [RegistryEntry]
+        let sessions: [SessionScanner.Session]
     }
 
     /// Reads today and tomorrow from the calendar, but only once the user has
@@ -165,12 +182,12 @@ final class DashboardModel: ObservableObject {
     }
 
     func session(for entry: RegistryEntry) -> SessionScanner.Session? {
-        sessions.first { $0.folder == entry.url.standardizedFileURL.path }
+        sessions.first { $0.folder == entry.url.resolvingSymlinksInPath().path }
     }
 
     /// Sessions running in folders that are not registered projects.
     var otherSessions: [SessionScanner.Session] {
-        sessions.filter { session in !projects.contains { $0.url.standardizedFileURL.path == session.folder } }
+        sessions.filter { session in !projects.contains { $0.url.resolvingSymlinksInPath().path == session.folder } }
     }
 
     // MARK: Actions
@@ -180,14 +197,24 @@ final class DashboardModel: ObservableObject {
         let text = ask.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !chat.isAnswering else { return }
         ask = ""
+        // A clear request to open something is launched at once, with no chat window needed.
+        if LaunchSuggestion.suggest(for: text, registry: Registry(entries: chat.registryEntries, editor: RegistryConfig.standard.editor)).preselect
+            || SlashCommand.parse(text) != nil {
+            chat.askFromDashboard(text)
+            refreshSoon()
+            return
+        }
         openChat()
-        chat.input = text
-        chat.send()
+        chat.askFromDashboard(text)
     }
 
     func launch(_ entry: RegistryEntry) {
-        chat.launch(entry)
-        // Give the record a moment to be written, then show it.
+        chat.launch(entry, clearInput: false)
+        refreshSoon()
+    }
+
+    /// Gives a record a moment to be written, then shows it.
+    private func refreshSoon() {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
             self?.refresh()
@@ -220,9 +247,11 @@ final class DashboardModel: ObservableObject {
             tickTimer = nil
         } else {
             focus.start()
-            tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
+            timer.tolerance = 0.3
+            tickTimer = timer
         }
     }
 

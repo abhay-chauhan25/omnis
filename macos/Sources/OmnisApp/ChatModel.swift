@@ -41,7 +41,7 @@ final class ChatModel: ObservableObject {
     private let performer: LaunchPerforming
     private let calendarWriter: (any CalendarWriting)?
     private let claude: ClaudeService?
-    private let limits = UsageLimits()
+    let limits = UsageLimits()
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
     static let idleChatSeconds: TimeInterval = 25 * 60
@@ -100,6 +100,13 @@ final class ChatModel: ObservableObject {
             newChat()
         }
         hiddenAt = nil
+        reloadRegistry()
+        openCount += 1
+    }
+
+    /// Reads the list of apps, projects and launchers again. Called whenever
+    /// a window opens, so an edit to the registry is picked up.
+    func reloadRegistry() {
         do {
             let config = try ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)
             registry = try Registry.load(config: config)
@@ -109,7 +116,26 @@ final class ChatModel: ObservableObject {
             show(notice: error.localizedDescription, seconds: 6)
         }
         refreshSuggestions()
-        openCount += 1
+    }
+
+    /// Everything that can be launched, for the dashboard's tiles.
+    var registryEntries: [RegistryEntry] { registry.entries }
+
+    /// A question typed on the dashboard. It is handled like one typed here:
+    /// a clear request to open something is launched without asking a model,
+    /// a typed command changes a setting, and anything else is asked. What is
+    /// being typed in this window, and files waiting here, are left alone.
+    func askFromDashboard(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isAnswering else { return }
+        let suggestion = LaunchSuggestion.suggest(for: trimmed, registry: registry)
+        if suggestion.preselect, let entry = suggestion.entries.first {
+            launch(entry, clearInput: false)
+        } else if let command = SlashCommand.parse(trimmed) {
+            apply(command)
+        } else {
+            ask(trimmed, attachments: [], onThisMac: false)
+        }
     }
 
     /// Called when the window is hidden. The conversation is kept for now.
@@ -251,10 +277,10 @@ final class ChatModel: ObservableObject {
 
     // MARK: Launching
 
-    func launch(_ entry: RegistryEntry) {
+    func launch(_ entry: RegistryEntry, clearInput: Bool = true) {
         let executor = Executor(registry: registry, performer: performer)
         let audit = self.audit
-        input = ""
+        if clearInput { input = "" }
         Task { [weak self] in
             do {
                 try await executor.launch(entryID: entry.id)

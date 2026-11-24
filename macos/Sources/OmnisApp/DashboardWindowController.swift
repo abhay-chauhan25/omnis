@@ -23,7 +23,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(red: 0.024, green: 0.031, blue: 0.043, alpha: 1)
-        window.minSize = NSSize(width: 1060, height: 680)
+        window.minSize = NSSize(width: 1120, height: 680)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: DashboardView(model: model, chat: chat))
         window.delegate = self
@@ -34,20 +34,21 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     var isVisible: Bool { window.isVisible }
 
     func show() {
-        model.windowOpened()
+        if window.isMiniaturized { window.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        update()
     }
 
-    func windowWillClose(_ notification: Notification) {
-        model.windowClosed()
+    /// Tells the model whether the window can actually be seen. macOS reports
+    /// a change whenever it is covered, uncovered, minimised, closed or moved
+    /// to a desktop that is not showing.
+    private func update() {
+        model.setOnScreen(window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
     }
 
-    func windowDidMiniaturize(_ notification: Notification) {
-        model.windowClosed()
-    }
-
-    func windowDidDeminiaturize(_ notification: Notification) {
-        model.windowOpened()
-    }
+    func windowDidChangeOcclusionState(_ notification: Notification) { update() }
+    func windowWillClose(_ notification: Notification) { model.setOnScreen(false) }
+    func windowDidMiniaturize(_ notification: Notification) { update() }
+    func windowDidDeminiaturize(_ notification: Notification) { update() }
 }

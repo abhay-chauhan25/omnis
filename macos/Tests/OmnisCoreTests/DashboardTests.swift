@@ -20,6 +20,7 @@ import Testing
             record("2026-11-23T18:09:00Z", "calendar_change", detail: "delete_event"),
             record("2026-11-23T18:10:00Z", "calendar_change", outcome: "declined"),
             record("2026-11-23T18:11:00Z", "ask", detail: "model gemma4:12b, route local"),
+            record("2026-11-23T18:12:00Z", "calendar_read", detail: "10 events, for the dashboard"),     // not something the user did
         ]
         #expect(DashboardData.activity(from: records).map(\.text) == [
             "Answered a question on this Mac", "Deleted an event, after you confirmed", "Answered a question with Claude",
