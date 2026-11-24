@@ -34,6 +34,8 @@ macos/scripts/bundle.sh          # builds macos/build/OMNIS.app
 open macos/build/OMNIS.app
 ```
 
+The first time, run `macos/scripts/make-signing-identity.sh` once. It creates a signing identity for OMNIS in your login keychain, so that a rebuilt OMNIS is still the same app to macOS and keeps the permissions you gave it (calendar, reminders, controlling Spotify). Without it the app still builds and runs, but macOS asks for those permissions again after every rebuild.
+
 Press Control+Space to show or hide the chat window. Type a question and press Return, or type the name of an app or project to open it. Drag the window by its top strip; it stays open until you hide it with Esc or the close button, and it remembers the conversation until you start a new chat or quit.
 
 Questions are answered by Claude by default, through Claude Code signed in with your own Claude plan (run `claude` once in Terminal and sign in). Claude can act only through OMNIS: it has no file or shell access, and every calendar change is shown as a preview that needs your click. If Claude Code is not installed, OMNIS answers on this Mac.

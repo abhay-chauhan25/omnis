@@ -188,7 +188,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "OMNIS")
+            // The Halo mark, drawn in black so macOS tints it for light and dark menu bars.
+            if let mark = Bundle.main.image(forResource: "MenuIcon") {
+                mark.isTemplate = true
+                mark.size = NSSize(width: 18, height: 18)
+                mark.accessibilityDescription = "OMNIS"
+                button.image = mark
+            } else {
+                button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "OMNIS")
+            }
             button.toolTip = "OMNIS"
         }
         let menu = NSMenu()

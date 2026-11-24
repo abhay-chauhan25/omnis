@@ -46,7 +46,6 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 - [ ] Voice ("Hey OMNIS"): the user will decide separately. Not built.
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
-- [ ] Icon design for the Dock and menu bar (placeholders are in use).
 - [ ] The exact Graphify repo or link (needed for the memory stage).
 
 ## Decisions waiting on the user
@@ -83,6 +82,8 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 | 2026-11-17 | Full calendar control: every command, including deleting. Each change still confirmed. | ADR-0012 |
 | 2026-11-23 | Claude by default through Claude Code on the user's plan; local model as an off-the-grid switch; ordinary chats stop at 70% weekly and 80% five-hour usage. Replaces ADR-0009. | ADR-0013 |
 | 2026-11-23 | New tools are connected to OMNIS, not straight to Claude, so confirmations and rules apply. | `docs/stages/claude-regular-mode.md` |
+| 2026-11-24 | Logo: the Halo mark (three gold arcs closing on a bright centre), used for the Dock icon and the menu-bar glyph. | `macos/scripts/make-icon.swift` |
+| 2026-11-24 | The app is signed with a local identity kept in the login keychain, so rebuilds keep their macOS permissions. | `macos/scripts/make-signing-identity.sh` |
 | 2026-11-24 | Project mode: real Claude Code terminals in the dashboard with OMNIS as a read-only advisor; SwiftTerm added as the first third-party dependency; edits and safe commands free in the project folder, the rest asked. | ADR-0014 |
 
 ## Things worth knowing

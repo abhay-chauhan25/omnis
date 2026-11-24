@@ -25,8 +25,10 @@ swift build --package-path "$package" -c release --product OmnisApp
 binary="$(swift build --package-path "$package" -c release --show-bin-path)/OmnisApp"
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/OMNIS"
+# The Dock icon and the menu-bar glyph, drawn by scripts/make-icon.swift.
+cp "$package/Resources/AppIcon.icns" "$package/Resources/MenuIcon.png" "$package/Resources/MenuIcon@2x.png" "$app/Contents/Resources/"
 
 plist="$app/Contents/Info.plist"
 # plutil takes each value as its own argument, so paths with spaces are safe.
@@ -36,6 +38,7 @@ add CFBundleName string OMNIS
 add CFBundleDisplayName string OMNIS
 add CFBundleIdentifier string local.omnis.app
 add CFBundleExecutable string OMNIS
+add CFBundleIconFile string AppIcon
 add CFBundlePackageType string APPL
 add CFBundleShortVersionString string 0.1.0
 add CFBundleVersion string 1
@@ -61,7 +64,28 @@ add NSAppleEventsUsageDescription string "OMNIS controls playback in Spotify whe
 # Shown by macOS when OMNIS first asks to read the calendar.
 add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to answer questions about your schedule, and changes it only when you confirm a change."
 
-# Ad-hoc signature: enough to run on this Mac, not for distribution.
-codesign --force --sign - "$app" >/dev/null 2>&1
+# Signing. macOS remembers permissions (calendar, reminders, controlling
+# other apps) against an app's signature. With a signing identity that stays
+# the same, a rebuilt OMNIS is still the same app and keeps its permissions.
+# Without one, each build is signed "ad hoc", looks new to macOS, and is asked
+# again. scripts/make-signing-identity.sh creates the identity, once.
+identity_name="OMNIS Local Signing"
+identity="$(security find-certificate -c "$identity_name" -Z 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}')"
+signed=""
+if [ -n "$identity" ]; then
+    # The first use makes macOS ask whether codesign may use the key. If
+    # nobody answers, give up after a while and fall back, so a build never hangs.
+    if perl -e 'alarm shift; exec @ARGV' 45 codesign --force --sign "$identity" --identifier local.omnis.app "$app" >/dev/null 2>&1; then
+        signed="with \"$identity_name\": permissions are kept across rebuilds"
+    fi
+fi
+if [ -z "$signed" ]; then
+    codesign --force --sign - "$app" >/dev/null 2>&1
+    signed="ad hoc: macOS will ask for permissions again after each rebuild (see scripts/make-signing-identity.sh)"
+fi
+
+echo "Built $app"
+echo "Signed $signed"
+exit 0
 
 echo "Built $app"
