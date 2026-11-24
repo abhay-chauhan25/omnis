@@ -122,7 +122,7 @@ final class NotchWindowController {
             if answer.projects.contains(where: { $0.state == .waiting }) { height += 26 }
             return min(height, 560)
         case .everyday:
-            return 196 + (model.reminders.isEmpty ? 0 : 24) + (model.track != nil || model.musicNote != nil ? 24 : 0)
+            return 196 + (model.reminders.isEmpty ? 0 : 24) + (model.track != nil || model.musicNote != nil || model.offersMusic ? 28 : 0)
                 + (model.dashboard.tiles.isEmpty ? 0 : 36)
         }
     }

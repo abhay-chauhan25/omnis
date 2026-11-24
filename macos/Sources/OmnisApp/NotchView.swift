@@ -201,6 +201,13 @@ struct NotchView: View {
             }
         } else if let note = model.musicNote {
             line("MUSIC", note)
+        } else if model.offersMusic {
+            HStack(spacing: 10) {
+                Text("MUSIC").font(.mono(10)).tracking(1.2).foregroundStyle(Ink.faint).frame(width: 38, alignment: .leading)
+                Button("Show what\u{2019}s playing") { model.showMusic() }.buttonStyle(NotchButton(prominent: false))
+                    .help("Shows the Spotify track here. macOS may ask once whether OMNIS may control Spotify.")
+                Spacer(minLength: 0)
+            }
         }
     }
 }

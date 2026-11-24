@@ -14,6 +14,11 @@ final class NotchModel: ObservableObject {
     @Published private(set) var showing: Showing = .nothing
     @Published private(set) var track: (title: String, playing: Bool)?
     @Published private(set) var musicNote: String?
+    /// True when Spotify is open but has not yet been shown here. The user asks
+    /// for it once with a click, so macOS's question about controlling Spotify
+    /// never appears just because the pointer rested on the notch.
+    @Published private(set) var offersMusic = false
+    private static let musicKey = "OMNISNotchMusic"
     @Published private(set) var reminders: [String] = []
     @Published var ask = ""
     /// True while the pointer is over the panel.
@@ -148,29 +153,43 @@ final class NotchModel: ObservableObject {
         Task { [weak self] in await self?.loadReminders() }
     }
 
+    private var spotifyIsOpen: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: "com.spotify.client").isEmpty
+    }
+
     private func loadMusic() async {
-        // Only if OMNIS is already allowed to control Spotify and Spotify is open:
-        // resting the pointer on the notch never makes macOS ask for anything.
-        guard let music, Self.mayAskSpotify() else {
+        guard let music, spotifyIsOpen else {
             musicNote = nil
             track = nil
+            offersMusic = false
             return
         }
-        guard case .read(let content, _)? = try? await music.run(tool: "spotify_now_playing", arguments: [:], access: ToolAccess()) else {
+        // Until the user has asked for it here once, Spotify is not spoken to.
+        guard UserDefaults.standard.bool(forKey: Self.musicKey) else {
             track = nil
-            musicNote = "Spotify could not be asked"
+            musicNote = nil
+            offersMusic = true
+            return
+        }
+        offersMusic = false
+        // The question is put to Spotify by a separate program, off the main thread, with a time limit.
+        guard case .read(let content, _)? = try? await music.run(tool: "spotify_now_playing", arguments: [:], access: ToolAccess()) else {
+            // Not allowed after all, or Spotify did not answer: back to offering it.
+            UserDefaults.standard.set(false, forKey: Self.musicKey)
+            track = nil
+            musicNote = nil
+            offersMusic = true
             return
         }
         track = NotchData.track(from: content)
         musicNote = track == nil ? content : nil
     }
 
-    /// True when macOS would let OMNIS talk to Spotify without asking the user first.
-    private static func mayAskSpotify() -> Bool {
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.spotify.client").isEmpty else { return false }
-        let target = NSAppleEventDescriptor(bundleIdentifier: "com.spotify.client")
-        guard let descriptor = target.aeDesc else { return false }
-        return AEDeterminePermissionToAutomateTarget(descriptor, typeWildCard, typeWildCard, false) == noErr
+    /// The user clicked "Show what's playing". From now on it is shown without asking.
+    func showMusic() {
+        UserDefaults.standard.set(true, forKey: Self.musicKey)
+        offersMusic = false
+        Task { [weak self] in await self?.loadMusic() }
     }
 
     func music(_ action: String) {

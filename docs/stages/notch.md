@@ -41,13 +41,23 @@ Independent review, by reading the code: not fit for a first run as first built.
 | Over a full-screen app, a preview was sent to a panel that could not be seen | Fixed. If the panel is not on the desktop in front, the chat window is used. |
 | A long preview could be cut off at the bottom, hiding its buttons | Fixed. The estimate is more generous and previews scroll inside the panel. |
 | The panel could stay open after typing in the ask box, and a waiting preview could not be put away | Fixed. It closes when typing stops, and a Hide button puts a waiting preview away once the conversation is over. |
-| Resting the pointer on the notch could make macOS ask to control Spotify | Fixed. Spotify is asked only if it is open and OMNIS is already allowed. |
+| Resting the pointer on the notch could make macOS ask to control Spotify | First fix caused the hang described below. Now: Spotify is asked only after the user clicks "Show what's playing" once. |
 | Music controls from the notch left no record | Fixed. |
 | An old list could show a past event as "now" | Fixed. |
 | The closed panel redrew on every word of an answer and every change in voice level | Fixed. It follows only the voice switch while closed. |
 | VoiceOver could not reach the Stop button | Fixed. |
 | A question typed while an answer was being written was lost | Fixed. It stays in the box. |
 | No keyboard or VoiceOver way to open the panel; a new preview is not announced | Left as is. Everything in the panel is also in the dashboard and the chat window. |
+
+## The hang on first use (2026-11-24)
+
+The user's first hover froze OMNIS, with the spinning cursor. Cause: one of the review fixes above. To avoid making macOS ask about Spotify, the panel asked macOS whether OMNIS was already allowed to control it, using a system call that waits, and did so on the main thread. Sampling the frozen app showed the main thread stuck in exactly that call.
+
+Fixed: the call is gone. Spotify is not spoken to from the notch until the user clicks "Show what's playing" there once; after that the track is shown each time, asked for by a separate program off the main thread.
+
+Checked by running it, with the pointer moved onto the notch by a small program and the app sampled: the panel grows from 213 by 32 points to 460 by 292 within a second, stays that size while the pointer is there, and returns to 213 by 32 after it leaves. The main thread is idle throughout. OMNIS uses about 0.4% of a processor core with the panel closed and no more with it open.
+
+That check covers opening and closing only. How the panel looks is still unseen.
 
 ## Tests
 
