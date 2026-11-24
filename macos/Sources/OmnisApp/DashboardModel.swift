@@ -33,6 +33,7 @@ final class DashboardModel: ObservableObject {
     private let openChat: () -> Void
     private var refreshTimer: Timer?
     private var tickTimer: Timer?
+    private var logNextAgendaRead = false
 
     init(chat: ChatModel, calendar: EventKitCalendar, claude: ClaudeService?, audit: AuditLog, openChat: @escaping () -> Void) {
         self.chat = chat
@@ -46,6 +47,8 @@ final class DashboardModel: ObservableObject {
 
     func windowOpened() {
         isVisible = true
+        // The calendar read is noted once each time the window opens, not on every refresh.
+        logNextAgendaRead = true
         refresh()
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -103,6 +106,7 @@ final class DashboardModel: ObservableObject {
 
     /// The "Allow" button on the Today panel. This is what makes macOS ask.
     func allowCalendar() {
+        logNextAgendaRead = true
         loadAgenda()
     }
 
@@ -127,8 +131,11 @@ final class DashboardModel: ObservableObject {
             } else {
                 self.tomorrowLine = "Nothing timed on tomorrow yet."
             }
-            // Counts only, as for any calendar read.
-            self.audit.record(action: "calendar_read", outcome: "ok", detail: "\(events.count) events")
+            if self.logNextAgendaRead {
+                self.logNextAgendaRead = false
+                // Counts only, as for any calendar read.
+                self.audit.record(action: "calendar_read", outcome: "ok", detail: "\(events.count) events, for the dashboard")
+            }
         }
     }
 
