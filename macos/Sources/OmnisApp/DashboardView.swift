@@ -54,6 +54,8 @@ struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject var chat: ChatModel
     @FocusState private var askFocused: Bool
+    /// Whether the extra usage facts are showing. Hidden until asked for.
+    @AppStorage("OMNISShowMoreFacts") private var showMoreFacts = false
 
     var body: some View {
         // Everything fits the window: the centre is laid out to the height
@@ -292,6 +294,27 @@ struct DashboardView: View {
                 fact("Favourite model", summary.favourite ?? "\u{2013}", highlight: true)
                 fact("Total tokens", DashboardData.compactLarge(model.statsRange == .all ? (summary.breakdown?.all ?? summary.tokens) : summary.tokens),
                      highlight: true)
+                Button {
+                    showMoreFacts.toggle()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showMoreFacts ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                        Text(showMoreFacts ? "Fewer facts" : "More facts").font(.mono(11))
+                    }
+                    .foregroundStyle(Ink.muted)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showMoreFacts ? "Hide the extra facts" : "Show more facts")
+                if showMoreFacts { moreFacts(summary) }
+            }
+        } else {
+            Text("Claude Code has no usage statistics on this Mac yet.").font(.system(size: 12)).foregroundStyle(Ink.faint)
+        }
+    }
+
+    @ViewBuilder private func moreFacts(_ summary: ClaudeStats.Summary) -> some View {
                 if summary.models.count > 1 {
                     fact("Models", summary.models.map { "\($0.name) \($0.percent)%" }.joined(separator: " \u{00B7} "))
                 }
@@ -313,10 +336,6 @@ struct DashboardView: View {
                     Text("Claude has written you about \(novels) novels' worth of text.")
                         .font(.system(size: 12)).foregroundStyle(Ink.data).fixedSize(horizontal: false, vertical: true)
                 }
-            }
-        } else {
-            Text("Claude Code has no usage statistics on this Mac yet.").font(.system(size: 12)).foregroundStyle(Ink.faint)
-        }
         Text("Through OMNIS, last 30 days: \(model.history.questions) questions \u{00B7} \(DashboardData.compact(model.history.tokens)) tokens \u{00B7} today \(DashboardData.compact(model.history.tokensToday))")
             .font(.mono(10)).foregroundStyle(Ink.faint).fixedSize(horizontal: false, vertical: true)
     }
