@@ -73,12 +73,15 @@ add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to a
 identity_name="OMNIS Local Signing"
 identity="$(security find-certificate -c "$identity_name" -Z 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}')"
 signed=""
+# A reader left from an earlier build is never kept: it is rebuilt below or not at all.
+rm -rf "$package/build/OMNIS Messages Reader.app"
 if [ -n "$identity" ]; then
     # The Messages reader: a separate small program, so that it and not OMNIS
     # holds the permission to read messages. Each recognises the other by this
     # Mac's signing identity, so it is built only when that identity exists.
     leaf="$(printf '%s' "$identity" | tr 'A-F' 'a-f')"
     reader="$package/build/OMNIS Messages Reader.app"
+    case "$leaf" in *[!0-9a-f]*|"") echo "error: the signing identity's fingerprint could not be read" >&2; exit 1 ;; esac
     swift build --package-path "$package" -c release --product OmnisMessagesReader
     rm -rf "$reader"
     mkdir -p "$reader/Contents/MacOS"
@@ -97,7 +100,8 @@ if [ -n "$identity" ]; then
     radd LSUIElement bool YES
     # The only program it answers: OMNIS, signed with this identity.
     radd OMNISCallerRequirement string "identifier \"local.omnis.app\" and certificate leaf = H\"$leaf\""
-    if perl -e 'alarm shift; exec @ARGV' 45 codesign --force --sign "$identity" --identifier local.omnis.messages-reader "$reader" >/dev/null 2>&1; then
+    if perl -e 'alarm shift; exec @ARGV' 45 /usr/bin/codesign --force --options runtime --sign "$identity" --identifier local.omnis.messages-reader "$reader" >/dev/null 2>&1 \
+        && [[ "$(/usr/bin/codesign -d --verbose=2 "$reader" 2>&1)" == *flags=*runtime* ]]; then
         add OMNISMessagesReaderPath string "$reader"
         add OMNISMessagesReaderRequirement string "identifier \"local.omnis.messages-reader\" and certificate leaf = H\"$leaf\""
     else

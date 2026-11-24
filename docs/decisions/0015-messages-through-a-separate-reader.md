@@ -23,6 +23,8 @@ macOS keeps messages in a database that only a program with Full Disk Access can
 
 - The reader answers three fixed questions, opens the database read-only, and takes no text from a model beyond a conversation's identifier and search words.
 - OMNIS and the reader each check the other's code signature with the system before a byte is exchanged. An unsigned program that connects is told nothing.
+- The reader is built with the hardened runtime, so other code cannot be loaded into it when it starts.
+- Anything signed with this Mac's signing key under the reader's name would be given the reader's Full Disk Access by macOS, without going through the reader at all. So the key must be out of silent reach before that access is given.
 - That check is only as strong as the signing key. The key is in the login keychain and `codesign` may use it without asking, so a program already running as the user that set out to imitate OMNIS could sign itself as OMNIS. This also applies to the permissions OMNIS already holds. Options: keep the key in its own keychain that is unlocked only while building; or an Apple Developer ID.
 - OMNIS is not built with the hardened runtime, so a program could in principle start OMNIS with its own code loaded into it. Turning the hardened runtime on needs entitlements for calendar, reminders, photos and controlling other apps, and has to be tested against each.
 - The messages a chat asks for are sent to Claude, like anything else read for an answer.

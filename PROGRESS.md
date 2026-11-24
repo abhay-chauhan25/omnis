@@ -24,7 +24,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; tried by the user 2026-11-24 | `docs/stages/services.md` |
 | Guard rails: the ask-once search question, fuller audit record, Activity view | Built and reviewed 2026-11-24; findings fixed; not yet seen on screen | `docs/stages/guard-rails.md` |
 | Photos, reading only | Built 2026-11-24; tested with a stand-in and once live with a made-up picture; not yet run against the real library | `docs/stages/photos.md` |
-| Messages | In progress 2026-11-24. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Waiting for the user to give the reader Full Disk Access and run the check | ADR-0015, `docs/stages/messages.md` |
+| Messages | In progress 2026-11-24. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Security-reviewed and hardened. **Full Disk Access must not be given yet:** the signing key has to be protected first, which is waiting on the user | ADR-0015, `docs/stages/messages.md` |
 | Services: mail (school Outlook), browser | Not started | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
 | Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
@@ -63,7 +63,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 268. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 273. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items

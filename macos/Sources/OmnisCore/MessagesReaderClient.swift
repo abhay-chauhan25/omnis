@@ -68,7 +68,8 @@ public struct MessagesReaderClient: Sendable {
         let descriptor = try connect()
         defer { close(descriptor) }
         // Before anything is sent or believed: is this really the reader?
-        guard PeerCheck.peer(of: descriptor, satisfies: helperRequirement) else { throw ReaderProblem.impostor }
+        guard PeerCheck.isPinned(helperRequirement, to: "local.omnis.messages-reader"),
+              PeerCheck.peer(of: descriptor, satisfies: helperRequirement, hardened: true) else { throw ReaderProblem.impostor }
         guard let body = try? JSONEncoder().encode(request), LocalSocket.writeLine(descriptor, body),
               let line = LocalSocket.readLine(descriptor), let reply = try? JSONDecoder().decode(ReaderReply.self, from: line) else {
             throw ReaderProblem.failed("no reply")

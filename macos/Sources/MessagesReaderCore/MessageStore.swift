@@ -15,6 +15,8 @@ public final class MessageStore {
     public static let maxChats = 40
     public static let maxDays = 365
     public static let maxTextCharacters = 1_200
+    /// A few characters can be made of very many bytes, so the bytes are capped too.
+    public static let maxTextBytes = 6_000
     /// The most rows looked through for one search.
     static let maxScanned = 20_000
     /// Seconds between 1970 and 2001, where Messages starts counting.
@@ -105,7 +107,31 @@ public final class MessageStore {
         }
         // The mark Messages uses where a picture or file sits.
         found = found.replacingOccurrences(of: "\u{FFFC}", with: "[attachment]")
-        return String(found.prefix(maxTextCharacters))
+        return tidy(found)
+    }
+
+    /// Cuts a message to size and drops characters that do not show but can
+    /// hide or reorder what does: controls, direction marks, zero-width marks.
+    static func tidy(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        var bytes = 0
+        var combining = 0
+        for scalar in text.unicodeScalars {
+            if scalar == "\n" || scalar == "\t" {
+                // kept
+            } else if scalar.properties.generalCategory == .control || scalar.properties.generalCategory == .format
+                        || scalar.properties.isBidiControl {
+                continue
+            }
+            // A long run of marks stacked on one letter is cut short.
+            combining = scalar.properties.generalCategory == .nonspacingMark ? combining + 1 : 0
+            if combining > 4 { continue }
+            let size = UTF8.width(scalar)
+            if bytes + size > maxTextBytes { break }
+            bytes += size
+            scalars.append(scalar)
+        }
+        return String(String(scalars).prefix(maxTextCharacters))
     }
 
     /// The conversations with the most recent messages, newest first.
@@ -148,11 +174,16 @@ public final class MessageStore {
     /// The latest messages in one conversation, oldest first. Reactions are left out.
     public func messages(chat: String, days: Int, limit: Int, now: Date = Date()) throws -> [ReaderMessage] {
         var found: [ReaderMessage] = []
-        try rows(Self.messageColumns + " WHERE c.chat_identifier = ? AND m.date >= ? AND m.associated_message_type = 0 ORDER BY m.date DESC LIMIT ?",
-                 [.text(chat), .number(Self.since(days, now: now)), .number(Int64(max(1, min(limit, Self.maxMessages))))]) { row in
-            found.append(Self.message(row))
+        let most = max(1, min(limit, Self.maxMessages))
+        // Messages set to be sent later are not sent yet, and unsent ones have no words: neither is listed.
+        try rows(Self.messageColumns + " WHERE c.chat_identifier = ? AND m.date >= ? AND m.date <= ? AND m.associated_message_type = 0 "
+                 + "AND ((m.text IS NOT NULL AND m.text != '') OR m.attributedBody IS NOT NULL) ORDER BY m.date DESC LIMIT ?",
+                 [.text(chat), .number(Self.since(days, now: now)), .number(Self.stored(now)), .number(Int64(most + 200))]) { row in
+            guard found.count < most else { return }
+            let message = Self.message(row)
+            if !message.text.isEmpty { found.append(message) }
         }
-        return found.filter { !$0.text.isEmpty }.reversed()
+        return found.reversed()
     }
 
     /// Messages containing every one of the words, newest first.
@@ -162,8 +193,8 @@ public final class MessageStore {
         let most = max(1, min(limit, Self.maxMessages))
         var found: [ReaderMessage] = []
         // The words may be in the packed form, which the database cannot search, so recent rows are read and checked here.
-        try rows(Self.messageColumns + " WHERE m.date >= ? AND m.associated_message_type = 0 ORDER BY m.date DESC LIMIT ?",
-                 [.number(Self.since(days, now: now)), .number(Int64(Self.maxScanned))]) { row in
+        try rows(Self.messageColumns + " WHERE m.date >= ? AND m.date <= ? AND m.associated_message_type = 0 ORDER BY m.date DESC LIMIT ?",
+                 [.number(Self.since(days, now: now)), .number(Self.stored(now)), .number(Int64(Self.maxScanned))]) { row in
             guard found.count < most else { return }
             let message = Self.message(row)
             let lowered = message.text.lowercased()

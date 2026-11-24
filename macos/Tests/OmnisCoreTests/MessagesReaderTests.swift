@@ -155,6 +155,28 @@ final class FakeMessages {
         #expect(throws: StoreError.self) { try MessageStore(path: "/nonexistent/folder/chat.db") }
     }
 
+    @Test func aMessageIsCutToSizeAndHiddenCharactersAreDropped() throws {
+        // Marks stacked on one letter: few characters, very many bytes.
+        let stacked = "a" + String(repeating: "\u{0301}", count: 50_000) + " end"
+        let tidy = MessageStore.tidy(stacked)
+        #expect(tidy.utf8.count <= MessageStore.maxTextBytes && tidy.hasSuffix(" end"))
+        #expect(MessageStore.tidy(String(repeating: "\u{1F600}", count: 5_000)).utf8.count <= MessageStore.maxTextBytes)
+        // Characters that reorder or hide text, and controls, do not come through. Line breaks do.
+        #expect(MessageStore.tidy("pay\u{202E}eeffoc\u{202C} now\u{200B}\u{0007}\nok") == "payeeffoc now\nok")
+        #expect(MessageStore.tidy("Caf\u{00E9} \u{1F600}") == "Caf\u{00E9} \u{1F600}")
+    }
+
+    @Test func messagesSetForLaterAndEmptyOnesAreNotListed() throws {
+        let fake = FakeMessages()
+        fake.add(chat: 1, from: nil, "Happy birthday", at: "2026-11-30T09:00:00Z")           // scheduled, not sent yet
+        for _ in 0..<5 { fake.add(chat: 1, from: 1, "", at: "2026-11-24T11:00:00Z") }         // unsent: no words left
+        fake.add(chat: 1, from: 1, "first", at: "2026-11-24T09:00:00Z")
+        fake.add(chat: 1, from: 1, "second", at: "2026-11-24T10:00:00Z")
+        let store = try MessageStore(path: fake.path)
+        #expect(try store.messages(chat: "+15550001", days: 30, limit: 2, now: Self.now).map(\.text) == ["first", "second"])
+        #expect(try store.search(text: "birthday", days: 30, limit: 5, now: Self.now).isEmpty)
+    }
+
     @Test func requestsAreAnsweredOrRefusedByCode() {
         let fake = filled()
         func ask(_ request: ReaderRequest) -> ReaderReply { ReaderServer.answer(request, databasePath: fake.path, now: Self.now) }
@@ -172,11 +194,14 @@ final class FakeMessages {
 
 @Suite(.serialized) struct ReaderServerTests {
     /// Runs the server on a socket in a temporary folder and asks it one thing.
-    func ask(_ request: ReaderRequest, trusting requirement: String) throws -> ReaderReply {
+    func ask(_ request: ReaderRequest, trusting requirement: String, hardened: Bool = false, log: String? = nil) throws -> ReaderReply {
         let fake = MessageStoreTests().filled()
         // Short, because a socket's path has a small limit.
-        let socket = "/tmp/omnis-\(UUID().uuidString.prefix(8)).sock"
-        let server = ReaderServer(socketPath: socket, databasePath: fake.path, callerRequirement: requirement, idleSeconds: 2)
+        let folder = "/tmp/omnis-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let socket = folder + "/m.sock"
+        let server = ReaderServer(socketPath: socket, databasePath: fake.path, callerRequirement: requirement, idleSeconds: 2,
+                                  requireHardenedCaller: hardened, logPath: log)
         let thread = Thread { server.run() }
         thread.start()
         var descriptor: Int32 = -1
@@ -198,6 +223,47 @@ final class FakeMessages {
         #expect(try ask(ReaderRequest(op: "search", text: "rent"), trusting: "identifier \"somebody.else\"") == ReaderReply(ok: false, code: "not_recognised"))
         // A requirement that cannot even be read trusts nobody.
         #expect(try ask(ReaderRequest(op: "chats"), trusting: "this is not a requirement") == ReaderReply(ok: false, code: "not_recognised"))
+    }
+
+    @Test func onlyTheExactShapeOfRequirementIsBelieved() {
+        let good = #"identifier "local.omnis.app" and certificate leaf = H"bae46c520f5dc42f7bab5707c6a465495a09b4de""#
+        #expect(PeerCheck.isPinned(good, to: "local.omnis.app"))
+        #expect(!PeerCheck.isPinned(good, to: "local.omnis.messages-reader"))
+        for loose in [good + " or anchor apple", "anchor apple", #"identifier "local.omnis.app""#,
+                      #"identifier "local.omnis.app" and certificate leaf = H"BAE4""#,
+                      #"identifier "local.omnis.app" and certificate leaf = H"bae46c520f5dc42f7bab5707c6a465495a09b4de" or anchor apple"#, ""] {
+            #expect(!PeerCheck.isPinned(loose, to: "local.omnis.app"), "\(loose)")
+        }
+    }
+
+    @Test func aFolderThatIsALinkOrOpenToOthersIsNotUsed() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("omnis-folder-\(UUID().uuidString)")
+        let real = base.appendingPathComponent("real"), link = base.appendingPathComponent("link"), open = base.appendingPathComponent("open")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: open, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(ReaderServer.folderIsSafe(real.path))
+        #expect(!ReaderServer.folderIsSafe(link.path) && !ReaderServer.folderIsSafe(open.path) && !ReaderServer.folderIsSafe(base.path + "/missing"))
+    }
+
+    @Test func aCallerThatWasNotBuiltHardenedCanBeRefusedAndEveryRequestIsLogged() throws {
+        var code: SecCode?
+        SecCodeCopySelf([], &code)
+        var staticCode: SecStaticCode?
+        SecCodeCopyStaticCode(try #require(code), [], &staticCode)
+        var information: CFDictionary?
+        SecCodeCopySigningInformation(try #require(staticCode), [], &information)
+        let identifier = try #require((information as? [String: Any])?[kSecCodeInfoIdentifier as String] as? String)
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("omnis-reader-\(UUID().uuidString).log").path
+        // This test program meets the name, but if it was not built hardened a strict server refuses it.
+        let strict = try ask(ReaderRequest(op: "search", text: "rent"), trusting: "identifier \"\(identifier)\"", hardened: true, log: log)
+        let plain = try ask(ReaderRequest(op: "search", text: "rent"), trusting: "identifier \"\(identifier)\"", log: log)
+        #expect(plain.ok)
+        let lines = try String(contentsOfFile: log, encoding: .utf8)
+        #expect(lines.contains(#""op":"search""#) && lines.contains(#""messages":1"#))
+        if !strict.ok { #expect(lines.contains("refused_caller")) }
+        // What was looked for, and what was found, are not written down.
+        #expect(!lines.lowercased().contains("rent") && !lines.contains("chat99") && !lines.contains("+1555"))
     }
 
     @Test func aCallerThatMeetsTheRequirementIsAnswered() throws {

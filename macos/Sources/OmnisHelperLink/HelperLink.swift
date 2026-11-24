@@ -89,14 +89,52 @@ public enum PeerCheck {
 
     /// True only if the program at the other end is validly signed and meets
     /// the requirement, written in Apple's code-requirement language.
-    public static func peer(of descriptor: Int32, satisfies requirement: String) -> Bool {
+    /// With `hardened`, the program must also have been built so that no other
+    /// code can be loaded into it, and must not carry a setting that undoes that.
+    public static func peer(of descriptor: Int32, satisfies requirement: String, hardened: Bool = false) -> Bool {
         guard let token = token(of: descriptor) else { return false }
         var code: SecCode?
         let attributes = [kSecGuestAttributeAudit: token] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &code) == errSecSuccess, let code else { return false }
         var wanted: SecRequirement?
         guard SecRequirementCreateWithString(requirement as CFString, [], &wanted) == errSecSuccess, let wanted else { return false }
-        return SecCodeCheckValidity(code, [], wanted) == errSecSuccess
+        guard SecCodeCheckValidity(code, [], wanted) == errSecSuccess else { return false }
+        return hardened ? isHardened(code) : true
+    }
+
+    /// True if the running program was signed with the hardened runtime and
+    /// without any of the settings that let other code into it.
+    static func isHardened(_ code: SecCode) -> Bool {
+        var onDisk: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &onDisk) == errSecSuccess, let onDisk else { return false }
+        var details: CFDictionary?
+        guard SecCodeCopySigningInformation(onDisk, SecCSFlags(rawValue: kSecCSSigningInformation), &details) == errSecSuccess,
+              let information = details as? [String: Any],
+              let flags = (information[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value else { return false }
+        // 0x10000 is the hardened runtime.
+        guard flags & 0x10000 != 0 else { return false }
+        let entitlements = information[kSecCodeInfoEntitlementsDict as String] as? [String: Any] ?? [:]
+        let loosening = ["com.apple.security.get-task-allow", "com.apple.security.cs.allow-dyld-environment-variables",
+                         "com.apple.security.cs.disable-library-validation", "com.apple.security.cs.allow-unsigned-executable-memory",
+                         "com.apple.security.cs.disable-executable-page-protection", "com.apple.security.cs.debugger"]
+        return !loosening.contains { entitlements[$0] as? Bool == true }
+    }
+
+    /// True if this program itself is still the one that was signed: nothing
+    /// in it, including its settings file, has been altered since.
+    public static func ownSignatureIsIntact() -> Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
+        return SecCodeCheckValidity(code, [], nil) == errSecSuccess
+    }
+
+    /// A requirement of exactly the one shape OMNIS uses: this name, signed
+    /// with this certificate. Anything looser, such as one with "or" in it, is not accepted.
+    public static func isPinned(_ requirement: String, to identifier: String) -> Bool {
+        let prefix = "identifier \"\(identifier)\" and certificate leaf = H\""
+        guard requirement.hasPrefix(prefix), requirement.hasSuffix("\"") else { return false }
+        let hash = requirement.dropFirst(prefix.count).dropLast()
+        return hash.count == 40 && hash.allSatisfy { "0123456789abcdef".contains($0) }
     }
 }
 
@@ -165,10 +203,11 @@ public enum LocalSocket {
     }
 
     /// One line, without its newline, or nil if the far end closed, was too slow or sent too much.
-    public static func readLine(_ descriptor: Int32, limit: Int = maxLine) -> Data? {
+    public static func readLine(_ descriptor: Int32, limit: Int = maxLine, deadline: Date? = nil) -> Data? {
         var line = Data()
         var chunk = [UInt8](repeating: 0, count: 16_384)
         while line.count <= limit {
+            if let deadline, Date() > deadline { return nil }
             let count = read(descriptor, &chunk, chunk.count)
             guard count > 0 else { return nil }
             if let end = chunk[..<count].firstIndex(of: 0x0A) {

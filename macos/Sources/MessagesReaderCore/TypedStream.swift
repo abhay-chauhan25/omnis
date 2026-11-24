@@ -11,8 +11,9 @@ public enum TypedStream {
     private static let marker = Array("NSString".utf8)
 
     public static func text(from data: Data) -> String? {
+        guard data.count > 16, data.count <= 4_000_000 else { return nil }
         let bytes = [UInt8](data)
-        guard bytes.count > 16, bytes.count <= 4_000_000, let start = find(marker, in: bytes, from: 0) else { return nil }
+        guard let start = find(marker, in: bytes, from: 0) else { return nil }
         // After the class name come a few bytes of bookkeeping, then "+",
         // which marks a run of text, then how long it is.
         var index = start + marker.count
@@ -45,7 +46,7 @@ public enum TypedStream {
         guard bytes.count >= pattern.count else { return nil }
         var index = from
         while index <= bytes.count - pattern.count {
-            if bytes[index] == pattern[0], Array(bytes[index..<index + pattern.count]) == pattern { return index }
+            if bytes[index] == pattern[0], bytes[index..<index + pattern.count].elementsEqual(pattern) { return index }
             index += 1
         }
         return nil

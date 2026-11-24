@@ -23,7 +23,25 @@
 - Swift: the unpacking against archives made by macOS itself, cut short at every length and with every byte flipped; the questions against a made-up database; injection attempts; limits; a caller with the wrong signature refused; a caller with the right one answered.
 - On this Mac, with the real signatures: `OMNIS --check-messages-reader` started the reader, each recognised the other, and the reader reported that it has no access, as expected. An unsigned script that connected to it was told "not recognised".
 
-## To try it (the user)
+## Security review (2026-11-24)
+
+An independent security review advised against giving the reader Full Disk Access as first built. The reader's own code was found careful and to fail closed, but two routes went round it.
+
+| Finding | Action |
+|---|---|
+| Code could be loaded into the reader when it starts, and would have its access | Fixed. The reader is built with the hardened runtime and no exceptions. Tried on this Mac: a test library loads into OMNIS (which is not hardened) and does not load into the reader. The build fails closed if the setting is missing, and OMNIS refuses a reader without it. |
+| The signing key can be used without asking, so any program running as the user could sign its own "reader" and inherit the grant | **Open. Needs the user's decision.** Until it is closed, Full Disk Access should not be given. |
+| The same test library loads into OMNIS itself, which the reader then trusts | **Open.** OMNIS needs the hardened runtime, with each permission it uses re-tested. |
+| A search can return verification codes and reset links like any other message | **Open. A policy for the user to choose** before the reading tools are built. |
+| No record of who asked the reader what | Fixed. `helper/reader.log` records each request and each refused caller: the kind of question and counts, never whose messages or which words. |
+| The trusted signature was read loosely from a settings file | Fixed. The reader runs only if it is exactly as signed, and only accepts the one exact form. |
+| A message could be few characters and very many bytes | Fixed. Capped by bytes as well; hidden and direction-changing characters are dropped. |
+| Any program could keep the reader running, or hold it up by sending slowly | Fixed. Only a recognised caller keeps it running; a request must arrive within six seconds. |
+| The socket's folder could be swapped for a link | Fixed. It must be a real folder, the user's own, closed to others. |
+| Messages set to send later were listed as sent; empty ones used up the limit | Fixed. |
+| A second certificate with a similar name could be picked up by the build | Partly. The build now checks the fingerprint's form and uses the system's own signing tool by full path. It does not yet compare against a recorded fingerprint. |
+
+## To try it (the user), once the open items above are settled
 
 1. System Settings › Privacy & Security › Full Disk Access › add `macos/build/OMNIS Messages Reader.app` and switch it on.
 2. Run `macos/build/OMNIS.app/Contents/MacOS/OMNIS --check-messages-reader`. It prints only how many recent conversations the reader can see.
