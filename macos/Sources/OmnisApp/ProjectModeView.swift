@@ -69,6 +69,11 @@ struct ProjectModeView: View {
                     }
                 }
                 Spacer(minLength: 8)
+                Button { model.showShell.toggle() } label: {
+                    Label("Terminal", systemImage: "terminal").foregroundStyle(model.showShell ? Tone.gold : Tone.muted)
+                }
+                .help(model.showShell ? "Hide your terminal" : "Show a terminal for your own commands, in this project's folder")
+                .accessibilityLabel(model.showShell ? "Hide terminal" : "Show terminal")
                 Button { model.openTerminal() } label: { Label("New session", systemImage: "plus") }
                     .help("Start a new Claude Code session in this project")
                 Button("From a brief\u{2026}") { model.showBrief = true }
@@ -94,6 +99,20 @@ struct ProjectModeView: View {
                         .font(.system(size: 12)).foregroundStyle(Tone.faint).multilineTextAlignment(.center).frame(maxWidth: 440)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            if model.showShell, let shell = model.shell() {
+                // Your own terminal, under Claude's. Nothing but you types here.
+                Rectangle().fill(Tone.line).frame(height: 1)
+                HStack {
+                    Text("YOUR TERMINAL").font(.system(size: 10, design: .monospaced)).tracking(1.5).foregroundStyle(Tone.faint)
+                    Text(model.selected?.name ?? "").font(.system(size: 10, design: .monospaced)).foregroundStyle(Tone.faint)
+                    Spacer()
+                    Button { model.showShell = false } label: { Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)) }
+                        .buttonStyle(.plain).foregroundStyle(Tone.faint).help("Hide your terminal").accessibilityLabel("Hide terminal")
+                }
+                .padding(.horizontal, 12).padding(.top, 6)
+                TerminalHost(view: shell).id(model.shellKey).frame(height: 170).padding(.horizontal, 8).padding(.bottom, 8)
             }
         }
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Tone.terminal))

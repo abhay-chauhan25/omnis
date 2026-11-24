@@ -39,6 +39,14 @@ final class ProjectModeModel: ObservableObject {
     @Published var brief = ""
     @Published var showBrief = false
     @Published private(set) var notice: String?
+    /// Whether the plain shell under the Claude terminal is showing. Remembered between runs.
+    @Published var showShell = UserDefaults.standard.bool(forKey: "OMNISProjectShell") {
+        didSet { UserDefaults.standard.set(showShell, forKey: "OMNISProjectShell") }
+    }
+    /// One ordinary shell per project, for the user's own commands. Kept
+    /// while OMNIS runs, so its history survives hiding and showing it.
+    private var shells: [String: (view: LocalProcessTerminalView, watcher: TerminalWatcher)] = [:]
+    @Published private var shellGeneration = 0
 
     private let chat: ChatModel
     private let claudeConfig: ClaudeConfig?
@@ -188,8 +196,37 @@ final class ProjectModeModel: ObservableObject {
         if activeTab == id { activeTab = visibleTabs.last?.id }
     }
 
+    /// The user's own shell for the current project: an ordinary terminal
+    /// in the project's folder. It is theirs alone; no model reads or types in it.
+    func shell() -> LocalProcessTerminalView? {
+        guard let project = selected else { return nil }
+        if let existing = shells[project.id] { return existing.view }
+        let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 180))
+        view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.nativeBackgroundColor = NSColor(red: 0.027, green: 0.033, blue: 0.045, alpha: 1)
+        view.nativeForegroundColor = NSColor(red: 0.91, green: 0.93, blue: 0.95, alpha: 1)
+        view.caretColor = NSColor(red: 0.949, green: 0.757, blue: 0.306, alpha: 1)
+        let watcher = TerminalWatcher()
+        view.processDelegate = watcher
+        let id = project.id
+        // Typing "exit" closes the shell; the next time it is shown, a fresh one starts.
+        watcher.ended = { [weak self] in
+            self?.shells[id] = nil
+            self?.shellGeneration += 1
+        }
+        shells[id] = (view, watcher)
+        let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.hasPrefix("/") ? $0 : nil } ?? "/bin/zsh"
+        view.startProcess(executable: shell, args: ["-l", "-i"], environment: Self.environment(), currentDirectory: project.url.path)
+        return view
+    }
+
+    /// Changes whenever a shell ends, so the view asks for a new one.
+    var shellKey: String { "\(selected?.id ?? "")-\(shellGeneration)" }
+
     /// Ends every session. Called when OMNIS quits.
     func closeAll() {
+        for shell in shells.values { shell.view.terminate() }
+        shells = [:]
         for tab in tabs where !tab.ended { tab.view.terminate() }
         tabs = []
         advisorService?.shutdown()

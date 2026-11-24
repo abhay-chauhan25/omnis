@@ -7,6 +7,7 @@
 1. **Project setup.** "Set up a project called X" in the chat. Claude proposes it through one OMNIS tool; a preview card lists the folder, the GitHub repository and whether it is public or private (always asked), and the steps. On "Create Project" OMNIS runs fixed steps itself: create the folder with a README, start git, first commit, create the GitHub repository and push, open it in the editor.
 2. **Project view.** A Dashboard / Project switch at the top of the main window. Project replaces the panels with terminals on the left and OMNIS on the right.
 3. **Terminals.** Each is the real Claude Code, started in the project's folder. New session, resume the last one, or start from a written brief. Tabs, with a "+" for more.
+   Under the Claude terminal, a **Terminal** button shows a small ordinary shell in the project's folder for the user's own commands. One per project, kept while OMNIS runs. No model reads it or types in it.
 4. **Advisor.** A side chat that can read the project's files and answer questions. "Put in terminal" places its suggested prompt in the terminal's input for the user to read and send.
 5. **Following along.** The latest steps and task list of the project's most recent session, and the files git reports as changed. The advisor is given the same summary with each question.
 
