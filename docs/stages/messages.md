@@ -21,9 +21,23 @@
 - Not verified: a real send. Whether the recipient uses iMessage or SMS, and whether the message arrived, show in Messages, not in OMNIS; the card says "Handed to Messages to send".
 - Code: `macos/Sources/OmnisCore/Messages.swift`.
 
+### Review of sending (2026-11-24)
+
+Independent review: pass with warnings. No way was found for a model to supply or learn a full number, to change who a message goes to, or to slip anything into the script. Nothing about a message reaches the audit log.
+
+| Finding | Action |
+|---|---|
+| A long message was cut on the preview while all of it would be sent | Fixed. A message to send is always shown whole, and one over 600 characters or 12 lines is refused. |
+| Some invisible characters survived into the message | Fixed. Everything invisible, direction-changing or blank is removed before the preview is made, so the card shows exactly what is sent. |
+| "Tell me about", "this text", "send me the file" counted as asking to send | Fixed. Asking now needs a sending verb with someone to send to. |
+| Sending was offered in a chat that holds a file | Fixed. It is not, as with deleting: a file's text could ask for it. To send something about a file, start a new chat. |
+| The script could in principle send twice; "Try Again" could repeat a send | Fixed. The script finds the person first and sends once. A failed send has no Try Again. |
+| With more than 12 matches some could not be chosen | Fixed. The user is asked for a fuller name. |
+| Contact ids from an earlier chat still work | Left as is. The preview shows the full name and number. |
+
 ## Verification codes (decided 2026-11-24)
 
-The reader replaces a message that looks like a sign-in code or reset link, and anything from an automated short number, with a note that it was hidden. The words never leave the reader, and a hidden message cannot be found by searching for what it said. Ordinary messages that mention a number are not hidden; the rule can miss an unusual code or hide a harmless message.
+The reader replaces a message that looks like a sign-in code or reset link, and anything from an automated short number, with a note that it was hidden. The words never leave the reader, and a hidden message cannot be found by searching for what it said. After review the rule was widened: codes made of letters and digits, long or punctuated numbers, a message that is only a number, and links without "https" are caught too. It errs towards hiding: an ordinary message with a word like "confirm", "code" or "log in" and a link or a number of four or more digits is hidden as well, for example "Can you confirm lunch at 1230?". A code written out in words is not caught.
 
 ## Files
 

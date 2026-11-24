@@ -46,15 +46,25 @@ final class StubSender: MessageSending, @unchecked Sendable {
         }
         #expect(contacts.asked.values.isEmpty)           // not even looked up
         // What counts as asking.
-        for text in ["text Sam that I'm late", "send a message to mum", "tell Priya I said hi", "let Sam know I'm outside", "reply saying yes"] {
+        for text in ["text Sam that I'm late", "send a message to mum", "tell Priya I said hi", "let Sam know I'm outside", "reply saying yes",
+                     "Can you text +15550100 please", "check my calendar, then message Priya the time", "send Sam a text", "ask Mum if she's free"] {
             #expect(PersonalIntent.asksToSend(text), "\(text)")
         }
-        for text in ["what's on my calendar", "summarise this file", "who is Sam"] { #expect(!PersonalIntent.asksToSend(text), "\(text)") }
+        for text in ["what's on my calendar", "summarise this file", "who is Sam", "tell me about Rome", "summarise this text",
+                     "send me the file", "what does this message mean", "let me know when you're done", "the text is too small"] {
+            #expect(!PersonalIntent.asksToSend(text), "\(text)")
+        }
         var chat = Conversation()
         #expect(!chat.serviceAccess(for: "what's on today").sends)
         #expect(chat.serviceAccess(for: "text Sam I'm late").sends)
         #expect(chat.serviceAccess(for: "the mobile one").sends)         // answering "which number?"
         #expect(!chat.serviceAccess(for: "thanks").sends)                 // and no longer after that
+        // A new chat forgets, and a chat that holds a file is never offered sending: the file could ask for it.
+        _ = chat.serviceAccess(for: "text Sam I'm late")
+        chat.clear()
+        #expect(!chat.serviceAccess(for: "the mobile one").sends)
+        chat.begin(question: "tell Sam what this says", attachments: [Attachment(kind: .text, name: "a.txt", text: "x")])
+        #expect(!chat.serviceAccess(for: "tell Sam what this says").sends)
     }
 
     @Test func whenSeveralMatchTheUserChoosesAndNoNumberReachesTheModel() async throws {
@@ -86,11 +96,28 @@ final class StubSender: MessageSending, @unchecked Sendable {
         }
         let card = try #require(proposal(try await messages.run(tool: "messages_send", arguments: ["to": "sam", "handle": "+19005550199", "text": "hi"], access: Self.may)))
         #expect(card.payload["handle"] == "+15550100142")
-        // An over-long message is cut or refused; it is never shown as more than the limit.
-        let long = try? await messages.run(tool: "messages_send", arguments: ["to": "sam", "text": String(repeating: "x", count: 5000)], access: Self.may)
-        if let long, let cut = proposal(long) { #expect((cut.payload["text"] ?? "").count <= MessagesTools.maxCharacters) }
+        // A message too long to be seen whole on the preview is refused, not cut.
+        for long in [String(repeating: "x", count: 601), Array(repeating: "line", count: 13).joined(separator: "\n")] {
+            await #expect(throws: ToolRefusal.self) { try await messages.run(tool: "messages_send", arguments: ["to": "sam", "text": long], access: Self.may) }
+        }
         await #expect(throws: ToolRefusal.self) { try await messages.run(tool: "messages_read", arguments: [:], access: Self.may) }
         #expect(sender.sent.values.isEmpty)
+    }
+
+    @Test func whatIsSentIsExactlyWhatThePreviewShows() async throws {
+        contacts.people = [ContactMatch(name: "Sam Lee", handles: [ContactHandle(label: "mobile", value: "+15550100142")])]
+        // Invisible characters, direction changes, hidden tag letters, blank fillers and a wall of empty lines.
+        let hidden = "Hi Sam\u{200B}\u{202E}\u{00AD}\u{E0041}\u{E0042}\u{3164}\u{2800}\u{FE00}\n\n\n\n\n\n\n\n  see you \u{1F44D}\u{FE0F}\t soon  "
+        let card = try #require(proposal(try await tools.run(tool: "messages_send", arguments: ["to": "sam", "text": hidden], access: Self.may)))
+        #expect(card.payload["text"] == "Hi Sam\n\nsee you \u{1F44D}\u{FE0F}  soon")
+        // The card's own row carries the same words that are sent.
+        #expect(card.rows.last == ChangeRow("Message", card.payload["text"] ?? ""))
+        #expect(MessagesTools.visible("\u{200B}\u{E0041}") == "")
+    }
+
+    @Test func tooManyMatchesAsksForAFullerName() async throws {
+        contacts.people = (1...5).map { ContactMatch(name: "Sam \($0)", handles: (1...3).map { ContactHandle(label: "", value: "+1555000\($0)") }) }
+        await #expect(throws: ToolRefusal.self) { try await tools.run(tool: "messages_send", arguments: ["to": "sam", "text": "hi"], access: Self.may) }
     }
 
     @Test func theNumberAndTheWordsAreHandedToTheScriptAsValues() async throws {
@@ -104,6 +131,8 @@ final class StubSender: MessageSending, @unchecked Sendable {
         let arguments = try #require(calls.values.first)
         #expect(arguments == ["-e", MessagesAppSender.script, "--", "+15550100142", hostile])
         #expect(!MessagesAppSender.script.contains("5550100142") && !MessagesAppSender.script.contains("do shell script"))
+        // The script can only ever send once.
+        #expect(MessagesAppSender.script.components(separatedBy: "send theWords").count == 2)
 
         let refused = MessagesAppSender(run: { _, _, _ in CommandResult(status: 1, output: "execution error: Not authorized to send Apple events to Messages. (-1743)") })
         await #expect(throws: ToolRefusal("OMNIS has not been allowed to control Messages. You can allow it in System Settings, under Privacy & Security, Automation")) {

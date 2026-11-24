@@ -1148,8 +1148,15 @@ public enum PersonalIntent {
         pattern: #"\b(delete|remove|get rid of)\b(?!.*\b(from|on|in|off) (my|the) calendar\b).{0,60}?\bcalendar\b"#,
         options: [.caseInsensitive])
 
+    // "text Sam ...", "send a message to mum", "tell Priya ...", "let Sam know", "reply ...".
+    // Not "tell me about", "summarise this text", "send me the file".
     private static let sendPattern = try! NSRegularExpression(
-        pattern: #"\b(text|texts|message|imessage|sms|send|tell|reply|respond|let .{1,40} know)\b"#, options: [.caseInsensitive])
+        pattern: #"(^|[.,;!?]\s*|\b(please|can you|could you|would you|and|then|to|just)\s+)(text|message|imessage|msg)\s+(?!me\b|us\b|about\b|from\b|that\b|says?\b|is\b|was\b)[\p{L}+\d]"#
+            + #"|\bsend\b(?!\s+(me|us)\b).{0,50}\b(texts?|messages?|imessages?|sms)\b"#
+            + #"|\b(tell|ask|remind)\s+(?!me\b|us\b|you\b)\p{L}"#
+            + #"|\blet\s+(?!me\b|us\b)\p{L}.{0,40}\bknow\b"#
+            + #"|\b(reply|respond|write back)\b"#,
+        options: [.caseInsensitive])
 
     /// True when the user's own words ask for a message to be sent.
     public static func asksToSend(_ text: String) -> Bool {

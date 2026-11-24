@@ -181,14 +181,19 @@ final class FakeMessages {
         for (text, sender) in [("Your verification code is 482913", "+15550001"), ("G-482913 is your Google verification code.", "+15550001"),
                                ("Use 4829 to log in", "sam@example.com"), ("Your OTP: 482 913. Do not share it.", "+15550001"),
                                ("Reset your password: https://bank.example/r?t=abc", "+15550001"),
-                               ("Tap to sign in https://x.example/magic", "+15550001")] {
+                               ("Tap to sign in https://x.example/magic", "+15550001"),
+                               ("Your verification code is ABC123", "+15550001"), ("Your Steam Guard code is K7P2D", "+15550001"),
+                               ("Your code is 1234567890", "+15550001"), ("Your code is 482,913", "+15550001"), ("Your code is 12.34.56", "+15550001"),
+                               ("123456", "+15550001"), ("G-482913", "+15550001"),
+                               ("Sign in: example.com/m/abc123", "+15550001"), ("Click here to verify: bit.ly/3xYz", "+15550001")] {
             #expect(MessageStore.hidingCodes(text, sender: sender) == MessageStore.hiddenCode, "\(text)")
         }
         // Anything from an automated short number is hidden whatever it says.
         #expect(MessageStore.hidingCodes("Your parcel is out for delivery", sender: "72345") == MessageStore.hiddenAutomated)
         // Ordinary messages with numbers, or with those words but no code or link, come through.
         for text in ["See you at 1830 on Friday", "My door code talk can wait, call me", "It cost 12,500 in the end", "The pin fell out of my bike",
-                     "Call me on 555 0100", "Flight BA 2490 lands 14/11/2026", "Can you confirm you're coming?", "https://example.com/recipe"] {
+                     "Call me on 555 0100", "Flight BA 2490 lands 14/11/2026", "Can you confirm you're coming?", "https://example.com/recipe",
+                     "ok", "Lunch at 1?", "See you in 10"] {
             #expect(MessageStore.hidingCodes(text, sender: "+15550001") == text, "\(text)")
         }
 

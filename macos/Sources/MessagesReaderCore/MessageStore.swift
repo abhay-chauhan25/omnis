@@ -174,8 +174,14 @@ public final class MessageStore {
     private static let codeWords = try! NSRegularExpression(
         pattern: #"\b(code|codes|otp|passcode|pass code|one[- ]time|verif\w*|2fa|two[- ]factor|authenticat\w*|security|log ?in|sign ?in|pin|password|reset|confirm\w*)\b"#,
         options: [.caseInsensitive])
-    private static let codeDigits = try! NSRegularExpression(pattern: #"(?<![\d.,/])(\d[ -]?){3,7}\d(?![\d/])|\b[A-Z]-\d{4,8}\b"#)
-    private static let link = try! NSRegularExpression(pattern: #"https?://"#, options: [.caseInsensitive])
+    // Anything that could be the code itself: a run of four or more digits
+    // however it is spaced or punctuated, or a short token mixing letters and digits.
+    private static let codeDigits = try! NSRegularExpression(
+        pattern: #"(\d[ .,\-]?){3,}\d|\b(?=[A-Za-z0-9\-]*\d)(?=[A-Za-z0-9\-]*[A-Za-z])[A-Za-z0-9\-]{4,12}\b"#)
+    // A web address, with or without "https://" in front.
+    private static let link = try! NSRegularExpression(
+        pattern: #"https?://|\b[a-z0-9\-]+(\.[a-z0-9\-]+)*\.[a-z]{2,}/\S+"#, options: [.caseInsensitive])
+    private static let onlyACode = try! NSRegularExpression(pattern: #"^\s*[A-Za-z]?-?(\d[ \-]?){3,9}\d\s*$"#)
 
     /// Sign-in codes and reset links are worth more to a thief than any other
     /// message, and nothing OMNIS does needs them. They never leave this
@@ -185,6 +191,8 @@ public final class MessageStore {
         // Banks and services send from short numbers: digits only, a handful of them.
         if !sender.isEmpty, sender.count <= 8, sender.allSatisfy(\.isNumber) { return hiddenAutomated }
         let whole = NSRange(text.startIndex..., in: text)
+        // A message that is nothing but a number is a code with the wording left off.
+        if onlyACode.firstMatch(in: text, range: whole) != nil { return hiddenCode }
         guard codeWords.firstMatch(in: text, range: whole) != nil else { return text }
         let hasDigits = codeDigits.firstMatch(in: text, range: whole) != nil
         let hasLink = link.firstMatch(in: text, range: whole) != nil

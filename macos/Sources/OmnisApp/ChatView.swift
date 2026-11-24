@@ -473,7 +473,8 @@ private struct ActionCard: View {
                     ForEach(Array(action.rows.enumerated()), id: \.offset) { _, row in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(row.label).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
-                            Text(row.value).lineLimit(row.label == "Notes" || row.label == "Message" ? 12 : nil)
+                            // A message to be sent is always shown whole; other long notes are cut.
+                            Text(row.value).lineLimit(row.label == "Notes" || (row.label == "Message" && action.kind != "send_message") ? 12 : nil)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .font(.system(size: 12))
@@ -525,12 +526,17 @@ private struct ActionCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Not done: \(why)", systemImage: "exclamationmark.triangle.fill").font(.system(size: 12))
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Button(action.declineLabel, action: decline)
-                    Button("Try Again", action: confirm)
+                if action.kind == "send_message" {
+                    // Trying again could send it twice if it went after all.
+                    Text("Look in Messages before asking again.").font(.system(size: 11)).foregroundStyle(.tertiary)
+                } else {
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        Button(action.declineLabel, action: decline)
+                        Button("Try Again", action: confirm)
+                    }
+                    .controlSize(.small)
                 }
-                .controlSize(.small)
             }
         }
     }

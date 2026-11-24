@@ -231,8 +231,9 @@ public struct Conversation: Equatable, Sendable {
         serviceDeleteNext = asks && !hasFile
         // Sending needs the user's own words to ask for it, or to be answering
         // a question ("which number?") straight after doing so.
-        let asksSend = PersonalIntent.asksToSend(text)
-        let sends = asksSend || serviceSendNext
+        // Like deleting, it is never offered in a chat that holds a file: a file's text could ask for it.
+        let asksSend = PersonalIntent.asksToSend(text) && !hasFile
+        let sends = asksSend || (serviceSendNext && !hasFile)
         serviceSendNext = asksSend
         return ToolAccess(deletes: deletes, sends: sends)
     }

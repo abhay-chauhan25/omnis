@@ -63,7 +63,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 280. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 282. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -144,5 +144,11 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 - The Verification Agent is pinned to Sonnet; the other agents inherit the session model.
 
 ## Next step
+
+Voice ("Hey OMNIS") is proposed and waiting on six decisions from the user: how the wake phrase is heard, when it listens, ending and memory, personality, confirmations by voice or click, and what shows while it listens. Nothing of it is built.
+
+Also waiting on the user: running `macos/scripts/protect-signing-key.sh`; trying a real send; whether the school account connects in Apple Mail; hardening OMNIS itself.
+
+Earlier note:
 
 The user chooses what comes next: Gmail, Messages, the browser, voice, or memory (a small reviewed fact store was recommended; see ADR-0005).

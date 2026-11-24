@@ -41,7 +41,33 @@ public protocol MessageSending: Sendable {
 public final class MessagesTools: AssistantTools, @unchecked Sendable {
     public let service = "messages"
     public let toolNames: Set<String> = ["messages_send"]
-    public static let maxCharacters = 1_000
+    public static let maxCharacters = 600
+    public static let maxLines = 12
+
+    /// The message as it will be sent, with nothing in it that the preview
+    /// would not show: no invisible or direction-changing characters, no
+    /// blank filler characters, no runs of empty lines.
+    static func visible(_ raw: String) -> String {
+        var kept = String.UnicodeScalarView()
+        for scalar in raw.unicodeScalars {
+            if scalar == "\n" { kept.append(scalar); continue }
+            if scalar == "\t" || scalar == "\r" { kept.append(" "); continue }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .surrogate, .privateUse, .unassigned, .lineSeparator, .paragraphSeparator: continue
+            default: break
+            }
+            // Fillers that take up no room, and selectors other than the one emoji use.
+            if [0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800].contains(scalar.value) { continue }
+            if (0x180B...0x180F).contains(scalar.value) || (0xFE00...0xFE0E).contains(scalar.value)
+                || (0xE0000...0xE0FFF).contains(scalar.value) { continue }
+            kept.append(scalar)
+        }
+        var text = String(kept)
+        while text.contains("\n\n\n") { text = text.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     private let contacts: any ContactsDirectory
     private let sender: any MessageSending
     private let refs = EventRefs(prefix: "c")
@@ -68,9 +94,12 @@ public final class MessagesTools: AssistantTools, @unchecked Sendable {
         guard access.sends else {
             throw ToolRefusal("sending a message was not asked for in the user's own message. Ask them to say plainly who to message and what to say")
         }
-        let text = CalendarFormatter.cleanNotes(arguments["text"] ?? "")
+        let text = Self.visible(arguments["text"] ?? "")
         guard !text.isEmpty else { throw ToolRefusal("the message has no words. Ask the user what to say") }
-        guard text.count <= Self.maxCharacters else { throw ToolRefusal("the message is longer than \(Self.maxCharacters) characters") }
+        // Short enough that the whole of it is in front of the user on the preview.
+        guard text.count <= Self.maxCharacters, text.split(separator: "\n", omittingEmptySubsequences: false).count <= Self.maxLines else {
+            throw ToolRefusal("the message is too long to send this way (at most \(Self.maxCharacters) characters and \(Self.maxLines) lines). Offer a shorter one")
+        }
 
         let chosen: (name: String, handle: ContactHandle)
         if let ref = arguments["contact"]?.trimmingCharacters(in: CharacterSet(charactersIn: "[] ")), !ref.isEmpty {
@@ -90,7 +119,10 @@ public final class MessagesTools: AssistantTools, @unchecked Sendable {
                 chosen = options[0]
             } else {
                 // More than one person, or more than one number. The user chooses; the model only relays.
-                let lines = options.prefix(12).map { option -> String in
+                guard options.count <= 12 else {
+                    throw ToolRefusal("too many people or numbers match \"\(name)\". Ask the user for the full name")
+                }
+                let lines = options.map { option -> String in
                     let key = "\(option.name)|\(option.handle.value)"
                     lock.withLock { choices[key] = option }
                     return "[\(refs.ref(for: key))] \(CalendarFormatter.clean(option.name)), \(Self.hint(option.handle))"
@@ -160,13 +192,13 @@ public struct MessagesAppSender: MessageSending {
             set theHandle to item 1 of argv
             set theWords to item 2 of argv
             tell application "Messages"
+                -- Finding the person may be tried twice. Sending happens once, below.
                 try
-                    set theAccount to 1st account whose service type = iMessage
-                    send theWords to participant theHandle of theAccount
+                    set thePerson to participant theHandle of (1st account whose service type = iMessage)
                 on error
-                    set theAccount to 1st account whose service type = SMS
-                    send theWords to participant theHandle of theAccount
+                    set thePerson to participant theHandle of (1st account whose service type = SMS)
                 end try
+                send theWords to thePerson
             end tell
         end run
         """
