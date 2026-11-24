@@ -83,6 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
                                             openChat: { [weak self] in self?.chat.show() })
         projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
+        if let lines = AppEnvironment.voiceRehearsal {
+            // No windows, no hotkey, no microphone: only the conversation itself.
+            voice = VoiceModel(chat: model, audit: audit, autoStart: false)
+            let started = Date()
+            voice.rehearse(lines, report: { line in
+                print(String(format: "[%5.1fs] %@", Date().timeIntervalSince(started), line))
+                fflush(stdout)
+            }, finished: { exit(0) })
+            return
+        }
         // Something that needs the user's eyes during a spoken conversation is shown in
         // the notch panel when there is one, and in the chat window otherwise.
         voice = VoiceModel(chat: model, audit: audit, showChat: { [weak self] in

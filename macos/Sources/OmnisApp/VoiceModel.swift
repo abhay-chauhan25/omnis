@@ -66,7 +66,7 @@ final class VoiceModel: ObservableObject {
     /// Brings the chat window forward when something in it needs the user's eyes or a click.
     private let showChat: () -> Void
 
-    init(chat: ChatModel, audit: AuditLog, showChat: @escaping () -> Void = {}) {
+    init(chat: ChatModel, audit: AuditLog, autoStart: Bool = true, showChat: @escaping () -> Void = {}) {
         self.chat = chat
         self.showChat = showChat
         self.audit = audit
@@ -110,12 +110,17 @@ final class VoiceModel: ObservableObject {
             self?.problem = why
             self?.isOn = false
         }
-        watching = chat.$conversation.sink { [weak self] conversation in
-            // After this change has been stored.
-            Task { @MainActor in self?.chatChanged(conversation) }
+        watching = chat.$conversation.sink { [weak self] _ in
+            // The chat is read as it stands when this runs, never as it was when the change was
+            // announced: one question changes the chat several times, and an earlier picture of
+            // it, looked at late, has no answer in it yet.
+            Task { @MainActor in
+                guard let self else { return }
+                self.chatChanged(self.chat.conversation)
+            }
         }
         // The switch is remembered, so voice comes back on with OMNIS if it was left on.
-        if UserDefaults.standard.bool(forKey: Self.switchKey) { isOn = true }
+        if autoStart, UserDefaults.standard.bool(forKey: Self.switchKey) { isOn = true }
     }
 
     private func switched() {
@@ -149,6 +154,43 @@ final class VoiceModel: ObservableObject {
             state = .off
             level = 0
             hearing = ""
+        }
+    }
+
+    // MARK: Rehearsal (development aid)
+
+    private struct Rehearsal {
+        var lines: [String]
+        let report: (String) -> Void
+        let finished: () -> Void
+    }
+    private var rehearsal: Rehearsal?
+
+    /// Runs a spoken conversation with no microphone and no sound: each line is
+    /// taken as if it had been heard, and what OMNIS would say is reported.
+    /// Everything else is real, including the answers.
+    func rehearse(_ lines: [String], report: @escaping (String) -> Void, finished: @escaping () -> Void) {
+        rehearsal = Rehearsal(lines: lines, report: report, finished: finished)
+        run(flow.switchOn())
+        rehearseNext()
+    }
+
+    private func rehearseNext() {
+        guard var current = rehearsal else { return }
+        guard !current.lines.isEmpty else {
+            rehearsal = nil
+            current.finished()
+            return
+        }
+        let line = current.lines.removeFirst()
+        rehearsal = current
+        current.report("YOU SAY: \(line)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let before = self.flow.state
+            self.run(self.flow.heard(line))
+            // Something said that nothing was listening for: on to the next line.
+            if self.flow.state == before, before == .waiting { self.rehearseNext() }
         }
     }
 
@@ -194,11 +236,21 @@ final class VoiceModel: ObservableObject {
             case .ask(let text):
                 ask(text)
             case .speak(let words):
-                engine.speak(words)
+                if let rehearsal {
+                    // A rehearsal makes no sound: what would be said is reported instead.
+                    rehearsal.report("OMNIS SAYS: \(words)")
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        guard let self else { return }
+                        self.run(self.flow.finishedSpeaking())
+                    }
+                } else {
+                    engine.speak(words)
+                }
             case .hush:
                 engine.hush()
             case .listen(let seconds):
-                listen(for: seconds)
+                if rehearsal != nil { rehearseNext() } else { listen(for: seconds) }
             case .settleSearch(let allowed):
                 askedSearch = false
                 audit.record(action: "voice_confirm", target: "web_search", outcome: allowed ? "yes" : "no")
@@ -208,6 +260,8 @@ final class VoiceModel: ObservableObject {
             case .endChat:
                 awaited = nil
                 freshNext = true
+                rehearsal?.report("(conversation ended)")
+                if rehearsal != nil { rehearseNext() }
             }
         }
         state = flow.state

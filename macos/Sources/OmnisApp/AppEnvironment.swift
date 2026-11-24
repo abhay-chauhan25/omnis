@@ -91,6 +91,14 @@ enum AppEnvironment {
     /// prints no names, numbers or messages.
     static var checkMessagesReader: Bool { CommandLine.arguments.contains("--check-messages-reader") }
 
+    /// Development aid: `--rehearse-voice "line one|line two"` runs a spoken conversation
+    /// with no microphone, no sound and no windows, printing each side. The answers are real.
+    static var voiceRehearsal: [String]? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--rehearse-voice"), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
     /// Development aid: `--show-on-launch` opens the popup immediately, and
     /// `--query <text>` pre-fills it. Used for screenshots and manual checks.
     static var showOnLaunch: Bool { CommandLine.arguments.contains("--show-on-launch") }
