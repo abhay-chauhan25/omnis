@@ -56,20 +56,25 @@ struct DashboardView: View {
     @FocusState private var askFocused: Bool
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                header
-                HStack(alignment: .top, spacing: 18) {
-                    VStack(spacing: 18) { today; focusAndCapture; mail }.frame(minWidth: 280, maxWidth: 360)
-                    centre.frame(minWidth: 420, maxWidth: .infinity)
-                    VStack(spacing: 18) { usage; system; activity }.frame(minWidth: 280, maxWidth: 360)
-                }
-                projects
+        // Everything fits the window: the centre is laid out to the height
+        // there is, and a side column scrolls only if the window is too short for it.
+        VStack(spacing: 18) {
+            header
+            HStack(alignment: .top, spacing: 18) {
+                ScrollView(showsIndicators: false) { VStack(spacing: 18) { today; focusAndCapture; mail } }
+                    .frame(minWidth: 280, maxWidth: 360)
+                centre.frame(minWidth: 420, maxWidth: .infinity)
+                ScrollView(showsIndicators: false) { VStack(spacing: 18) { usage; system; activity } }
+                    .frame(minWidth: 280, maxWidth: 360)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 44)
-            .padding(.bottom, 24)
+            .frame(maxHeight: .infinity)
+            projects
         }
+        .padding(.horizontal, 24)
+        .padding(.top, 40)
+        .padding(.bottom, 20)
+        // Fresh figures as soon as an answer finishes, without waiting for the next refresh.
+        .onChange(of: chat.isAnswering) { if !chat.isAnswering { model.refresh() } }
         .background(
             RadialGradient(colors: [Ink.lift, Ink.ground], center: UnitPoint(x: 0.5, y: 0.38), startRadius: 0, endRadius: 760)
                 .ignoresSafeArea()
@@ -177,9 +182,12 @@ struct DashboardView: View {
                 Text(model.greeting).font(.system(size: 30, weight: .medium))
                 Text(model.summary).font(.system(size: 14)).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
             }
+            // The core takes the room that is left, up to a comfortable size,
+            // so the ask bar and tiles below it are always in view.
             CoreView(level: chat.isAnswering ? 0.13 : 0.045, running: model.isVisible)
                 .animation(.easeInOut(duration: 0.9), value: chat.isAnswering)
-                .frame(maxWidth: 440).aspectRatio(1, contentMode: .fit)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(minHeight: 150, maxHeight: 380)
                 .accessibilityHidden(true)
             HStack(spacing: 10) {
                 Circle().fill(chat.isAnswering ? Ink.gold : Ink.faint).frame(width: 7, height: 7)
@@ -188,6 +196,7 @@ struct DashboardView: View {
             .accessibilityElement(children: .combine)
             askBar
             launchTiles
+            Spacer(minLength: 0)
         }
     }
 
@@ -446,7 +455,7 @@ private struct CoreView: View, Animatable {
                 let t = reduceMotion ? 1.5 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 10_000)
                 let side = min(size.width, size.height)
                 let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-                let radius = side * 0.33
+                let radius = side * 0.40
                 let spin = t * 0.16, tilt = 0.38
                 let cs = cos(spin), sn = sin(spin), ct = cos(tilt), st = sin(tilt)
                 let amp = level * (0.85 + 0.3 * sin(t * 5) * sin(t * 1.7))

@@ -74,7 +74,7 @@ public enum ClaudeRouter {
 }
 
 /// How much of the Claude plan's allowance has been used, as Claude Code reports it.
-public struct UsageWindows: Equatable, Sendable {
+public struct UsageWindows: Equatable, Sendable, Codable {
     /// From 0 to 1. Nil until Claude Code has reported it.
     public var fiveHour: Double?
     public var sevenDay: Double?

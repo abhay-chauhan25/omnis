@@ -45,6 +45,7 @@ final class ChatModel: ObservableObject {
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
     static let idleChatSeconds: TimeInterval = 25 * 60
+    private static let usageKey = "OMNISClaudeUsage"
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
@@ -67,8 +68,23 @@ final class ChatModel: ObservableObject {
         claude?.onPersonalDataDelivered { [weak self] in
             Task { @MainActor in self?.conversation.markPersonal() }
         }
+        // The last figures are kept between runs, so they show at once and
+        // the limits apply from the first question. A window that has since
+        // reset is ignored when they are read.
+        if let saved = UserDefaults.standard.data(forKey: Self.usageKey),
+           let windows = try? JSONDecoder().decode(UsageWindows.self, from: saved) {
+            usage = windows.current()
+        }
         claude?.onUsage { [weak self] windows in
-            Task { @MainActor in self?.usage = windows }
+            Task { @MainActor in
+                guard let self else { return }
+                // A report may cover only one window; the other keeps its last value.
+                var merged = self.usage.current()
+                if windows.fiveHour != nil { merged.fiveHour = windows.fiveHour; merged.fiveHourResets = windows.fiveHourResets }
+                if windows.sevenDay != nil { merged.sevenDay = windows.sevenDay; merged.sevenDayResets = windows.sevenDayResets }
+                self.usage = merged
+                if let data = try? JSONEncoder().encode(merged) { UserDefaults.standard.set(data, forKey: Self.usageKey) }
+            }
         }
     }
 
