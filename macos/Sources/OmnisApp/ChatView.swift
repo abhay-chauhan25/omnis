@@ -100,7 +100,7 @@ struct ChatView: View {
                     }
                     ForEach(model.conversation.messages) { message in
                         MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline,
-                                    answerLocally: model.answerLocally, confirmProject: model.confirmProject,
+                                    answerLocally: model.answerLocally, answerSearch: model.answerSearchAsk, confirmProject: model.confirmProject,
                                     declineProject: model.declineProject, openInProjectMode: model.openInProjectMode,
                                     confirmAction: model.confirmAction, declineAction: model.declineAction)
                     }
@@ -289,6 +289,7 @@ private struct MessageView: View {
     let confirm: (UUID) -> Void
     let decline: (UUID) -> Void
     let answerLocally: (UUID) -> Void
+    let answerSearch: (Bool) -> Void
     let confirmProject: (UUID) -> Void
     let declineProject: (UUID) -> Void
     let openInProjectMode: (UUID) -> Void
@@ -338,6 +339,9 @@ private struct MessageView: View {
                 Button("Answer on this Mac instead") { answerLocally(message.id) }
                     .controlSize(.small)
                     .help("Use the model on this Mac for this question and the rest of this chat.")
+            }
+            if let ask = message.searchAsk {
+                SearchAskCard(ask: ask, allow: { answerSearch(true) }, decline: { answerSearch(false) })
             }
             ForEach(message.actions) { action in
                 ActionCard(action: action, confirm: { confirmAction(action.id) }, decline: { declineAction(action.id) })
@@ -528,6 +532,68 @@ private struct ActionCard: View {
                 }
                 .controlSize(.small)
             }
+        }
+    }
+}
+
+/// Asks, once per chat, whether a chat that holds personal information may
+/// search outside. Built to match the other preview cards.
+private struct SearchAskCard: View {
+    let ask: SearchAsk
+    let allow: () -> Void
+    let decline: () -> Void
+
+    private var isLive: Bool { ask.state == .waiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "globe").font(.system(size: 18))
+                    .foregroundStyle(isLive ? Color.accentColor : Color.secondary).frame(width: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("WEB SEARCH").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text("Allow web searches in this chat?").font(.system(size: 14, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("This chat holds personal information, and a search sends words to search engines. You are asked once per chat.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if !ask.query.isEmpty {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("First search").foregroundStyle(.secondary).frame(width: 76, alignment: .leading)
+                            Text(ask.query).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.system(size: 12))
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            footer
+        }
+        .padding(12)
+        .frame(maxWidth: 440, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Allow web searches in this chat?")
+    }
+
+    @ViewBuilder private var footer: some View {
+        switch ask.state {
+        case .waiting:
+            HStack(spacing: 8) {
+                Text("Nothing searched yet").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Button("Don\u{2019}t Search", action: decline)
+                Button("Allow in This Chat", action: allow).buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        case .allowed:
+            Label("Searches allowed for the rest of this chat", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12)).foregroundStyle(.green)
+        case .declined:
+            Text("No searches in this chat. Start a new chat to search.").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .lapsed:
+            Text("Not answered, so nothing was searched. You will be asked again.").font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
 }

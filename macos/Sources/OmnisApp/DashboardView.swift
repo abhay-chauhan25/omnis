@@ -2,7 +2,7 @@ import OmnisCore
 import SwiftUI
 
 /// The colours of the dashboard. Dark whatever the system setting, by design.
-private enum Ink {
+enum Ink {
     static let ground = Color(red: 0.024, green: 0.031, blue: 0.043)
     static let lift = Color(red: 0.055, green: 0.075, blue: 0.102)
     static let text = Color(red: 0.91, green: 0.93, blue: 0.95)
@@ -16,7 +16,7 @@ private enum Ink {
     static let panel = Color.white.opacity(0.025)
 }
 
-private extension Font {
+extension Font {
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight, design: .monospaced) }
 }
 
@@ -63,7 +63,10 @@ struct DashboardView: View {
         // there is, and a side column scrolls only if the window is too short for it.
         VStack(spacing: 18) {
             header
-            if project.isActive {
+            if model.showActivity {
+                // Activity mode replaces the panels with the record of what OMNIS did.
+                ActivityView(model: model).frame(maxHeight: .infinity)
+            } else if project.isActive {
                 // Project mode replaces the panels with terminals and the advisor.
                 ProjectModeView(model: project).frame(maxHeight: .infinity)
             } else {
@@ -97,8 +100,9 @@ struct DashboardView: View {
         HStack(alignment: .center, spacing: 16) {
             Text("OMNIS").font(.system(size: 17, weight: .semibold)).tracking(5.5)
             HStack(spacing: 2) {
-                modeButton("Dashboard", on: !project.isActive) { project.isActive = false }
-                modeButton("Project", on: project.isActive) { project.isActive = true }
+                modeButton("Dashboard", on: !project.isActive && !model.showActivity) { model.showActivity = false; project.isActive = false }
+                modeButton("Project", on: project.isActive && !model.showActivity) { model.showActivity = false; project.isActive = true }
+                modeButton("Activity", on: model.showActivity) { project.isActive = false; model.showActivity = true }
             }
             .padding(3)
             .background(Capsule().fill(Color.white.opacity(0.05)))

@@ -22,6 +22,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; tried by the user 2026-11-24 | ADR-0013, `docs/stages/claude-regular-mode.md` |
 | Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; reviewed, findings fixed; tried by the user 2026-11-24 | ADR-0014, `docs/stages/project-mode.md` |
 | Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; tried by the user 2026-11-24 | `docs/stages/services.md` |
+| Guard rails: the ask-once search question, fuller audit record, Activity view | Built and reviewed 2026-11-24; findings fixed; not yet seen on screen | `docs/stages/guard-rails.md` |
 | Services: Gmail, Messages, browser | Not started. Each needs a decision from the user | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
 | Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
@@ -60,7 +61,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 119. Swift: 240. (Fewer than before: the retired API-key lane's tests went with it.) Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 119. Swift: 251. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -117,6 +118,9 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 | 2026-11-23 | New tools are connected to OMNIS, not straight to Claude, so confirmations and rules apply. | `docs/stages/claude-regular-mode.md` |
 | 2026-11-24 | Logo: the Halo mark (three gold arcs closing on a bright centre), used for the Dock icon and the menu-bar glyph. | `macos/scripts/make-icon.swift` |
 | 2026-11-24 | The app is signed with a local identity kept in the login keychain, so rebuilds keep their macOS permissions. | `macos/scripts/make-signing-identity.sh` |
+| 2026-11-24 | In a Claude chat that holds personal information, web searches are asked about once per chat, and only then. | `docs/stages/guard-rails.md` |
+| 2026-11-24 | The audit log is shown as an Activity mode in the dashboard. | `docs/stages/guard-rails.md` |
+| 2026-11-24 | No Full Disk Access for OMNIS. No file access yet; a folder is asked for when needed. Messages reading goes through a separate helper. Contacts may be used to match names. School Outlook is the mail account. | — |
 | 2026-11-24 | Project mode: real Claude Code terminals in the dashboard with OMNIS as a read-only advisor; SwiftTerm added as the first third-party dependency; edits and safe commands free in the project folder, the rest asked. | ADR-0014 |
 
 ## Things worth knowing

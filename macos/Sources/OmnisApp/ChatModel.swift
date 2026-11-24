@@ -99,6 +99,10 @@ final class ChatModel: ObservableObject {
            let windows = try? JSONDecoder().decode(UsageWindows.self, from: saved) {
             usage = windows.current()
         }
+        // Requests the gate refused or held back. Tool names and reasons only.
+        claude?.onGate { action, tool, outcome, detail in
+            audit.record(action: action, target: tool, outcome: outcome, detail: detail)
+        }
         claude?.onUsage { [weak self] windows in
             Task { @MainActor in
                 guard let self else { return }
@@ -453,6 +457,9 @@ final class ChatModel: ObservableObject {
             // A new project may be prepared only when your own message asks for one.
             // Deleting through any service needs your own message to have asked for it.
             request.toolAccess = conversation.serviceAccess(for: options.text)
+            // Once the chat holds something personal, a search outside is asked about first, once.
+            request.sensitive = conversation.hasPersonalData
+            request.searchConsent = conversation.searchConsent
             request.allowProject = projectSetup != nil && attachments.isEmpty && conversation.offersProject(for: options.text)
             stream = claude.ask(request)
         }
@@ -476,6 +483,11 @@ final class ChatModel: ObservableObject {
                     case .searchFailed(let why):
                         self.conversation.update(answerID) { $0.searching = false; $0.searchProblem = why }
                         audit.record(action: "web_search", outcome: "error", detail: why)
+                    case .searchConsentNeeded(let query):
+                        self.conversation.update(answerID) { $0.searchAsk = SearchAsk(query: query) }
+                        self.announce("OMNIS is asking whether this chat may search the web")
+                    case .searchConsentLapsed:
+                        self.conversation.lapseSearchAsk()
                     case .readingCalendar:
                         self.conversation.update(answerID) { $0.readingCalendar = true }
                         self.announce("Checking your calendar")
@@ -537,6 +549,7 @@ final class ChatModel: ObservableObject {
                              detail: [error.localizedDescription, extra].compactMap { $0 }.joined(separator: " | "))
                 // If Claude cannot be used, the model on this Mac is offered.
                 let offerLocal = !local && backend != nil && error is ClaudeError && (error as? ClaudeError) != .busy
+                self?.conversation.lapseSearchAsk()
                 self?.conversation.update(answerID) {
                     $0.state = .failed(error.localizedDescription)
                     $0.searching = false
@@ -548,11 +561,21 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// The user's answer to "may this chat search the web?". It holds for the
+    /// rest of the chat, and an answer that was waiting for it carries on.
+    func answerSearchAsk(_ allowed: Bool) {
+        guard conversation.messages.contains(where: { $0.searchAsk?.state == .waiting }) else { return }
+        conversation.settleSearch(allowed: allowed)
+        claude?.answerSearchConsent(allowed)
+        audit.record(action: "search_consent", outcome: allowed ? "allowed" : "declined", detail: "for the rest of the chat")
+    }
+
     /// Stops the answer being written. What arrived so far is kept.
     func stop() {
         guard let last = conversation.messages.last, last.state == .streaming else { return }
         askTask?.cancel()
         askTask = nil
+        conversation.lapseSearchAsk()
         conversation.update(last.id) { $0.state = .stopped; $0.searching = false; $0.readingCalendar = false }
         audit.record(action: "ask", outcome: "stopped")
     }

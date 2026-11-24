@@ -70,6 +70,11 @@ public enum AnswerEvent: Equatable, Sendable {
     case sources([SearchResult])
     /// The search could not be done; the model was told so.
     case searchFailed(String)
+    /// The chat holds personal information and the model wants to search
+    /// outside. The answer waits while the user is asked, once per chat.
+    case searchConsentNeeded(query: String)
+    /// Nobody answered the question in time. The search was not made.
+    case searchConsentLapsed
     /// The model asked to see the calendar and the app is reading it.
     case readingCalendar
     /// The calendar was read. `summary` says what, in a few words, without any event's details.

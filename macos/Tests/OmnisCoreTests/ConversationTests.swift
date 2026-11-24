@@ -151,3 +151,35 @@ import Testing
         #expect(!chat.staysLocal)
     }
 }
+
+@Suite struct ConversationSearchConsentTests {
+    @Test func theAnswerHoldsForTheChatAndANewChatForgetsIt() {
+        var chat = Conversation()
+        #expect(chat.searchConsent == .notAsked)
+        let id = chat.begin(question: "what is on today, and look up the venue")
+        chat.update(id) { $0.searchAsk = SearchAsk(query: "venue opening hours") }
+        chat.settleSearch(allowed: true)
+        #expect(chat.searchConsent == .allowed)
+        #expect(chat.messages.last?.searchAsk?.state == .allowed)
+        chat.clear()
+        #expect(chat.searchConsent == .notAsked)
+
+        let second = chat.begin(question: "again")
+        chat.update(second) { $0.searchAsk = SearchAsk(query: "q") }
+        chat.settleSearch(allowed: false)
+        #expect(chat.searchConsent == .refused && chat.messages.last?.searchAsk?.state == .declined)
+    }
+
+    @Test func anUnansweredQuestionDecidesNothing() {
+        var chat = Conversation()
+        let id = chat.begin(question: "look it up")
+        chat.update(id) { $0.searchAsk = SearchAsk(query: "q") }
+        chat.lapseSearchAsk()
+        #expect(chat.messages.last?.searchAsk?.state == .lapsed)
+        #expect(chat.searchConsent == .notAsked)
+        // A settled card is not reopened by a later lapse.
+        chat.update(id) { $0.searchAsk = SearchAsk(query: "q", state: .allowed) }
+        chat.lapseSearchAsk()
+        #expect(chat.messages.last?.searchAsk?.state == .allowed)
+    }
+}

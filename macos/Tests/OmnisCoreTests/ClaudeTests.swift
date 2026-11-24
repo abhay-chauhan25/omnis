@@ -52,24 +52,45 @@ for line in sys.stdin:
     if text == "silent":
         emit({"type": "result", "is_error": False, "result": "Whole answer at once.", "modelUsage": {f"claude-{model}-5-5": {}}}); continue
     if text.startswith("tool:"):
-        name, _, raw = text[5:].strip().partition(" ")
+        # Several tools in one answer are separated by " ;; ".
         say("Let me check.")
-        reply = ask(name, json.loads(raw or "{}"))
-        note(permission=reply)
-        if reply["behavior"] == "allow":
-            if name == "WebSearch":
-                emit({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content":
-                    'Web search results for query: "x"\n\nLinks: [{"title":"Python 3.15 [final]","url":"https://python.org/a"},{"title":"","url":"https://example.com/b"},{"title":"Plain","url":"http://plain.example/c"}]\n\nMore text ] here.'}]}})
-                say("Searched.")
+        for part in text[5:].split(" ;; "):
+            name, _, raw = part.strip().partition(" ")
+            reply = ask(name, json.loads(raw or "{}"))
+            note(permission=reply)
+            if reply["behavior"] == "allow":
+                if name == "WebSearch":
+                    emit({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content":
+                        'Web search results for query: "x"\n\nLinks: [{"title":"Python 3.15 [final]","url":"https://python.org/a"},{"title":"","url":"https://example.com/b"},{"title":"Plain","url":"http://plain.example/c"}]\n\nMore text ] here.'}]}})
+                    say("Searched.")
+                else:
+                    say("TOOL SAID: " + str(reply["updatedInput"].get("_result")))
             else:
-                say("TOOL SAID: " + str(reply["updatedInput"].get("_result")))
-        else:
-            say("DENIED: " + reply["message"])
+                say("DENIED: " + reply["message"])
     else:
         say(f"Hello from {model}.")
     emit({"type": "result", "is_error": False, "result": "done", "usage": {"input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": 7},
           "modelUsage": {"claude-haiku-5-5": {}, f"claude-{model}-5-5": {}}})
 """#
+
+/// A service with a read that is not personal and a search that goes outside.
+final class StubMusic: AssistantTools, @unchecked Sendable {
+    let service = "music"
+    let toolNames: Set<String> = ["music_now", "music_search"]
+    let holdsPersonalData = false
+    let outwardTools: Set<String> = ["music_search"]
+    let searches = Collected<String>()
+
+    func run(tool: String, arguments: [String: String], access: ToolAccess) async throws -> ToolOutcome {
+        if tool == "music_search" {
+            searches.add(arguments["query"] ?? "")
+            return .done(content: "searched", note: "Searched music")
+        }
+        return .read(content: "Playing: a song.", note: "Checked music")
+    }
+
+    func perform(_ proposal: ActionProposal) async throws -> String { "" }
+}
 
 final class Collected<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
@@ -92,7 +113,8 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
     }
 
     func service(calendar: StubCalendar? = StubCalendar(), idle: Double = 600, deadline: Double = 5,
-                 silence: Double = 60, extraTool: String? = nil) -> ClaudeService {
+                 silence: Double = 60, extraTool: String? = nil, consentWait: Double = 30,
+                 services: [any AssistantTools] = []) -> ClaudeService {
         var environment = ProcessInfo.processInfo.environment
         environment["FAKE_EXTRA_TOOL"] = extraTool
         environment["FAKE_CLAUDE_LOG"] = log.path
@@ -104,7 +126,8 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         config.idleSeconds = idle
         config.toolDeadline = deadline
         config.silenceSeconds = silence
-        return ClaudeService(config: config, tools: CalendarTools(reader: calendar))
+        config.consentSeconds = consentWait
+        return ClaudeService(config: config, tools: CalendarTools(reader: calendar), services: services)
     }
 
     func entries() -> [[String: Any]] {
@@ -324,6 +347,153 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
             #expect(run.text.contains("DENIED: That tool is not available in OMNIS") || run.text.contains("is not something OMNIS can do"),
                     "\(tool): \(run.text)")
         }
+        claude.endSession()
+    }
+
+    /// Runs one question, answering "may this chat search?" when it comes up.
+    func traceAnswering(_ claude: ClaudeService, _ request: ClaudeRequest, allow: Bool?) async throws -> (text: String, events: [AnswerEvent]) {
+        var text = ""
+        var events: [AnswerEvent] = []
+        for try await event in claude.ask(request) {
+            if case .chunk(let piece) = event { text += piece } else { events.append(event) }
+            if case .searchConsentNeeded = event, let allow { claude.answerSearchConsent(allow) }
+        }
+        return (text, events)
+    }
+
+    static let search = #"tool: WebSearch {"query": "dentist reviews"}"#
+    func searched(_ run: (text: String, events: [AnswerEvent])) -> Bool { run.events.contains(.searching(query: "dentist reviews")) }
+    func asked(_ run: (text: String, events: [AnswerEvent])) -> Bool { run.events.contains(.searchConsentNeeded(query: "dentist reviews")) }
+
+    @Test func aChatHoldingPersonalInformationAsksOnceBeforeSearching() async throws {
+        let claude = service()
+        let gate = Collected<String>()
+        claude.onGate { action, tool, outcome, _ in gate.add("\(action) \(tool) \(outcome)") }
+
+        // Nothing personal in the chat: the search just runs.
+        let plain = try await traceAnswering(claude, ClaudeRequest(text: Self.search), allow: nil)
+        #expect(searched(plain) && !asked(plain))
+
+        // Something personal was sent earlier: the search waits for the user, then goes ahead.
+        var sensitive = ClaudeRequest(text: Self.search)
+        sensitive.sensitive = true
+        let allowed = try await traceAnswering(claude, sensitive, allow: true)
+        #expect(asked(allowed) && searched(allowed))
+        #expect(allowed.events.firstIndex(of: .searchConsentNeeded(query: "dentist reviews"))!
+                < allowed.events.firstIndex(of: .searching(query: "dentist reviews"))!)
+
+        // Once the chat has its answer, nothing is asked again, either way.
+        sensitive.searchConsent = .allowed
+        let again = try await traceAnswering(claude, sensitive, allow: nil)
+        #expect(searched(again) && !asked(again))
+        sensitive.searchConsent = .refused
+        let never = try await traceAnswering(claude, sensitive, allow: nil)
+        #expect(!searched(never) && !asked(never))
+        #expect(never.text.contains("DENIED: The user chose not to allow searches"))
+
+        // Saying no refuses the search that was waiting.
+        sensitive.searchConsent = .notAsked
+        let declined = try await traceAnswering(claude, sensitive, allow: false)
+        #expect(asked(declined) && !searched(declined))
+        #expect(declined.text.contains("DENIED: The user chose not to allow searches"))
+
+        // An attached file makes the chat personal by itself.
+        let file = Attachment(kind: .text, name: "notes.txt", text: "private")
+        let withFile = try await traceAnswering(claude, ClaudeRequest(text: Self.search, attachments: [file]), allow: true)
+        #expect(asked(withFile) && searched(withFile))
+
+        #expect(gate.values == ["search_consent web_search asked", "tool_refused web_search refused",
+                                "search_consent web_search asked", "search_consent web_search asked"])
+        claude.endSession()
+    }
+
+    @Test func readingSomethingPersonalMidAnswerMakesTheNextSearchAsk() async throws {
+        let claude = service(calendar: calendar())
+        let both = #"tool: mcp__omnis__calendar_events {"start": "2026-11-18", "end": "2026-11-18"} ;; WebSearch {"query": "dentist reviews"}"#
+        let run = try await traceAnswering(claude, ClaudeRequest(text: both, access: CalendarToolAccess(calendar: true)), allow: true)
+        #expect(asked(run) && searched(run))
+        // The other way round, the search came first and nothing personal had been sent yet.
+        let reversed = #"tool: WebSearch {"query": "dentist reviews"} ;; mcp__omnis__calendar_events {"start": "2026-11-18", "end": "2026-11-18"}"#
+        let first = try await traceAnswering(claude, ClaudeRequest(text: reversed, access: CalendarToolAccess(calendar: true)), allow: nil)
+        #expect(searched(first) && !asked(first))
+        claude.endSession()
+    }
+
+    @Test(.timeLimit(.minutes(1))) func anUnansweredSearchQuestionLapsesWithoutEndingTheAnswer() async throws {
+        // Silence would normally end an answer after 0.3 s; waiting for the user must not.
+        let claude = service(silence: 0.3, consentWait: 0.9)
+        var sensitive = ClaudeRequest(text: Self.search)
+        sensitive.sensitive = true
+        let run = try await traceAnswering(claude, sensitive, allow: nil)
+        #expect(asked(run) && !searched(run))
+        #expect(run.events.contains(.searchConsentLapsed))
+        #expect(run.text.contains("DENIED: The user has not said whether this chat may search"))
+        if case .finished = run.events.last {} else { Issue.record("the answer did not finish") }
+        // An answer that comes after the wait is over changes nothing and breaks nothing.
+        claude.answerSearchConsent(true)
+        claude.endSession()
+    }
+
+    @Test func aServicesOwnSearchFollowsTheSameRuleAndImpersonalReadsDoNotCount() async throws {
+        let music = StubMusic()
+        let claude = service(services: [music])
+        // What is playing is not personal, so a search after it is not held back.
+        let playing = #"tool: mcp__omnis__music_now {} ;; WebSearch {"query": "dentist reviews"}"#
+        let free = try await traceAnswering(claude, ClaudeRequest(text: playing), allow: nil)
+        #expect(searched(free) && !asked(free))
+
+        // In a chat that holds something personal, the service's search asks like a web search does.
+        var sensitive = ClaudeRequest(text: #"tool: mcp__omnis__music_search {"query": "my address is 4 Elm Road"}"#)
+        sensitive.sensitive = true
+        let refused = try await traceAnswering(claude, sensitive, allow: false)
+        #expect(refused.events.contains(.searchConsentNeeded(query: "my address is 4 Elm Road")))
+        #expect(music.searches.values.isEmpty)
+        let allowed = try await traceAnswering(claude, sensitive, allow: true)
+        #expect(music.searches.values == ["my address is 4 Elm Road"])
+        #expect(allowed.text.contains("TOOL SAID: searched"))
+        claude.endSession()
+    }
+
+    @Test func refusedRequestsAreReportedByNameAndReasonOnly() async throws {
+        let claude = service()
+        let gate = Collected<String>()
+        claude.onGate { action, tool, outcome, detail in gate.add("\(action)|\(tool)|\(outcome)|\(detail ?? "")") }
+        _ = try await trace(claude.ask(ClaudeRequest(text: #"tool: WebSearch {"query": "secret words"}"#, web: false)))
+        _ = try await trace(claude.ask(ClaudeRequest(text: #"tool: Bash {"command": "cat ~/.ssh/id_rsa"}"#)))
+        _ = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__spotify_control {"action": "pause"}"#)))
+        #expect(gate.values == ["tool_refused|web_search|refused|web search is switched off",
+                                "tool_refused|Bash|refused|not one of OMNIS's tools",
+                                "tool_refused|spotify_control|refused|that service is not set up on this Mac"])
+        #expect(!gate.values.joined().contains("secret") && !gate.values.joined().contains("ssh"))
+        // A tool's name comes from the model too. One that is not a plain name is not written down.
+        _ = try await trace(claude.ask(ClaudeRequest(text: #"tool: my-card-number-is-4111-1111 {}"#)))
+        #expect(gate.values.last == "tool_refused|an unrecognised tool|refused|not one of OMNIS's tools")
+        #expect(ClaudeService.loggable("mcp__other__send_email") == "mcp__other__send_email")
+        #expect(ClaudeService.loggable(String(repeating: "a", count: 41)) == "an unrecognised tool")
+        #expect(ClaudeService.loggable("café") == "an unrecognised tool" && ClaudeService.loggable("") == "an unrecognised tool")
+        claude.endSession()
+    }
+
+    @Test func stoppingWhileTheQuestionIsOpenSendsNothingAndTheNextSearchAsksAgain() async throws {
+        let claude = service()
+        var sensitive = ClaudeRequest(text: Self.search)
+        sensitive.sensitive = true
+        // The user presses Stop while the card is showing: the stream is dropped.
+        let stopped = Task {
+            for try await event in claude.ask(sensitive) {
+                if case .searchConsentNeeded = event { return true }
+            }
+            return false
+        }
+        #expect(try await stopped.value)
+        // An answer to the old card arrives late. Nothing is waiting for it.
+        claude.answerSearchConsent(true)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(!entries().contains { ($0["permission"] as? [String: Any])?["behavior"] as? String == "allow" })
+
+        // The chat was never given an answer, so the next search asks again.
+        let next = try await traceAnswering(claude, sensitive, allow: false)
+        #expect(asked(next) && !searched(next))
         claude.endSession()
     }
 

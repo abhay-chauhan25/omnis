@@ -81,6 +81,40 @@ public protocol AssistantTools: Sendable {
     func run(tool: String, arguments: [String: String], access: ToolAccess) async throws -> ToolOutcome
     /// Carries out one confirmed proposal. Returns a few words on what was done.
     func perform(_ proposal: ActionProposal) async throws -> String
+    /// True if what this service reads is personal. A chat that has been
+    /// given something personal asks before it searches outside.
+    var holdsPersonalData: Bool { get }
+    /// Tools that send words chosen by the model to an outside service, the
+    /// way a web search does. They follow the same rule as a web search.
+    var outwardTools: Set<String> { get }
+}
+
+public extension AssistantTools {
+    var holdsPersonalData: Bool { true }
+    var outwardTools: Set<String> { [] }
+}
+
+/// Whether the user has said web searches may go on in a chat that holds
+/// personal information. Asked once per chat.
+public enum SearchConsent: String, Equatable, Sendable {
+    case notAsked, allowed, refused
+}
+
+/// The question "may this chat search the web?", shown under an answer.
+public struct SearchAsk: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+        case waiting, allowed, declined
+        /// Nobody answered in time, or the answer was stopped. Nothing was decided.
+        case lapsed
+    }
+    /// What the model wanted to look up when the question came up.
+    public let query: String
+    public var state: State
+
+    public init(query: String, state: State = .waiting) {
+        self.query = query
+        self.state = state
+    }
 }
 
 public enum ToolArguments {

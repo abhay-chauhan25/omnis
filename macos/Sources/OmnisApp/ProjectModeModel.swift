@@ -289,6 +289,10 @@ final class ProjectModeModel: ObservableObject {
             config.profile = .advisor(folder: project.url, project: project.name)
             config.workingDirectory = project.url
             advisorService = ClaudeService(config: config, tools: CalendarTools(reader: nil))
+            let audit = self.audit
+            advisorService?.onGate { action, tool, outcome, detail in
+                audit.record(action: action, kind: "advisor", target: tool, outcome: outcome, detail: detail)
+            }
         }
         guard let service = advisorService else { return }
         let history = advisor.filter { !$0.failed && !$0.text.isEmpty }.suffix(12).map {

@@ -15,6 +15,12 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var projects: [RegistryEntry] = []
     @Published private(set) var sessions: [SessionScanner.Session] = []
     @Published private(set) var activity: [DashboardData.ActivityLine] = []
+    /// Activity mode: the whole record, as lines. Filled only while that mode is showing.
+    @Published var showActivity = false {
+        didSet { if showActivity != oldValue { activityRows = []; if showActivity { refresh() } } }
+    }
+    @Published private(set) var activityRows: [ActivityLog.Row] = []
+    @Published private(set) var activityRecords = 0
     @Published private(set) var history = DashboardData.history(from: [])
     @Published private(set) var notesToday = 0
     @Published private(set) var claudeSessionOpen = false
@@ -83,6 +89,7 @@ final class DashboardModel: ObservableObject {
 
         let entries = chat.registryEntries
         let audit = self.audit
+        let wantsRows = showActivity
         let ownSession = OmnisPaths.supportDirectory.appendingPathComponent("claude-session", isDirectory: true)
         // Reading the activity record and looking for running sessions both
         // happen off the main thread, so the window never stutters.
@@ -93,6 +100,8 @@ final class DashboardModel: ObservableObject {
                 let projectEntries = entries.filter { $0.kind == .project }
                 return Loaded(
                     activity: DashboardData.activity(from: records),
+                    rows: wantsRows ? ActivityLog.rows(from: records) : [],
+                    records: records.count,
                     history: DashboardData.history(from: records),
                     tiles: DashboardData.tiles(from: records, entries: entries),
                     recentProjects: DashboardData.tiles(from: records, entries: projectEntries, limit: 5),
@@ -104,6 +113,8 @@ final class DashboardModel: ObservableObject {
             }.value
             guard let self else { return }
             self.activity = loaded.activity
+            if self.showActivity, wantsRows { self.activityRows = loaded.rows }
+            self.activityRecords = loaded.records
             self.history = loaded.history
             self.tiles = loaded.tiles
             self.sessions = loaded.sessions
@@ -120,6 +131,8 @@ final class DashboardModel: ObservableObject {
 
     private struct Loaded: Sendable {
         let activity: [DashboardData.ActivityLine]
+        let rows: [ActivityLog.Row]
+        let records: Int
         let history: DashboardData.History
         let tiles: [RegistryEntry]
         let recentProjects: [RegistryEntry]

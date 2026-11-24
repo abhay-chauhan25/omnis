@@ -297,6 +297,9 @@ public final class GitHubTools: AssistantTools, Sendable {
 public final class SpotifyTools: AssistantTools, Sendable {
     public let service = "spotify"
     public let toolNames: Set<String> = ["spotify_now_playing", "spotify_control", "spotify_search"]
+    /// What is playing is not personal information.
+    public let holdsPersonalData = false
+    public let outwardTools: Set<String> = ["spotify_search"]
     private let runner: CommandRunner
     private static let osascript = URL(fileURLWithPath: "/usr/bin/osascript")
     private static let opener = URL(fileURLWithPath: "/usr/bin/open")

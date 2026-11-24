@@ -87,6 +87,8 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var sources: [SearchResult] = []
     /// Why a web search could not be done, if one failed.
     public var searchProblem: String?
+    /// The question "may this chat search the web?", if it came up in this answer.
+    public var searchAsk: SearchAsk?
     /// True while the calendar is being read for this answer.
     public var readingCalendar = false
     /// What was read from the calendar, in a few words ("18 Nov, 2 events").
@@ -132,8 +134,27 @@ public struct Conversation: Equatable, Sendable {
     /// dropped out of the history that is sent along: the model's answers
     /// about the file are still there. A new chat clears it.
     public private(set) var hasPersonalData = false
+    /// What the user has said about searching outside once this chat holds
+    /// personal information. Asked once; a new chat clears it.
+    public private(set) var searchConsent: SearchConsent = .notAsked
 
     public init() {}
+
+    /// Records the user's answer to "may this chat search the web?" and
+    /// settles any card still asking it.
+    public mutating func settleSearch(allowed: Bool) {
+        searchConsent = allowed ? .allowed : .refused
+        for index in messages.indices where messages[index].searchAsk?.state == .waiting {
+            messages[index].searchAsk?.state = allowed ? .allowed : .declined
+        }
+    }
+
+    /// A question nobody answered: the card stops asking and nothing is decided.
+    public mutating func lapseSearchAsk() {
+        for index in messages.indices where messages[index].searchAsk?.state == .waiting {
+            messages[index].searchAsk?.state = .lapsed
+        }
+    }
 
     public mutating func keepLocal() {
         staysLocal = true
@@ -436,6 +457,7 @@ public struct Conversation: Equatable, Sendable {
         messages.removeAll()
         staysLocal = false
         hasPersonalData = false
+        searchConsent = .notAsked
         offerEventsNext = false
         calendarTouched = false
         deleteNext = false

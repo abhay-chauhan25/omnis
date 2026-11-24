@@ -37,6 +37,8 @@ public struct ClaudeConfig: Sendable {
 
     /// An answer with no sign of life for this long is given up on.
     public var silenceSeconds: Double = 150
+    /// How long an answer waits for the user to say whether the chat may search.
+    public var consentSeconds: Double = 300
 
     /// Built-in tools that are refused by name as well as left out, so that
     /// one setting changing in a Claude Code update cannot open them.
@@ -145,6 +147,11 @@ public struct ClaudeRequest: Sendable {
     public var allowProject = false
     /// What other services may do for this question.
     public var toolAccess = ToolAccess()
+    /// True when this chat has already been given something personal: a
+    /// file, the calendar, reminders and the like.
+    public var sensitive = false
+    /// What the user has said about searching outside from such a chat.
+    public var searchConsent: SearchConsent = .notAsked
 
     public init(text: String, history: [ChatTurn] = [], attachments: [Attachment] = [], model: ClaudeModel = .haiku,
                 effort: String = "low", reason: String = "", web: Bool = true,
@@ -209,6 +216,16 @@ public final class ClaudeService: @unchecked Sendable {
         /// True once some text has been shown and a tool has run since, so the next text starts a new paragraph.
         var breakBeforeText = false
         var shownText = false
+        /// True once something personal has been handed to the model in this chat.
+        var sensitive = false
+        var consent: SearchConsent = .notAsked
+        /// An outside lookup held back while the user is asked.
+        var waiting: Waiting?
+    }
+
+    private struct Waiting {
+        let proceed: () -> Void
+        let refuse: (String) -> Void
     }
 
     private var process: Process?
@@ -225,6 +242,7 @@ public final class ClaudeService: @unchecked Sendable {
     private var usage = UsageWindows()
     private var usageHandler: (@Sendable (UsageWindows) -> Void)?
     private var personalDataHandler: (@Sendable () -> Void)?
+    private var gateHandler: (@Sendable (_ action: String, _ tool: String, _ outcome: String, _ detail: String?) -> Void)?
     private let projectPlanner: ProjectPlanner?
     private let services: [any AssistantTools]
 
@@ -254,6 +272,35 @@ public final class ClaudeService: @unchecked Sendable {
         queue.sync { personalDataHandler = handler }
     }
 
+    /// Called when a tool request is refused or held back, and when the user
+    /// settles whether a chat may search. Names and reasons only, never content.
+    public func onGate(_ handler: @escaping @Sendable (_ action: String, _ tool: String, _ outcome: String, _ detail: String?) -> Void) {
+        queue.sync { gateHandler = handler }
+    }
+
+    /// The user's answer to "may this chat search the web?". A lookup that
+    /// was waiting for it goes ahead or is refused.
+    public func answerSearchConsent(_ allowed: Bool) {
+        queue.async {
+            guard self.active != nil else { return }
+            self.active?.consent = allowed ? .allowed : .refused
+            guard let waiting = self.active?.waiting else { return }
+            self.active?.waiting = nil
+            self.watchForSilence()
+            if allowed { waiting.proceed() } else { waiting.refuse(Self.searchesDeclined) }
+        }
+    }
+
+    /// A tool's name as it may be written to the record. The name comes from
+    /// the model, so anything that is not a plain, short identifier is not kept.
+    static func loggable(_ tool: String) -> String {
+        let plain = tool.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "_" }
+        return plain && !tool.isEmpty && tool.count <= 40 ? tool : "an unrecognised tool"
+    }
+
+    static let searchesDeclined = "The user chose not to allow searches outside OMNIS in this chat, because it holds their "
+        + "personal information. Do not try again. Answer from what you already have, and say that they can start a new chat to search."
+
     public var isSessionOpen: Bool { queue.sync { process != nil } }
 
     /// Asks Claude a question in the current session, starting one if needed.
@@ -268,7 +315,10 @@ public final class ClaudeService: @unchecked Sendable {
                     continuation.finish(throwing: ClaudeError.busy)
                     return
                 }
-                self.active = Active(id: id, request: request, continuation: continuation, started: Date())
+                var question = Active(id: id, request: request, continuation: continuation, started: Date())
+                question.sensitive = request.sensitive || !request.attachments.isEmpty
+                question.consent = request.searchConsent
+                self.active = question
                 self.idleTimer?.cancel()
                 do {
                     try self.send(request)
@@ -448,7 +498,8 @@ public final class ClaudeService: @unchecked Sendable {
     /// a long time while a question is open, the answer is given up on.
     private func watchForSilence() {
         silenceTimer?.cancel()
-        guard active != nil else { return }
+        // While the user is being asked something, quiet is expected.
+        guard let active, active.waiting == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.active != nil else { return }
             self.finish(throwing: ClaudeError.failed("it stopped responding"))
@@ -607,6 +658,7 @@ public final class ClaudeService: @unchecked Sendable {
             // Claude Code lets reads inside its folder through without asking.
             // What reaches here is a read somewhere else, or a file to be careful with.
             guard ["Read", "Glob", "Grep"].contains(name) else {
+                gateHandler?("tool_refused", Self.loggable(name), "refused", "the advisor only reads files")
                 deny(id, "The advisor can only read files. It cannot change anything or run commands.")
                 return
             }
@@ -615,6 +667,7 @@ public final class ClaudeService: @unchecked Sendable {
                ProjectFiles.patternStaysInside(input["glob"] as? String) {
                 allow(id, input: input)
             } else {
+                gateHandler?("tool_refused", Self.loggable(name), "refused", "outside the project folder, or a file that holds secrets")
                 deny(id, "The advisor can only read files inside the project folder, and not files that hold secrets.")
             }
             return
@@ -622,21 +675,29 @@ public final class ClaudeService: @unchecked Sendable {
 
         if name == "WebSearch" {
             guard current.request.web else {
+                gateHandler?("tool_refused", "web_search", "refused", "web search is switched off")
                 deny(id, "Web search is switched off in OMNIS. Tell the user they can turn it on with the globe button, and answer from what you know if you can.")
                 return
             }
             guard current.searches < config.maxSearches else {
+                gateHandler?("tool_refused", "web_search", "refused", "enough searches for one answer")
                 deny(id, "That is enough searching for one answer. Answer from the results you already have.")
                 return
             }
-            active?.searches += 1
-            current.continuation.yield(.searching(query: String((input["query"] as? String ?? "").prefix(400))))
-            allow(id, input: input)
+            let query = String((input["query"] as? String ?? "").prefix(400))
+            let question = current.id
+            outward(tool: "web_search", query: query, proceed: { [weak self] in
+                guard let self, let now = self.active, now.id == question else { return }
+                self.active?.searches += 1
+                now.continuation.yield(.searching(query: query))
+                self.allow(id, input: input)
+            }, refuse: { [weak self] why in self?.deny(id, why) })
             return
         }
 
         let prefix = "mcp__omnis__"
         guard name.hasPrefix(prefix) else {
+            gateHandler?("tool_refused", Self.loggable(name), "refused", "not one of OMNIS's tools")
             deny(id, "That tool is not available in OMNIS.")
             return
         }
@@ -651,6 +712,7 @@ public final class ClaudeService: @unchecked Sendable {
         }
         guard tool.hasPrefix("calendar_") else {
             // A tool on OMNIS's list for a service that is not set up on this Mac.
+            gateHandler?("tool_refused", Self.loggable(tool), "refused", "that service is not set up on this Mac")
             allow(id, input: ["_result": "That is not available on this Mac right now. Tell the user that OMNIS could not use that service."])
             return
         }
@@ -687,6 +749,7 @@ public final class ClaudeService: @unchecked Sendable {
             switch outcome {
             case .success(.read(let content, let summary, let events)):
                 personalDataHandler?()
+                active?.sensitive = true
                 active?.calendarReads += 1
                 active?.continuation.yield(.calendarRead(summary: summary, events: events))
                 answer(ClaudeReplies.read(tool: tool, content: content))
@@ -731,7 +794,10 @@ public final class ClaudeService: @unchecked Sendable {
             replied = true
             switch outcome {
             case .success(.read(let content, let note)):
-                personalDataHandler?()
+                if provider.holdsPersonalData {
+                    personalDataHandler?()
+                    active?.sensitive = true
+                }
                 active?.continuation.yield(.serviceNote(note))
                 answer(content)
             case .success(.done(let content, let note)):
@@ -748,17 +814,65 @@ public final class ClaudeService: @unchecked Sendable {
                 answer("That could not be done: \(why). Tell the user, or correct the request and try again.")
             }
         }
-        queue.asyncAfter(deadline: .now() + config.toolDeadline) {
-            reply(.failure(ToolRefusal("it took too long to answer")))
-        }
-        Task { [weak self] in
-            let outcome: Result<ToolOutcome, Error>
-            do {
-                outcome = .success(try await provider.run(tool: tool, arguments: arguments, access: access))
-            } catch {
-                outcome = .failure(error)
+        func run() {
+            queue.asyncAfter(deadline: .now() + config.toolDeadline) {
+                reply(.failure(ToolRefusal("it took too long to answer")))
             }
-            self?.queue.async { reply(outcome) }
+            Task { [weak self] in
+                let outcome: Result<ToolOutcome, Error>
+                do {
+                    outcome = .success(try await provider.run(tool: tool, arguments: arguments, access: access))
+                } catch {
+                    outcome = .failure(error)
+                }
+                self?.queue.async { reply(outcome) }
+            }
+        }
+        if provider.outwardTools.contains(tool) {
+            outward(tool: tool, query: String((arguments["query"] ?? "").prefix(400)), proceed: run,
+                    refuse: { why in reply(.failure(ToolRefusal(why))) })
+        } else {
+            run()
+        }
+    }
+
+    /// A lookup that sends words chosen by the model outside OMNIS: a web
+    /// search, or a search in another service. In a chat that has been given
+    /// something personal, those words could carry it out, so the user is
+    /// asked first, once per chat. The answer waits for the reply.
+    private func outward(tool: String, query: String, proceed: @escaping () -> Void, refuse: @escaping (String) -> Void) {
+        guard let current = active else { return }
+        guard current.sensitive else {
+            proceed()
+            return
+        }
+        switch current.consent {
+        case .allowed:
+            proceed()
+        case .refused:
+            gateHandler?("tool_refused", tool, "refused", "you chose no searches in this chat")
+            refuse(Self.searchesDeclined)
+        case .notAsked:
+            guard current.waiting == nil else {
+                refuse("The user is being asked whether this chat may search. Wait for the first search to be answered.")
+                return
+            }
+            active?.waiting = Waiting(proceed: proceed, refuse: refuse)
+            silenceTimer?.cancel()
+            gateHandler?("search_consent", tool, "asked", nil)
+            current.continuation.yield(.searchConsentNeeded(query: query))
+            let question = current.id
+            let session = generation
+            queue.asyncAfter(deadline: .now() + config.consentSeconds) { [weak self] in
+                guard let self, session == self.generation, self.active?.id == question,
+                      let waiting = self.active?.waiting else { return }
+                self.active?.waiting = nil
+                self.gateHandler?("search_consent", tool, "lapsed", nil)
+                self.active?.continuation.yield(.searchConsentLapsed)
+                self.watchForSilence()
+                waiting.refuse("The user has not said whether this chat may search, so the search was not made. "
+                    + "Answer from what you already have and say that a search needs their go-ahead.")
+            }
         }
     }
 
