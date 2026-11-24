@@ -16,7 +16,9 @@ class ClaudeToolsTests(unittest.TestCase):
         self.assertEqual([tool["name"] for tool in tools], [
             "calendar_events", "calendar_event_details", "calendar_list",
             "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-            "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar", "project_create"])
+            "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar", "project_create",
+            "reminders_list", "reminders_add", "reminders_complete", "reminders_delete", "github_overview",
+            "spotify_now_playing", "spotify_control", "spotify_search"])
         for tool in tools:
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertTrue(tool["inputSchema"]["additionalProperties"])
@@ -48,7 +50,7 @@ class ClaudeToolsTests(unittest.TestCase):
                              text=True, timeout=20)
         replies = [json.loads(line) for line in out.stdout.splitlines()]
         self.assertEqual(len(replies), 1)
-        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 10))
+        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 18))
         self.assertEqual(out.stderr, "")
 
     def test_serve_reads_until_the_input_ends(self):

@@ -98,6 +98,10 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var offersLocal = false
     /// New events proposed in this answer, each waiting for the user's decision.
     public var proposals: [EventProposal] = []
+    /// Changes proposed by other services in this answer (a reminder, a message).
+    public var actions: [ActionProposal] = []
+    /// Services read or used for this answer, in a few words each.
+    public var serviceNotes: [String] = []
     /// New projects proposed in this answer, each waiting for the user's decision.
     public var projects: [ProjectProposal] = []
     /// Why an event could not be prepared, if one failed.
@@ -190,6 +194,64 @@ public struct Conversation: Equatable, Sendable {
     }
 
     public static let maxProposalsPerAnswer = 5
+
+    // MARK: Changes from other services
+
+    /// Adds a proposed change to an answer. The same change twice is shown once.
+    public mutating func add(_ action: ActionProposal, to answerID: UUID) {
+        guard let target = messages.firstIndex(where: { $0.id == answerID }),
+              messages[target].actions.count < Self.maxProposalsPerAnswer,
+              !messages[target].actions.contains(where: { $0.payload == action.payload && $0.kind == action.kind }) else { return }
+        messages[target].actions.append(action)
+    }
+
+    public func action(_ id: UUID) -> ActionProposal? {
+        messages.lazy.flatMap(\.actions).first { $0.id == id }
+    }
+
+    public mutating func updateAction(_ id: UUID, _ change: (inout ActionProposal) -> Void) {
+        for index in messages.indices {
+            if let position = messages[index].actions.firstIndex(where: { $0.id == id }) {
+                change(&messages[index].actions[position])
+                return
+            }
+        }
+    }
+
+    /// The user clicked to confirm. Returns the change and marks it as under
+    /// way, or nil if it may not run: only one that is waiting, or that failed, can.
+    public mutating func beginAction(_ id: UUID) -> ActionProposal? {
+        guard let found = action(id) else { return nil }
+        switch found.state {
+        case .waiting, .failed:
+            updateAction(id) { $0.state = .saving }
+            return found
+        case .saving, .done, .declined, .replaced:
+            return nil
+        }
+    }
+
+    public mutating func declineAction(_ id: UUID) -> Bool {
+        guard let state = action(id)?.state else { return false }
+        if case .failed = state {} else if state != .waiting { return false }
+        updateAction(id) { $0.state = .declined }
+        return true
+    }
+
+    static func actionNotes(_ actions: [ActionProposal]) -> String {
+        actions.map { action in
+            let outcome: String
+            switch action.state {
+            case .waiting: outcome = "preview shown, not yet confirmed by the user, NOT done"
+            case .saving: outcome = "the user confirmed it and it is being done now"
+            case .done: outcome = "the user confirmed it and it was done"
+            case .declined: outcome = "the user chose not to do it"
+            case .replaced: outcome = "replaced by a later preview, not done"
+            case .failed: outcome = "it could not be done"
+            }
+            return "\n[Preview: \(action.line). Status: \(outcome).]"
+        }.joined()
+    }
 
     // MARK: New projects
 
@@ -409,11 +471,11 @@ public struct Conversation: Equatable, Sendable {
             if question.role == .user, answer.role == .assistant {
                 let usable = (answer.state == .done || answer.state == .stopped)
                     && (!answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !answer.proposals.isEmpty
-                        || !answer.projects.isEmpty)
+                        || !answer.projects.isEmpty || !answer.actions.isEmpty)
                 if usable {
                     turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
                     turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)
-                                          + Self.projectNotes(answer.projects)))
+                                          + Self.projectNotes(answer.projects) + Self.actionNotes(answer.actions)))
                 }
                 index += 2
             } else {

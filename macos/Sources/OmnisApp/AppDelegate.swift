@@ -48,10 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return try ProjectPlan.make(arguments: arguments, root: root, owner: await setup.owner())
             }
         }
-        claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner) }
+        // Other services Claude can use through OMNIS. Each is offered only if it can work on this Mac.
+        var services: [any AssistantTools] = [RemindersTools(store: EventKitReminders())]
+        if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
+        if FileManager.default.fileExists(atPath: "/Applications/Spotify.app") { services.append(SpotifyTools()) }
+        claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }
         // Changing the calendar goes through the chat model, on the user's click.
         let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude,
-                              projectSetup: projectSetup)
+                              projectSetup: projectSetup, services: services)
         chat = ChatWindowController(model: model)
         // The dashboard is the main window. A question typed there is answered in the chat window.
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,

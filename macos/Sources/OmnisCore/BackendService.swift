@@ -85,6 +85,11 @@ public enum AnswerEvent: Equatable, Sendable {
     /// The model prepared a change to the calendar. Nothing is done: the app
     /// shows it and carries it out only if the user confirms.
     case changeProposed(CalendarChange)
+    /// A service prepared a change (a reminder, a message). Nothing is done
+    /// until the user confirms it.
+    case actionProposed(ActionProposal)
+    /// A service was read or used; a few words for the line under the answer.
+    case serviceNote(String)
     /// The model prepared a new project. Nothing is created: the app shows it
     /// and sets it up only if the user confirms.
     case projectProposed(ProjectPlan)

@@ -56,6 +56,8 @@ if [ -n "$docker" ]; then add OMNISDockerPath string "$docker"; fi
 # The search service is reached over plain HTTP on this Mac's own loopback
 # address. This permits that and nothing else.
 plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$plist"
+add NSRemindersFullAccessUsageDescription string "OMNIS reads your reminders to answer questions about them, and changes them only when you confirm a change."
+add NSAppleEventsUsageDescription string "OMNIS controls playback in Spotify when you ask it to."
 # Shown by macOS when OMNIS first asks to read the calendar.
 add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to answer questions about your schedule, and changes it only when you confirm a change."
 

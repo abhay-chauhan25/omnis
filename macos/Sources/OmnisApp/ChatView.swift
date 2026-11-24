@@ -101,7 +101,8 @@ struct ChatView: View {
                     ForEach(model.conversation.messages) { message in
                         MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline,
                                     answerLocally: model.answerLocally, confirmProject: model.confirmProject,
-                                    declineProject: model.declineProject, openInProjectMode: model.openInProjectMode)
+                                    declineProject: model.declineProject, openInProjectMode: model.openInProjectMode,
+                                    confirmAction: model.confirmAction, declineAction: model.declineAction)
                     }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -291,6 +292,8 @@ private struct MessageView: View {
     let confirmProject: (UUID) -> Void
     let declineProject: (UUID) -> Void
     let openInProjectMode: (UUID) -> Void
+    let confirmAction: (UUID) -> Void
+    let declineAction: (UUID) -> Void
 
     var body: some View {
         switch message.role {
@@ -335,6 +338,14 @@ private struct MessageView: View {
                 Button("Answer on this Mac instead") { answerLocally(message.id) }
                     .controlSize(.small)
                     .help("Use the model on this Mac for this question and the rest of this chat.")
+            }
+            ForEach(message.actions) { action in
+                ActionCard(action: action, confirm: { confirmAction(action.id) }, decline: { declineAction(action.id) })
+            }
+            if !message.serviceNotes.isEmpty {
+                // Shown so you can always see which of your services were used.
+                Text(message.serviceNotes.joined(separator: " \u{00B7} "))
+                    .font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(2)
             }
             ForEach(message.projects) { proposal in
                 ProjectCard(proposal: proposal, confirm: { confirmProject(proposal.id) }, decline: { declineProject(proposal.id) },
@@ -424,6 +435,98 @@ private struct MessageView: View {
                 .buttonStyle(.plain)
                 .help(source.url.absoluteString)
                 .accessibilityLabel("Source \(index + 1): \(source.title), \(source.host). Opens in your browser.")
+            }
+        }
+    }
+}
+
+/// A change from one of the services, shown for the user to check. Nothing
+/// is done until the confirm button is clicked.
+private struct ActionCard: View {
+    let action: ActionProposal
+    let confirm: () -> Void
+    let decline: () -> Void
+
+    private var isLive: Bool { action.state == .waiting || action.state == .saving }
+    private var symbol: String {
+        switch action.service {
+        case "reminders": return action.destructive ? "trash" : "checklist"
+        case "mail": return "envelope"
+        case "messages": return "message"
+        default: return "square.and.pencil"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 18))
+                    .foregroundStyle(!isLive ? Color.secondary : action.destructive ? Color.red : Color.accentColor).frame(width: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(action.heading.uppercased()).font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(action.destructive && isLive ? Color.red : Color.secondary)
+                    Text(action.title).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    ForEach(Array(action.rows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(row.label).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
+                            Text(row.value).lineLimit(row.label == "Notes" || row.label == "Message" ? 12 : nil)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.system(size: 12))
+                    }
+                    if isLive, let warning = action.warning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill").font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(action.destructive ? .red : .orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            footer
+        }
+        .padding(12)
+        .frame(maxWidth: 440, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(action.heading): \(action.title)")
+    }
+
+    @ViewBuilder private var footer: some View {
+        switch action.state {
+        case .waiting:
+            HStack(spacing: 8) {
+                Text("Nothing changed yet").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Button(action.declineLabel, action: decline)
+                if action.destructive {
+                    Button(action.confirmLabel, role: .destructive, action: confirm).buttonStyle(.borderedProminent).tint(.red)
+                } else {
+                    Button(action.confirmLabel, action: confirm).buttonStyle(.borderedProminent)
+                }
+            }
+            .controlSize(.small)
+        case .saving:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Working").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        case .done(let result):
+            Label(result, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
+        case .declined:
+            Text("Not done").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .replaced:
+            Text("Not done. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .failed(let why):
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Not done: \(why)", systemImage: "exclamationmark.triangle.fill").font(.system(size: 12))
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button(action.declineLabel, action: decline)
+                    Button("Try Again", action: confirm)
+                }
+                .controlSize(.small)
             }
         }
     }

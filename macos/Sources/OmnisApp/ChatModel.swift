@@ -42,6 +42,7 @@ final class ChatModel: ObservableObject {
     private let calendarWriter: (any CalendarWriting)?
     private let claude: ClaudeService?
     private let projectSetup: ProjectSetup?
+    private let services: [any AssistantTools]
     let limits = UsageLimits()
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
@@ -73,8 +74,9 @@ final class ChatModel: ObservableObject {
     private var noticeTask: Task<Void, Never>?
 
     init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil,
-         claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil) {
+         claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil, services: [any AssistantTools] = []) {
         self.backend = backend
+        self.services = services
         self.projectSetup = projectSetup
         self.claude = claude
         self.calendarWriter = calendarWriter
@@ -451,6 +453,8 @@ final class ChatModel: ObservableObject {
                 access: CalendarToolAccess(calendar: true, write: offer.changes, deletes: offer.deletes)
             )
             // A new project may be prepared only when your own message asks for one.
+            // Deleting through any service needs your own message to have asked for it.
+            request.toolAccess = ToolAccess(deletes: offer.deletes != .none, sends: false)
             request.allowProject = projectSetup != nil && attachments.isEmpty && conversation.offersProject(for: options.text)
             stream = claude.ask(request)
         }
@@ -498,6 +502,14 @@ final class ChatModel: ObservableObject {
                         if case .create(let draft) = change, draft.calendarName == nil {
                             self.fillCalendarName(for: proposal.id)
                         }
+                    case .actionProposed(let action):
+                        // A preview only. It is carried out in `confirmAction`, on the user's click.
+                        self.conversation.add(action, to: answerID)
+                        audit.record(action: "\(action.service)_propose", outcome: "ok", detail: action.kind)
+                        self.announce("\(action.heading) ready to check")
+                    case .serviceNote(let note):
+                        self.conversation.update(answerID) { if !$0.serviceNotes.contains(note) { $0.serviceNotes.append(note) } }
+                        audit.record(action: "service", outcome: "ok", detail: note)
                     case .projectProposed(let plan):
                         // A preview only. It is set up in `confirmProject`, on the user's click.
                         self.conversation.add(ProjectProposal(plan: plan), to: answerID)
@@ -572,6 +584,33 @@ final class ChatModel: ObservableObject {
                 self?.announce("The calendar was not changed")
             }
         }
+    }
+
+    // MARK: Changes from other services
+
+    /// Carries out a previewed change from a service. Called only by the
+    /// user's click on that preview, once.
+    func confirmAction(_ id: UUID) {
+        guard let action = conversation.beginAction(id), let provider = services.first(where: { $0.service == action.service }) else { return }
+        let audit = self.audit
+        Task { [weak self] in
+            do {
+                let result = try await provider.perform(action)
+                // The kind of change and the outcome only.
+                audit.record(action: "\(action.service)_change", outcome: "ok", detail: action.kind)
+                self?.conversation.updateAction(id) { $0.state = .done(result) }
+                self?.announce(result)
+            } catch {
+                audit.record(action: "\(action.service)_change", outcome: "error", detail: action.kind)
+                self?.conversation.updateAction(id) { $0.state = .failed(error.localizedDescription) }
+                self?.announce("Nothing was changed")
+            }
+        }
+    }
+
+    func declineAction(_ id: UUID) {
+        guard let action = conversation.action(id), conversation.declineAction(id) else { return }
+        audit.record(action: "\(action.service)_change", outcome: "declined", detail: action.kind)
     }
 
     // MARK: New projects

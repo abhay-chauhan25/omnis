@@ -56,8 +56,12 @@ public struct ClaudeConfig: Sendable {
 
     /// The only tools a session may report having. Anything else and the session is not used.
     public static func isExpected(tool: String) -> Bool {
-        tool == "WebSearch" || tool.hasPrefix("mcp__omnis__calendar_") || tool == "mcp__omnis__project_create"
+        tool == "WebSearch" || tool == "mcp__omnis__project_create"
+            || serviceToolPrefixes.contains { tool.hasPrefix("mcp__omnis__\($0)_") }
     }
+
+    /// The services whose tools OMNIS's own tool list may contain.
+    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "mail", "messages", "browser"]
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -139,6 +143,8 @@ public struct ClaudeRequest: Sendable {
     public var access: CalendarToolAccess
     /// True when the user's own message asked for a new project to be set up.
     public var allowProject = false
+    /// What other services may do for this question.
+    public var toolAccess = ToolAccess()
 
     public init(text: String, history: [ChatTurn] = [], attachments: [Attachment] = [], model: ClaudeModel = .haiku,
                 effort: String = "low", reason: String = "", web: Bool = true,
@@ -220,14 +226,16 @@ public final class ClaudeService: @unchecked Sendable {
     private var usageHandler: (@Sendable (UsageWindows) -> Void)?
     private var personalDataHandler: (@Sendable () -> Void)?
     private let projectPlanner: ProjectPlanner?
+    private let services: [any AssistantTools]
 
     /// Turns what the model asked for into a project plan, or refuses.
     public typealias ProjectPlanner = @Sendable ([String: String]) async throws -> ProjectPlan
 
-    public init(config: ClaudeConfig, tools: CalendarTools, projects: ProjectPlanner? = nil) {
+    public init(config: ClaudeConfig, tools: CalendarTools, projects: ProjectPlanner? = nil, services: [any AssistantTools] = []) {
         self.config = config
         self.tools = tools
         self.projectPlanner = projects
+        self.services = services
     }
 
     deinit {
@@ -637,6 +645,10 @@ public final class ClaudeService: @unchecked Sendable {
             projectAsked(id: id, input: input, question: current)
             return
         }
+        if let provider = services.first(where: { $0.toolNames.contains(tool) }) {
+            serviceAsked(id: id, tool: tool, input: input, provider: provider, question: current)
+            return
+        }
         let writing = CalendarTools.writeTools.contains(tool)
         // The model is always given an answer in words, so it can explain or try again.
         func answer(_ text: String) { allow(id, input: ["_result": text]) }
@@ -687,6 +699,57 @@ public final class ClaudeService: @unchecked Sendable {
             let outcome: Result<CalendarToolOutcome, Error>
             do {
                 outcome = .success(try await work())
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.queue.async { reply(outcome) }
+        }
+    }
+
+    /// Claude wants to use one of the other services. A read is carried out
+    /// and its text handed back; a harmless action is done at once; a change
+    /// becomes a preview for the window.
+    private func serviceAsked(id: String, tool: String, input: [String: Any], provider: any AssistantTools, question current: Active) {
+        func answer(_ text: String) { allow(id, input: ["_result": text]) }
+        guard current.calendarCalls < config.maxCalendarCalls else {
+            answer("That is enough for one answer. Answer from what you already have.")
+            return
+        }
+        active?.calendarCalls += 1
+        let question = current.id
+        let session = generation
+        let arguments = ToolArguments.strings(input)
+        let access = current.request.toolAccess
+        var replied = false
+        func reply(_ outcome: Result<ToolOutcome, Error>) {
+            guard !replied, session == generation, active?.id == question else { return }
+            replied = true
+            switch outcome {
+            case .success(.read(let content, let note)):
+                personalDataHandler?()
+                active?.continuation.yield(.serviceNote(note))
+                answer(content)
+            case .success(.done(let content, let note)):
+                active?.continuation.yield(.serviceNote(note))
+                answer(content)
+            case .success(.proposal(let proposal)):
+                active?.continuation.yield(.actionProposed(proposal))
+                answer("A preview of this is now shown to the user with a button to confirm. It has NOT been done, and you "
+                    + "cannot do it. In one short sentence, say what you prepared and ask them to check it and confirm. "
+                    + "Do not say it has been done.")
+            case .failure(let error):
+                let why = String(error.localizedDescription.prefix(300))
+                active?.continuation.yield(.eventRefused(why))
+                answer("That could not be done: \(why). Tell the user, or correct the request and try again.")
+            }
+        }
+        queue.asyncAfter(deadline: .now() + config.toolDeadline) {
+            reply(.failure(ToolRefusal("it took too long to answer")))
+        }
+        Task { [weak self] in
+            let outcome: Result<ToolOutcome, Error>
+            do {
+                outcome = .success(try await provider.run(tool: tool, arguments: arguments, access: access))
             } catch {
                 outcome = .failure(error)
             }

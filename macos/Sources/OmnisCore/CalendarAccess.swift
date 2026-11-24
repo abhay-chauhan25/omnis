@@ -667,14 +667,18 @@ public final class EventRefs: @unchecked Sendable {
     private var refs: [String: String] = [:]
     private var keys: [String: String] = [:]
     private var next = 1
+    private let prefix: String
 
-    public init() {}
+    /// `prefix` is the letter ids start with: "e" for events, "r" for reminders.
+    public init(prefix: String = "e") {
+        self.prefix = prefix
+    }
 
     public func ref(for key: String) -> String {
         lock.withLock {
             if let known = refs[key] { return known }
             if refs.count >= 5000 { refs.removeAll(); keys.removeAll() }
-            let ref = "e\(next)"
+            let ref = "\(prefix)\(next)"
             next += 1
             refs[key] = ref
             keys[ref] = key

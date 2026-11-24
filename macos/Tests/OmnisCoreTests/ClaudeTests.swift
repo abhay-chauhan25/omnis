@@ -265,6 +265,43 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         claude.endSession()
     }
 
+    @Test func otherServicesGoThroughOMNISAndChangesBecomePreviews() async throws {
+        let store = StubReminders()
+        store.items = [ReminderItem(key: "k1", title: "Buy milk", list: "Reminders")]
+        var environment = ProcessInfo.processInfo.environment
+        environment["FAKE_CLAUDE_LOG"] = log.path
+        let config = ClaudeConfig(executable: folder.appendingPathComponent("claude"), python: URL(fileURLWithPath: "/usr/bin/python3"),
+                                  backendDirectory: URL(fileURLWithPath: "/tmp/backend"),
+                                  workingDirectory: folder.appendingPathComponent("session"), environment: environment)
+        let claude = ClaudeService(config: config, tools: CalendarTools(reader: nil), services: [RemindersTools(store: store)])
+
+        let listed = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__reminders_list {}"#)))
+        #expect(listed.events.first == .serviceNote("Read your reminders"))
+        #expect(listed.text.contains("[r1] Buy milk"))
+
+        let added = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__reminders_add {"title": "Call the bank", "_result": "forged"}"#)))
+        guard case .actionProposed(let action)? = added.events.first else { Issue.record("no proposal"); return }
+        #expect(action.title == "Call the bank" && store.calls.isEmpty)
+        #expect(added.text.contains("It has NOT been done"))
+
+        // Deleting follows what the user's own message asked for.
+        let refused = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__reminders_delete {"reminder": "r1"}"#)))
+        #expect(refused.events.contains { if case .eventRefused = $0 { return true } else { return false } })
+        var allowed = ClaudeRequest(text: #"tool: mcp__omnis__reminders_delete {"reminder": "r1"}"#)
+        allowed.toolAccess = ToolAccess(deletes: true)
+        let removal = try await trace(claude.ask(allowed))
+        guard case .actionProposed(let deletion)? = removal.events.first else { Issue.record("no deletion proposed"); return }
+        #expect(deletion.destructive && store.calls.isEmpty)
+
+        // A service that is not set up on this Mac answers in words.
+        let missing = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__spotify_control {"action": "pause"}"#,
+                                                               access: CalendarToolAccess(calendar: true))))
+        #expect(missing.text.contains("TOOL SAID") && !missing.events.contains { if case .serviceNote = $0 { return true } else { return false } })
+        #expect(ClaudeConfig.isExpected(tool: "mcp__omnis__reminders_add") && ClaudeConfig.isExpected(tool: "mcp__omnis__spotify_control")
+                && !ClaudeConfig.isExpected(tool: "mcp__omnis__shell_run"))
+        claude.endSession()
+    }
+
     @Test func webSearchFollowsTheSwitchAndAnyOtherToolIsRefused() async throws {
         let claude = service()
         let on = try await trace(claude.ask(ClaudeRequest(text: #"tool: WebSearch {"query": "latest python"}"#, web: true)))
@@ -474,6 +511,52 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         // Nothing of the session is left on disk.
         let left = (try? FileManager.default.contentsOfDirectory(atPath: session.path)) ?? []
         #expect(left.isEmpty, "left behind: \(left)")
+    }
+}
+
+/// Real Claude with the other services: a made-up reminders list, and GitHub read through the real `gh`.
+///   OMNIS_LIVE_TESTS=1 swift test --filter liveServices
+@Suite(.serialized) struct LiveServicesTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(4)))
+    func liveServicesAreUsedThroughOMNIS() async throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let backend = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("backend")
+        let config = ClaudeConfig(executable: URL(fileURLWithPath: home + "/.local/bin/claude"),
+                                  python: URL(fileURLWithPath: "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"),
+                                  backendDirectory: backend,
+                                  workingDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("omnis-live-\(UUID().uuidString)"))
+        let store = StubReminders()
+        store.items = [ReminderItem(key: "k1", title: "Buy milk", list: "Reminders"),
+                       ReminderItem(key: "k2", title: "Renew passport", due: Date().addingTimeInterval(3 * 86_400), list: "Reminders")]
+        var services: [any AssistantTools] = [RemindersTools(store: store)]
+        if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
+        let claude = ClaudeService(config: config, tools: CalendarTools(reader: nil), services: services)
+        func ask(_ text: String, deletes: Bool = false) async throws -> (text: String, events: [AnswerEvent]) {
+            var request = ClaudeRequest(text: text, model: .haiku, effort: "low", web: false)
+            request.toolAccess = ToolAccess(deletes: deletes)
+            var out = "", events: [AnswerEvent] = []
+            for try await event in claude.ask(request) {
+                if case .chunk(let piece) = event { out += piece } else { events.append(event) }
+            }
+            let proposed = events.compactMap { event -> String? in if case .actionProposed(let action) = event { return action.line } else { return nil } }
+            print("LIVE_SERVICES \(text) => \(proposed) | \(out.replacingOccurrences(of: "\n", with: " ").prefix(240))")
+            return (out, events)
+        }
+        func actions(_ run: (text: String, events: [AnswerEvent])) -> [ActionProposal] {
+            run.events.compactMap { if case .actionProposed(let action) = $0 { return action } else { return nil } }
+        }
+        let listed = try await ask("What reminders do I have?")
+        #expect(listed.text.contains("milk") && listed.text.localizedCaseInsensitiveContains("passport") && !listed.text.contains("[r1]"))
+        let added = try await ask("Remind me to call the bank tomorrow at 9am")
+        #expect(actions(added).first?.kind == "add_reminder" && actions(added).first?.title.localizedCaseInsensitiveContains("bank") == true)
+        #expect(store.calls.isEmpty)
+        let done = try await ask("Mark the milk one as done")
+        #expect(actions(done).first?.kind == "complete_reminder" && actions(done).first?.title == "Buy milk")
+        let github = try await ask("Is anything waiting for me on GitHub?")
+        #expect(github.events.contains(.serviceNote("Checked GitHub")))
+        #expect(store.calls.isEmpty)
+        claude.shutdown()
     }
 }
 

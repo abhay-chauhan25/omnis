@@ -41,6 +41,32 @@ PROJECT_TOOL = {
 UNAVAILABLE = "This tool is not available right now. Tell the user that OMNIS could not carry it out."
 
 
+def _tool(name: str, description: str, properties: dict[str, str], required: list[str] | None = None) -> dict[str, Any]:
+    return {"name": name, "description": description, "inputSchema": {
+        "type": "object",
+        "properties": {key: {"type": "string", "description": text} for key, text in properties.items()},
+        "required": required if required is not None else list(properties),
+        "additionalProperties": True,
+    }}
+
+
+SERVICE_TOOLS = [
+    _tool("reminders_list", "List the user's open reminders. Each has an id like r3.",
+          {"list": "Only this reminders list. Leave out for all."}, []),
+    _tool("reminders_add", "Prepare a new reminder. The user must confirm.",
+          {"title": "What to be reminded of.", "due": "When, as YYYY-MM-DD or YYYY-MM-DDTHH:MM local time. Leave out for none.",
+           "list": "Which reminders list. Leave out for the default.", "notes": "Extra notes."}, ["title"]),
+    _tool("reminders_complete", "Prepare marking a reminder as done. The user must confirm.",
+          {"reminder": "The reminder's id from reminders_list, like r3."}),
+    _tool("reminders_delete", "Prepare deleting a reminder. The user must confirm.",
+          {"reminder": "The reminder's id from reminders_list, like r3."}),
+    _tool("github_overview", "Show the user's open pull requests, pull requests waiting for their review, and issues assigned to them.", {}),
+    _tool("spotify_now_playing", "Say what Spotify is playing.", {}),
+    _tool("spotify_control", "Control Spotify playback at once.", {"action": "One of: play, pause, toggle, next, previous."}),
+    _tool("spotify_search", "Open Spotify showing search results for something.", {"query": "What to search for."}),
+]
+
+
 def tools() -> list[dict[str, Any]]:
     """The calendar tools in the form MCP expects. The schemas are the ones the local model uses."""
     listed = []
@@ -50,7 +76,7 @@ def tools() -> list[dict[str, Any]]:
         # The app replaces the arguments with its reply, so anything must be accepted here.
         schema["additionalProperties"] = True
         listed.append({"name": function["name"], "description": function["description"], "inputSchema": schema})
-    return listed + [PROJECT_TOOL]
+    return listed + [PROJECT_TOOL] + SERVICE_TOOLS
 
 
 def handle(message: dict[str, Any]) -> dict[str, Any] | None:
