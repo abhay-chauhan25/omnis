@@ -40,12 +40,14 @@ import Testing
         let calls = Collected<[String]>()
         let setup = ProjectSetup(git: URL(fileURLWithPath: "/fake/git"), gh: URL(fileURLWithPath: "/fake/gh")) { program, arguments, directory in
             calls.add([program.lastPathComponent, directory?.lastPathComponent ?? "-"] + arguments)
-            return CommandResult(status: 0, output: "")
+            return CommandResult(status: 0, output: arguments.first == "config" ? "Someone\n" : "")
         }
         let made = try plan(["name": "voyager-notes", "visibility": "private", "description": "Notes; rm -rf ~"])
         let steps = Collected<String>()
         try await setup.perform(made) { steps.add($0) }
         #expect(calls.values == [
+            ["git", "-", "config", "user.name"],
+            ["git", "-", "config", "user.email"],
             ["git", "voyager-notes", "init", "-b", "main"],
             ["git", "voyager-notes", "add", "README.md"],
             ["git", "voyager-notes", "commit", "-m", "Initial commit"],
@@ -53,7 +55,7 @@ import Testing
             ["gh", "voyager-notes", "repo", "create", "voyager-notes", "--private", "--source", ".", "--remote", "origin", "--push",
              "--description", "Notes; rm -rf ~"],
         ])
-        #expect(steps.values.first == "Creating the folder" && steps.values.last == "Creating the GitHub repository and pushing")
+        #expect(steps.values.prefix(2) == ["Checking git", "Creating the folder"] && steps.values.last == "Creating the GitHub repository and pushing")
         #expect(try String(contentsOf: made.folder.appendingPathComponent("README.md"), encoding: .utf8) == "# voyager-notes\n\nNotes; rm -rf ~\n")
     }
 
@@ -62,14 +64,24 @@ import Testing
         let setup = ProjectSetup(git: URL(fileURLWithPath: "/fake/git"), gh: URL(fileURLWithPath: "/fake/gh")) { program, arguments, _ in
             calls.add(arguments.first ?? "")
             return arguments.first == "repo" ? CommandResult(status: 1, output: "line one\nGraphQL: Name already exists on this account")
-                : CommandResult(status: 0, output: "")
+                : CommandResult(status: 0, output: arguments.first == "config" ? "Someone" : "")
         }
         let made = try plan(["name": "dup", "visibility": "public"])
         await #expect(throws: ProjectError.stepFailed(step: "creating the GitHub repository and pushing",
                                                       why: "line one GraphQL: Name already exists on this account", folderCreated: true)) {
             try await setup.perform(made)
         }
-        #expect(calls.values == ["init", "add", "commit", "repo"])
+        #expect(calls.values == ["config", "config", "init", "add", "commit", "repo"])
+        let message = ProjectError.stepFailed(step: "creating the GitHub repository and pushing", why: "x", folderCreated: true).localizedDescription
+        #expect(message.contains("may or may not exist") && message.contains("delete the folder first"))
+
+        // With no git name or email, nothing at all is created.
+        let unset = ProjectSetup(git: URL(fileURLWithPath: "/fake/git"), gh: URL(fileURLWithPath: "/fake/gh")) { _, arguments, _ in
+            CommandResult(status: arguments.last == "user.email" ? 1 : 0, output: arguments.last == "user.email" ? "" : "Someone")
+        }
+        let fresh = try plan(["name": "fresh", "visibility": "private"])
+        await #expect(throws: ProjectError.noGitIdentity) { try await unset.perform(fresh) }
+        #expect(!FileManager.default.fileExists(atPath: fresh.folder.path))
         #expect(FileManager.default.fileExists(atPath: made.folder.path))      // left as it is, not deleted
 
         // If the folder cannot be made, nothing else is tried.
@@ -77,7 +89,8 @@ import Testing
         let late = ProjectPlan(name: "late", folder: root.appendingPathComponent("late"), visibility: .private)
         let before = calls.values.count
         await #expect(throws: ProjectError.self) { try await setup.perform(late) }
-        #expect(calls.values.count == before)
+        #expect(calls.values.count == before + 2)       // only the two checks of git's settings ran
+        #expect(Array(calls.values.suffix(2)) == ["config", "config"])
     }
 
     @Test func theSignedInAccountIsReadCarefully() async {

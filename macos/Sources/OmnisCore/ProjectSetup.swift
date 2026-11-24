@@ -75,6 +75,7 @@ public enum ProjectError: Error, Equatable, LocalizedError {
     case notAsked
     case toolMissing(String)
     case stepFailed(step: String, why: String, folderCreated: Bool)
+    case noGitIdentity
 
     public var errorDescription: String? {
         switch self {
@@ -89,6 +90,10 @@ public enum ProjectError: Error, Equatable, LocalizedError {
         case .stepFailed(let step, let why, let folderCreated):
             return "It stopped at \u{201C}\(step)\u{201D}: \(why)"
                 + (folderCreated ? " The folder was created and has been left as it is; the later steps were not done." : "")
+                + (step.contains("GitHub") ? " The GitHub repository may or may not exist: check on GitHub." : "")
+                + (folderCreated ? " To try again, delete the folder first." : "")
+        case .noGitIdentity:
+            return "Nothing was created. Git does not know your name and email yet, so it could not make the first commit. Set them with \u{201C}git config --global user.name\u{201D} and \u{201C}git config --global user.email\u{201D}, then ask again."
         }
     }
 }
@@ -109,6 +114,9 @@ public typealias CommandRunner = @Sendable (_ program: URL, _ arguments: [String
 public enum Commands {
     /// Runs a program and collects what it printed. The search path is set so
     /// that tools installed by Homebrew can find one another.
+    /// No step is waited on for longer than this.
+    public static let timeout: TimeInterval = 120
+
     public static let system: CommandRunner = { program, arguments, directory in
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -132,12 +140,33 @@ public enum Commands {
                     continuation.resume(returning: CommandResult(status: -1, output: error.localizedDescription))
                     return
                 }
+                // A step that hangs, on the network or on a window asking for a
+                // passphrase, is stopped so that it can be reported.
+                let timedOut = Flagged()
+                let watchdog = DispatchWorkItem {
+                    guard process.isRunning else { return }
+                    timedOut.set()
+                    process.terminate()
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                watchdog.cancel()
+                if timedOut.value {
+                    continuation.resume(returning: CommandResult(status: -2, output: "it did not finish within \(Int(timeout)) seconds and was stopped"))
+                    return
+                }
                 continuation.resume(returning: CommandResult(status: process.terminationStatus,
                                                              output: String(String(decoding: data, as: UTF8.self).suffix(1200))))
             }
         }
+    }
+
+    private final class Flagged: @unchecked Sendable {
+        private let lock = NSLock()
+        private var on = false
+        var value: Bool { lock.withLock { on } }
+        func set() { lock.withLock { on = true } }
     }
 
     /// The first of these programs that exists, if any.
@@ -171,6 +200,14 @@ public struct ProjectSetup: Sendable {
 
     public func perform(_ plan: ProjectPlan, progress: @escaping @Sendable (String) -> Void = { _ in }) async throws {
         let fileManager = FileManager.default
+        // Checked before anything is created, so a commit that cannot be made leaves nothing behind.
+        progress("Checking git")
+        for key in ["user.name", "user.email"] {
+            let found = await run(git, ["config", key], nil)
+            guard found.status == 0, !found.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ProjectError.noGitIdentity
+            }
+        }
         progress("Creating the folder")
         do {
             try fileManager.createDirectory(at: plan.folder, withIntermediateDirectories: false)

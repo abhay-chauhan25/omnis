@@ -24,6 +24,7 @@ The user wants to start and work on coding projects from the OMNIS dashboard: se
 
 - **First third-party dependency in the app:** SwiftTerm (MIT), which brings swift-png, a small hashing library (Apache 2.0) and Apple's argument parser. Used only for the terminals.
 - A project session is the user's own Claude Code: it loads their settings, memory files and connected tools, and saves its sessions, unlike OMNIS's own chats. Permission questions are asked by Claude Code in the terminal, not by OMNIS cards.
+- Building, testing and committing run the project's own code and hooks, which a session can edit. A session can therefore run code it wrote without asking. This is accepted as what "build and test freely" means.
 - OMNIS does not stand between the user and a session. It can place text in a terminal's input but never sends it.
 - The advisor is a separate, locked-down session: it can read files in the one project folder, except files that usually hold secrets, and can do nothing else.
 - "What the session is doing" is read from Claude Code's own session files, whose layout may change. If it does, that panel shows less; the terminals are unaffected.

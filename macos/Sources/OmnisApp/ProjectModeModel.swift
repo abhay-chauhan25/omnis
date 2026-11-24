@@ -139,12 +139,14 @@ final class ProjectModeModel: ObservableObject {
         view.processDelegate = watcher
         let number = tabs.filter { $0.project == project }.count + 1
         let tab = Tab(title: resume ? "Resumed" : "Session \(number)", project: project, view: view, watcher: watcher)
+        // Only the id is kept by these, so a closed tab's terminal is freed.
+        let tabID = tab.id
         watcher.ended = { [weak self] in
-            guard let self, let index = self.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            guard let self, let index = self.tabs.firstIndex(where: { $0.id == tabID }) else { return }
             self.tabs[index].ended = true
         }
         watcher.titled = { [weak self] title in
-            guard let self, let index = self.tabs.firstIndex(where: { $0.id == tab.id }), !title.isEmpty else { return }
+            guard let self, let index = self.tabs.firstIndex(where: { $0.id == tabID }), !title.isEmpty else { return }
             self.tabs[index].title = String(title.prefix(28))
         }
         tabs.append(tab)
@@ -155,7 +157,7 @@ final class ProjectModeModel: ObservableObject {
             arguments: ProjectSession.arguments(name: project.name, resume: resume, brief: brief)
         )
         view.startProcess(executable: launch.executable, args: launch.arguments,
-                          environment: Terminal.getEnvironmentVariables(termName: "xterm-256color"),
+                          environment: Self.environment(),
                           currentDirectory: project.url.path)
         // The project's name is the user's own, recorded like any launch.
         audit.record(action: "project_session", target: project.name, outcome: "ok", detail: resume ? "resumed" : (brief == nil ? "new" : "from a brief"))
@@ -190,9 +192,23 @@ final class ProjectModeModel: ObservableObject {
             show("Open a terminal session first.")
             return
         }
-        let bytes = Array("\u{1B}[200~".utf8) + Array(text.utf8) + Array("\u{1B}[201~".utf8)
-        tab.view.send(source: tab.view, data: bytes[...])
+        // Pasted through the terminal's own paste, with control characters
+        // removed first: nothing in the text can end the paste or press a key.
+        let safe = ProjectSession.pasteable(text)
+        guard !safe.isEmpty else { return }
+        tab.view.pasteText(safe)
         tab.view.window?.makeFirstResponder(tab.view)
+    }
+
+    /// What a session's terminal starts with: the basics, plus what lets
+    /// pushes over SSH and temporary files work as in the user's own terminal.
+    static func environment() -> [String] {
+        var values = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        let current = ProcessInfo.processInfo.environment
+        for key in ["SSH_AUTH_SOCK", "TMPDIR", "SHELL"] {
+            if let value = current[key] { values.append("\(key)=\(value)") }
+        }
+        return values
     }
 
     /// The prompt in an advisor answer: its first code block if it has one, otherwise all of it.

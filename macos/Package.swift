@@ -12,7 +12,7 @@ let package = Package(
         // A terminal view, used only for the Claude Code terminals in project
         // mode. MIT licence. Drawing a terminal correctly is a large job that
         // is not worth redoing.
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.99.3"),
     ],
     targets: [
         // Everything that can be tested without a window: matching, registry,

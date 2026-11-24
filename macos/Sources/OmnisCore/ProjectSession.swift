@@ -11,14 +11,18 @@ public enum ProjectSession {
     /// local commits, and the usual ways of building and testing. Pushing,
     /// installing packages and everything else are asked for.
     public static let safeCommands: [String] = {
-        let commands = [
-            "git status", "git diff", "git log", "git show", "git branch", "git add", "git commit",
-            "ls", "pwd",
-            "swift build", "swift test", "npm test", "npm run build", "npm run test", "npm run lint",
-            "pytest", "python3 -m pytest", "python3 -m unittest", "cargo build", "cargo test", "cargo check",
-            "go build", "go test",
-        ]
-        return commands.flatMap { ["Bash(\($0))", "Bash(\($0) *)"] }
+        // Looking at the repository: only these exact forms. With any
+        // arguments allowed, "git diff --output=" could write a file anywhere
+        // and "git branch -D" could delete a branch.
+        let exact = ["git status", "git status --short", "git diff", "git diff --stat", "git diff --staged", "git log",
+                     "git log --oneline", "git show", "git branch", "ls", "ls -la", "pwd"]
+        // Local commits, and the usual ways of building and testing. These
+        // run the project's own code, which the session can edit: that is
+        // what building and testing means.
+        let open = ["git add", "git commit", "swift build", "swift test", "npm test", "npm run build", "npm run test",
+                    "npm run lint", "pytest", "python3 -m pytest", "python3 -m unittest", "cargo build", "cargo test",
+                    "cargo check", "go build", "go test"]
+        return exact.map { "Bash(\($0))" } + open.flatMap { ["Bash(\($0))", "Bash(\($0) *)"] }
     }()
 
     /// The options for one session. `brief` is typed in as its first message.
@@ -37,8 +41,13 @@ public enum ProjectSession {
     /// tools on its search path as in their own terminal. The options are
     /// handed over as separate arguments and never become part of a command line.
     public static func launch(claude: URL, arguments: [String], shell: String = "/bin/zsh") -> (executable: String, arguments: [String]) {
-        (shell, ["-l", "-c", "exec \"$0\" \"$@\"", claude.path] + arguments)
+        // A login, interactive shell reads the same start-up files as the
+        // user's own terminal, so tools such as npm are found the same way.
+        (shell, ["-l", "-i", "-c", "exec \"$0\" \"$@\"", claude.path] + arguments)
     }
+
+    /// Text made safe to place in a terminal's input. See `ProjectFiles.pasteable`.
+    public static func pasteable(_ text: String) -> String { ProjectFiles.pasteable(text) }
 
     /// Where Claude Code keeps the sessions of a project folder.
     public static func transcriptFolder(for project: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
@@ -195,7 +204,8 @@ public enum SessionTranscripts {
 public enum ProjectFiles {
     /// The files git reports as changed, as "M path" lines.
     public static func changed(in folder: URL, git: URL, run: CommandRunner = Commands.system) async -> [String] {
-        let result = await run(git, ["status", "--porcelain"], folder)
+        // Without taking git's lock, so this never gets in the way of a commit the session is making.
+        let result = await run(git, ["--no-optional-locks", "status", "--porcelain"], folder)
         guard result.status == 0 else { return [] }
         return result.output.split(whereSeparator: \.isNewline).prefix(60).map { line in
             let code = line.prefix(2).trimmingCharacters(in: .whitespaces)
@@ -212,8 +222,32 @@ public enum ProjectFiles {
             .standardizedFileURL.resolvingSymlinksInPath()
         guard target.path == root || target.path.hasPrefix(root + "/") else { return false }
         let name = target.lastPathComponent.lowercased()
-        let secret = name == ".env" || name.hasPrefix(".env.") || name.hasSuffix(".pem") || name.hasSuffix(".key")
-            || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519") || name == ".netrc" || name == "credentials.json"
-        return !secret && !target.pathComponents.contains(".git")
+        let lowered = target.pathComponents.map { $0.lowercased() }
+        return !looksSecret(name) && !lowered.contains(".git") && !lowered.contains(".aws") && !lowered.contains(".ssh")
+            && !lowered.contains(".docker") && !lowered.contains(".gnupg")
+    }
+
+    /// Whether a search pattern stays inside the project: not an absolute path and no climbing out.
+    public static func patternStaysInside(_ pattern: String?) -> Bool {
+        guard let pattern, !pattern.isEmpty else { return true }
+        return !pattern.hasPrefix("/") && !pattern.hasPrefix("~") && !pattern.contains("..")
+    }
+
+    static func looksSecret(_ name: String) -> Bool {
+        let exact: Set<String> = [".env", ".envrc", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".htpasswd",
+                                  "credentials", "credentials.json", "kubeconfig"]
+        let endings = [".pem", ".key", ".p12", ".pfx", ".p8", ".jks", ".ppk", ".gpg", ".kdbx", ".keystore", ".tfvars"]
+        return exact.contains(name) || name.hasPrefix(".env.") || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519")
+            || name.hasPrefix("secrets.") || name.hasPrefix("service-account") || name.hasPrefix("terraform.tfstate")
+            || endings.contains(where: name.hasSuffix)
+    }
+
+    /// Text made safe to place in a terminal's input: control characters are
+    /// removed, so nothing in it can end the paste early or press a key.
+    /// Line breaks and tabs are kept.
+    public static func pasteable(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { scalar in
+            scalar == "\n" || scalar == "\t" || !(scalar.value < 0x20 || (0x7F...0x9F).contains(scalar.value))
+        })).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

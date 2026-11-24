@@ -17,6 +17,11 @@ import Testing
 
         let safe = ProjectSession.safeCommands
         #expect(safe.contains("Bash(git status)") && safe.contains("Bash(git commit *)") && safe.contains("Bash(swift test *)"))
+        // Looking at the repository is allowed only in exact forms: with any
+        // arguments, "git diff --output=" could write anywhere and "git branch -D" delete.
+        for open in ["Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git branch *)", "Bash(ls *)", "Bash(git status *)"] {
+            #expect(!safe.contains(open), "\(open)")
+        }
         // Never without asking: pushing, installing, deleting, fetching.
         for word in ["push", "install", "rm", "curl", "sudo", "reset", "checkout", "clean", "publish"] {
             #expect(!safe.contains { $0.contains(" \(word)") || $0.contains("(\(word)") }, "\(word)")
@@ -24,7 +29,7 @@ import Testing
 
         let launch = ProjectSession.launch(claude: URL(fileURLWithPath: "/Users/me/.local/bin/claude"), arguments: ["--name", "a b; rm -rf ~"])
         #expect(launch.executable == "/bin/zsh")
-        #expect(launch.arguments == ["-l", "-c", "exec \"$0\" \"$@\"", "/Users/me/.local/bin/claude", "--name", "a b; rm -rf ~"])
+        #expect(launch.arguments == ["-l", "-i", "-c", "exec \"$0\" \"$@\"", "/Users/me/.local/bin/claude", "--name", "a b; rm -rf ~"])
     }
 
     @Test func aProjectsSessionFolderIsFoundTheWayClaudeCodeNamesIt() {
@@ -87,14 +92,27 @@ import Testing
             #expect(ProjectFiles.mayRead(path, in: folder), "\(path ?? "nil")")
         }
         for path in ["/etc/hosts", "../other/file", folder.path + "/../x", folder.path + "-other/x", "escape/hosts", ".env", "src/.env.local",
-                     "keys/server.pem", "id_rsa", ".git/config", "~/.ssh/id_rsa", "/Users/me/.claude/projects/x"] {
+                     "keys/server.pem", "id_rsa", ".git/config", "~/.ssh/id_rsa", "/Users/me/.claude/projects/x",
+                     ".ENV", "ID_RSA", ".GIT/config", ".envrc", ".aws/credentials", "infra/prod.tfvars", "terraform.tfstate.backup",
+                     ".pypirc", ".git-credentials", "service-account-prod.json", "certs/app.pfx", ".docker/config.json", "kubeconfig"] {
             #expect(!ProjectFiles.mayRead(path, in: folder), "\(path)")
         }
+        for pattern in ["/etc/*", "~/.ssh/*", "../*", "src/../../x"] { #expect(!ProjectFiles.patternStaysInside(pattern), "\(pattern)") }
+        for pattern in [nil, "", "**/*.swift", "src/*.py", "TODO"] as [String?] { #expect(ProjectFiles.patternStaysInside(pattern)) }
+    }
+
+    @Test func textPlacedInATerminalCannotEndThePasteOrPressAKey() {
+        let hostile = "harmless\u{1B}[201~\r\nrm -rf ~\u{07}\u{03}\u{9B}201~ end"
+        let safe = ProjectSession.pasteable(hostile)
+        #expect(safe == "harmless[201~\nrm -rf ~201~ end")
+        #expect(!safe.unicodeScalars.contains { $0.value == 0x1B || $0.value == 0x0D || $0.value == 0x03 || $0.value == 0x9B })
+        #expect(ProjectSession.pasteable("  line one\n\tline two  \n") == "line one\n\tline two")
+        #expect(ProjectSession.pasteable("\u{1B}\u{07}") == "")
     }
 
     @Test func changedFilesComeFromGit() async {
         let files = await ProjectFiles.changed(in: URL(fileURLWithPath: "/p"), git: URL(fileURLWithPath: "/git")) { _, arguments, _ in
-            #expect(arguments == ["status", "--porcelain"])
+            #expect(arguments == ["--no-optional-locks", "status", "--porcelain"])
             return CommandResult(status: 0, output: " M src/login.py\n?? tests/new.py\nA  docs/a b.md\n")
         }
         #expect(files == ["M src/login.py", "?? tests/new.py", "A docs/a b.md"])

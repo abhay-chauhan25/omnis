@@ -46,9 +46,13 @@ public struct ClaudeConfig: Sendable {
     ]
 
     /// Files the advisor may never read, wherever they are in a project.
-    public static let secretFiles: [String] = [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.keystore", "id_rsa*", "id_ed25519*",
-                                               ".netrc", ".npmrc", "credentials.json", "secrets.*"]
-        .flatMap { ["Read(./\($0))", "Read(./**/\($0))"] } + ["Read(./.git/**)"]
+    public static let secretFiles: [String] = [
+        ".env", ".env.*", ".envrc", "*.pem", "*.key", "*.p12", "*.pfx", "*.p8", "*.jks", "*.ppk", "*.gpg", "*.kdbx", "*.keystore",
+        "id_rsa*", "id_ed25519*", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".htpasswd", "credentials", "credentials.json",
+        "kubeconfig", "secrets.*", "service-account*", "*.tfvars", "terraform.tfstate*",
+    ].flatMap { ["Read(./\($0))", "Read(./**/\($0))"] }
+        + ["Read(./.git/**)", "Read(./**/.aws/**)", "Read(./**/.ssh/**)", "Read(./**/.docker/**)", "Read(./**/.gnupg/**)",
+           "Read(./.aws/**)", "Read(./.ssh/**)", "Read(./.docker/**)", "Read(./.gnupg/**)"]
 
     /// The only tools a session may report having. Anything else and the session is not used.
     public static func isExpected(tool: String) -> Bool {
@@ -599,7 +603,8 @@ public final class ClaudeService: @unchecked Sendable {
                 return
             }
             let path = (input["file_path"] as? String) ?? (input["path"] as? String)
-            if ProjectFiles.mayRead(path, in: folder) {
+            if ProjectFiles.mayRead(path, in: folder), ProjectFiles.patternStaysInside(input["pattern"] as? String),
+               ProjectFiles.patternStaysInside(input["glob"] as? String) {
                 allow(id, input: input)
             } else {
                 deny(id, "The advisor can only read files inside the project folder, and not files that hold secrets.")
