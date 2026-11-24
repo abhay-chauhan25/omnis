@@ -127,7 +127,7 @@ final class ProjectModeModel: ObservableObject {
 
     // MARK: Terminals
 
-    /// Opens a terminal running Claude Code in the project's folder, with the agreed rules.
+    /// Opens a terminal running the user's own Claude Code in the project's folder.
     func openTerminal(resume: Bool = false, brief: String? = nil) {
         guard let project = selected, let claudeConfig else { return }
         let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))

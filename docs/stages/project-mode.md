@@ -19,8 +19,7 @@
 
 ## Rules
 
-- A session may change files in its project folder; look at the repository with a few exact git commands (status, diff, log, show, branch, with no extra arguments); commit locally; and run the usual build and test commands. Everything else, including pushing and installing, Claude Code asks for in the terminal.
-- **Building and testing run the project's own code, and committing runs the repository's hooks. The session can edit both. So a session can, in effect, run code of its own writing without asking.** That is what letting an agent build and test means. What limits it is Claude Code's own rules and the user watching the terminal.
+- **A session has no rules added by OMNIS** (changed on 2026-11-24 at the user's request; it first started with a list of commands allowed without asking). It is the user's own Claude Code, started in the project's folder, and it asks or does not ask exactly as their Claude Code settings say. OMNIS passes only the project's name, and the brief if there is one.
 - The advisor cannot change anything, run anything or read outside the project, and does not read `.env` files, keys and similar.
 - A new project is created only from a confirmed preview, once. A failed set-up is not re-run, because part of it may exist; the card says where it stopped.
 - Quitting OMNIS with sessions running asks first.
@@ -39,7 +38,7 @@ Independent review: pass with warnings. Nothing is created, published or deleted
 |---|---|
 | "Put in terminal" could end the paste early and submit text by itself | Fixed. Control characters are removed and the terminal's own paste is used. |
 | The activity panel's git check could collide with the session's own git commands | Fixed. It no longer takes git's lock. |
-| The safe list let "git diff", "log", "show" and "branch" take any arguments, which can write files or delete branches | Fixed. Those are allowed only in exact forms. |
+| The safe list let "git diff", "log", "show" and "branch" take any arguments | Narrowed, then the whole list was removed when the user chose sessions with no OMNIS rules. |
 | It was not said that building, testing and committing run code the session can edit | Fixed in this document, the decision record and the empty-terminal text. |
 | Setup steps had no time limit | Fixed. Each is stopped after 120 seconds and reported. |
 | A missing git name or email left a half-made folder | Fixed. Checked before anything is created. |
@@ -55,7 +54,6 @@ Independent review: pass with warnings. Nothing is created, published or deleted
 - **The Project view on screen:** how the terminal draws Claude Code, typing, copy and paste, resizing, tabs, the brief popover.
 - **A real project set-up:** no repository has been created by this code. The first run is the user's.
 - Whether "search" by the advisor is blocked from secret files by Claude Code, or only declined by the model in the test.
-- Whether Claude Code treats a safe command joined to another (`ls; something`) as needing permission, and whether it asks before writing into `.git` or `.claude`. Both need a check in a throwaway folder.
 - Sub-agents' work is not listed step by step in the activity panel, only that one was started.
 - Sessions use whatever model the user's Claude Code is set to; there is no model picker in the Project view.
 - No usage warning beyond the meter in the header.

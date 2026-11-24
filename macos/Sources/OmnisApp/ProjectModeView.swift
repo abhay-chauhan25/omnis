@@ -90,7 +90,7 @@ struct ProjectModeView: View {
                         Button("Resume the last one") { model.openTerminal(resume: true) }.buttonStyle(Chip())
                         Button("Start from a brief\u{2026}") { model.showBrief = true }.buttonStyle(Chip())
                     }
-                    Text("A session is the real Claude Code, working in this project's folder. It may change files there, commit locally, and build and test, which runs the project's own code. For anything else, such as pushing or installing, it stops and asks you.")
+                    Text("A session is your own Claude Code, started in this project's folder. OMNIS adds no rules: it asks you, or doesn't, exactly as it does in your own terminal.")
                         .font(.system(size: 12)).foregroundStyle(Tone.faint).multilineTextAlignment(.center).frame(maxWidth: 440)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

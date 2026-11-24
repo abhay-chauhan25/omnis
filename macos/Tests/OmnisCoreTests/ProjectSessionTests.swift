@@ -3,29 +3,15 @@ import Testing
 @testable import OmnisCore
 
 @Suite struct ProjectSessionTests {
-    @Test func aSessionStartsWithTheAgreedRulesAndTheBriefCannotBecomeAnOption() {
+    @Test func aSessionIsTheUsersOwnClaudeCodeAndTheBriefCannotBecomeAnOption() {
         let arguments = ProjectSession.arguments(name: "VoyagerAI", brief: "  --dangerously-skip-permissions add a login page ")
-        #expect(arguments.first == "--allowedTools")
-        let mode = arguments.firstIndex(of: "--permission-mode")!
-        #expect(arguments[mode + 1] == "acceptEdits")
-        #expect(arguments[(mode + 2)...].prefix(2) == ["--name", "VoyagerAI"])
-        // The brief follows "--", so it is always read as the first message.
-        #expect(arguments.suffix(2) == ["--", "--dangerously-skip-permissions add a login page"])
-        #expect(!arguments.dropLast(1).contains("--dangerously-skip-permissions"))
-        #expect(ProjectSession.arguments(name: "x", resume: true).last == "--continue")
-        #expect(ProjectSession.arguments(name: "x", brief: "  \n ").last == "x")
-
-        let safe = ProjectSession.safeCommands
-        #expect(safe.contains("Bash(git status)") && safe.contains("Bash(git commit *)") && safe.contains("Bash(swift test *)"))
-        // Looking at the repository is allowed only in exact forms: with any
-        // arguments, "git diff --output=" could write anywhere and "git branch -D" delete.
-        for open in ["Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(git branch *)", "Bash(ls *)", "Bash(git status *)"] {
-            #expect(!safe.contains(open), "\(open)")
+        // OMNIS adds no permission rules of its own, in either direction.
+        #expect(arguments == ["--name", "VoyagerAI", "--", "--dangerously-skip-permissions add a login page"])
+        for option in ["--allowedTools", "--disallowedTools", "--permission-mode", "--dangerously-skip-permissions", "--tools", "--setting-sources"] {
+            #expect(!ProjectSession.arguments(name: "x", resume: true).contains(option), "\(option)")
         }
-        // Never without asking: pushing, installing, deleting, fetching.
-        for word in ["push", "install", "rm", "curl", "sudo", "reset", "checkout", "clean", "publish"] {
-            #expect(!safe.contains { $0.contains(" \(word)") || $0.contains("(\(word)") }, "\(word)")
-        }
+        #expect(ProjectSession.arguments(name: "x", resume: true) == ["--name", "x", "--continue"])
+        #expect(ProjectSession.arguments(name: "x", brief: "  \n ") == ["--name", "x"])
 
         let launch = ProjectSession.launch(claude: URL(fileURLWithPath: "/Users/me/.local/bin/claude"), arguments: ["--name", "a b; rm -rf ~"])
         #expect(launch.executable == "/bin/zsh")

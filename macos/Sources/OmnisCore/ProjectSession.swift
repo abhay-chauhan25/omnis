@@ -2,35 +2,15 @@ import Foundation
 
 /// How a Claude Code terminal is started for a project.
 ///
-/// The session is the real Claude Code, driven by the user. OMNIS only sets
-/// the rules it starts with: it works in the project's folder, may change
-/// files there, and may run a short list of safe commands. Anything else,
-/// Claude Code stops and asks the user for, in the terminal.
+/// The session is the user's own Claude Code, exactly as if they had run
+/// `claude` in the project's folder. OMNIS adds no rules of its own: what the
+/// session may do without asking is whatever the user's Claude Code settings say.
 public enum ProjectSession {
-    /// Commands a session may run without asking: looking at the repository,
-    /// local commits, and the usual ways of building and testing. Pushing,
-    /// installing packages and everything else are asked for.
-    public static let safeCommands: [String] = {
-        // Looking at the repository: only these exact forms. With any
-        // arguments allowed, "git diff --output=" could write a file anywhere
-        // and "git branch -D" could delete a branch.
-        let exact = ["git status", "git status --short", "git diff", "git diff --stat", "git diff --staged", "git log",
-                     "git log --oneline", "git show", "git branch", "ls", "ls -la", "pwd"]
-        // Local commits, and the usual ways of building and testing. These
-        // run the project's own code, which the session can edit: that is
-        // what building and testing means.
-        let open = ["git add", "git commit", "swift build", "swift test", "npm test", "npm run build", "npm run test",
-                    "npm run lint", "pytest", "python3 -m pytest", "python3 -m unittest", "cargo build", "cargo test",
-                    "cargo check", "go build", "go test"]
-        return exact.map { "Bash(\($0))" } + open.flatMap { ["Bash(\($0))", "Bash(\($0) *)"] }
-    }()
-
     /// The options for one session. `brief` is typed in as its first message.
     public static func arguments(name: String, resume: Bool = false, brief: String? = nil) -> [String] {
-        // The list of commands comes first and is closed off by the next
-        // option, so a brief can never be read as part of it.
-        var arguments = ["--allowedTools"] + safeCommands + ["--permission-mode", "acceptEdits", "--name", name]
+        var arguments = ["--name", name]
         if resume { arguments.append("--continue") }
+        // After "--", so a brief can never be read as an option.
         if let brief = brief?.trimmingCharacters(in: .whitespacesAndNewlines), !brief.isEmpty {
             arguments += ["--", brief]
         }
