@@ -67,4 +67,4 @@ Decided by the user. With Model and Effort on Auto, Claude answers with Sonnet a
 
 Checked live in one chat (`OMNIS_LIVE_TESTS=1 swift test --filter liveAuto`): Sonnet answered the first question, Opus the second ("Think: ..."), Sonnet the third, by Claude Code's own count of which model produced words on each turn. Claude Code accepted each change of effort; what difference the effort makes to an answer was not measured.
 
-Any message containing the word "think", such as "I think it's at 5", uses Opus, which uses the plan's allowance faster.
+Narrowed the same day at the user's request: "think" alone no longer counts. The phrases are "deep dive", "think about", "think through" and "decide".

@@ -219,6 +219,7 @@ public struct Conversation: Equatable, Sendable {
     // MARK: Changes from other services
 
     private var serviceDeleteNext = false
+    private var serviceSendNext = false
 
     /// What the other services may do for this message. Deleting needs the
     /// user's own words to say delete, cancel or remove (or to answer a
@@ -228,7 +229,12 @@ public struct Conversation: Equatable, Sendable {
         let asks = PersonalIntent.asksToDelete(text)
         let deletes = !hasFile && (asks || serviceDeleteNext)
         serviceDeleteNext = asks && !hasFile
-        return ToolAccess(deletes: deletes, sends: false)
+        // Sending needs the user's own words to ask for it, or to be answering
+        // a question ("which number?") straight after doing so.
+        let asksSend = PersonalIntent.asksToSend(text)
+        let sends = asksSend || serviceSendNext
+        serviceSendNext = asksSend
+        return ToolAccess(deletes: deletes, sends: sends)
     }
 
     /// Adds a proposed change to an answer. The same change twice is shown once.
@@ -464,6 +470,7 @@ public struct Conversation: Equatable, Sendable {
         hasFile = false
         offerProjectNext = false
         serviceDeleteNext = false
+        serviceSendNext = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

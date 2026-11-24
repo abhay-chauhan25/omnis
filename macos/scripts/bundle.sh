@@ -61,7 +61,8 @@ if [ -n "$docker" ]; then add OMNISDockerPath string "$docker"; fi
 plutil -insert NSAppTransportSecurity -json '{"NSAllowsLocalNetworking":true}' "$plist"
 add NSRemindersFullAccessUsageDescription string "OMNIS reads your reminders to answer questions about them, and changes them only when you confirm a change."
 add NSPhotoLibraryUsageDescription string "OMNIS looks through your photos when you ask it to, and shows Claude the ones you ask about. It never changes or deletes a photo."
-add NSAppleEventsUsageDescription string "OMNIS controls playback in Spotify when you ask it to."
+add NSAppleEventsUsageDescription string "OMNIS controls playback in Spotify when you ask it to, and hands Messages a text to send only after you click Send."
+add NSContactsUsageDescription string "OMNIS looks up a person's number in your contacts when you ask it to message them."
 # Shown by macOS when OMNIS first asks to read the calendar.
 add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to answer questions about your schedule, and changes it only when you confirm a change."
 

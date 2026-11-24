@@ -40,16 +40,16 @@ public enum ClaudeRouter {
 
     // Words that ask for the strongest model and the most thought.
     private static let deep = try! NSRegularExpression(
-        pattern: #"\b(deep[- ]?dives?|think|decide)\b"#, options: [.caseInsensitive]
+        pattern: #"\b(deep[- ]?dives?|think\s+(about|through)|decide)\b"#, options: [.caseInsensitive]
     )
 
-    /// True when the message uses one of the words that ask for more: "deep dive", "think" or "decide".
+    /// True when the message uses one of the phrases that ask for more: "deep dive", "think about", "think through" or "decide".
     public static func asksForDepth(_ text: String) -> Bool {
         deep.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     /// With both on Auto: Sonnet at medium effort, and Opus at high effort
-    /// when the message says "deep dive", "think" or "decide". A model or an
+    /// when the message says "deep dive", "think about", "think through" or "decide". A model or an
     /// effort the user picked is always used as picked.
     public static func choose(text: String, model: ModelChoice = .auto, effort: EffortChoice = .auto) -> Choice {
         let deeper = asksForDepth(text)
@@ -370,6 +370,11 @@ public enum ClaudePrompt {
         (github_overview shows pull requests and issues waiting for the user; reading only), and Spotify (what \
         is playing, play, pause, next, previous, and opening a search). Adding or changing a reminder shows a \
         preview to confirm, like the calendar. Spotify controls happen at once.
+
+        Messages: messages_send prepares a text message to one person in the user's contacts, named by \
+        name. It only shows a preview with a Send button, so say it is ready to check, never that it was \
+        sent. Use the user's own words for the message; if they did not say what to write, ask. If several \
+        people or numbers match, ask the user which they mean. You cannot read messages yet.
 
         Photos, reading only: photos_search lists the user's photos by date, album, favourites or screenshots. \
         It tells you when each was taken, not what it shows. To see what is in photos, ask for up to four \

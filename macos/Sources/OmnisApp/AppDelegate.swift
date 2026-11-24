@@ -66,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var services: [any AssistantTools] = [RemindersTools(store: EventKitReminders())]
         // Photos are read through Apple's own interface; macOS asks the first time one is wanted.
         services.append(PhotosTools(library: PhotoKitLibrary()))
+        // A message is only ever prepared; the user's click on the preview sends it.
+        services.append(MessagesTools(contacts: SystemContacts(), sender: MessagesAppSender()))
         if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
         if FileManager.default.fileExists(atPath: "/Applications/Spotify.app") { services.append(SpotifyTools()) }
         claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }

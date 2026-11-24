@@ -177,6 +177,31 @@ final class FakeMessages {
         #expect(try store.search(text: "birthday", days: 30, limit: 5, now: Self.now).isEmpty)
     }
 
+    @Test func verificationCodesAndSignInLinksNeverLeaveTheReader() throws {
+        for (text, sender) in [("Your verification code is 482913", "+15550001"), ("G-482913 is your Google verification code.", "+15550001"),
+                               ("Use 4829 to log in", "sam@example.com"), ("Your OTP: 482 913. Do not share it.", "+15550001"),
+                               ("Reset your password: https://bank.example/r?t=abc", "+15550001"),
+                               ("Tap to sign in https://x.example/magic", "+15550001")] {
+            #expect(MessageStore.hidingCodes(text, sender: sender) == MessageStore.hiddenCode, "\(text)")
+        }
+        // Anything from an automated short number is hidden whatever it says.
+        #expect(MessageStore.hidingCodes("Your parcel is out for delivery", sender: "72345") == MessageStore.hiddenAutomated)
+        // Ordinary messages with numbers, or with those words but no code or link, come through.
+        for text in ["See you at 1830 on Friday", "My door code talk can wait, call me", "It cost 12,500 in the end", "The pin fell out of my bike",
+                     "Call me on 555 0100", "Flight BA 2490 lands 14/11/2026", "Can you confirm you're coming?", "https://example.com/recipe"] {
+            #expect(MessageStore.hidingCodes(text, sender: "+15550001") == text, "\(text)")
+        }
+
+        let fake = FakeMessages()
+        fake.add(chat: 1, from: 1, "Your verification code is 482913", at: "2026-11-24T09:00:00Z", packed: true)
+        fake.add(chat: 1, from: 1, "Lunch at 1?", at: "2026-11-24T09:01:00Z")
+        let store = try MessageStore(path: fake.path)
+        #expect(try store.messages(chat: "+15550001", days: 30, limit: 10, now: Self.now).map(\.text) == [MessageStore.hiddenCode, "Lunch at 1?"])
+        // A hidden message cannot be found by what it said.
+        #expect(try store.search(text: "482913", days: 30, limit: 10, now: Self.now).isEmpty)
+        #expect(try store.search(text: "verification", days: 30, limit: 10, now: Self.now).map(\.text) == [MessageStore.hiddenCode])
+    }
+
     @Test func requestsAreAnsweredOrRefusedByCode() {
         let fake = filled()
         func ask(_ request: ReaderRequest) -> ReaderReply { ReaderServer.answer(request, databasePath: fake.path, now: Self.now) }

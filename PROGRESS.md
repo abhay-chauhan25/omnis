@@ -24,7 +24,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; tried by the user 2026-11-24 | `docs/stages/services.md` |
 | Guard rails: the ask-once search question, fuller audit record, Activity view | Built and reviewed 2026-11-24; findings fixed; not yet seen on screen | `docs/stages/guard-rails.md` |
 | Photos, reading only | Built 2026-11-24; tested with a stand-in and once live with a made-up picture; not yet run against the real library | `docs/stages/photos.md` |
-| Messages | In progress 2026-11-24. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Security-reviewed and hardened. **Full Disk Access must not be given yet:** the signing key has to be protected first, which is waiting on the user | ADR-0015, `docs/stages/messages.md` |
+| Messages | In progress 2026-11-24. Sending built and tested with stand-ins (Contacts lookup, preview to confirm); no real message sent yet. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Security-reviewed and hardened. **Full Disk Access must not be given yet:** the signing key has to be protected first, which is waiting on the user | ADR-0015, `docs/stages/messages.md` |
 | Services: mail (school Outlook), browser | Not started. Probed 2026-11-24: Outlook answers scripts but shows them no accounts and no messages, so reading through the Outlook app is not possible as it is set up. Open routes: the account in Apple Mail, Outlook's older design if the school allows it, or Microsoft's online service with the school's consent | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
 | Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
@@ -63,7 +63,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 273. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 280. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
@@ -123,7 +123,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 | 2026-11-24 | In a Claude chat that holds personal information, web searches are asked about once per chat, and only then. | `docs/stages/guard-rails.md` |
 | 2026-11-24 | The audit log is shown as an Activity mode in the dashboard. | `docs/stages/guard-rails.md` |
 | 2026-11-24 | No Full Disk Access for OMNIS. No file access yet; a folder is asked for when needed. Messages reading goes through a separate helper. Contacts may be used to match names. School Outlook is the mail account. | — |
-| 2026-11-24 | On Auto, Claude answers with Sonnet at medium effort, and with Opus at high effort when the message says "deep dive", "think" or "decide". Checked live: the model changes within one chat. | `ClaudeRouter` in `ClaudeLane.swift` |
+| 2026-11-24 | On Auto, Claude answers with Sonnet at medium effort, and with Opus at high effort when the message says "deep dive", "think about", "think through" or "decide". Checked live: the model changes within one chat. | `ClaudeRouter` in `ClaudeLane.swift` |
 | 2026-11-24 | The signing key moves to its own password-protected keychain, with a new key; Claude may see photo album names. | `macos/scripts/protect-signing-key.sh` |
 | 2026-11-24 | Project mode: real Claude Code terminals in the dashboard with OMNIS as a read-only advisor; SwiftTerm added as the first third-party dependency; edits and safe commands free in the project folder, the rest asked. | ADR-0014 |
 

@@ -799,19 +799,21 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         for text in ["what's on my calendar tomorrow", "who won the F1 race", "add lunch at 1", "hello",
                      "solve this leetcode problem: two sum", "compare Postgres and SQLite", String(repeating: "long ", count: 200),
                      // Words that only look like the key words.
-                     "rethinking the plan", "a decided advantage", "thinks", "deepdiving", "the decision"] {
+                     "rethinking the plan", "a decided advantage", "thinks", "deepdiving", "the decision",
+                     // "think" alone no longer counts: only "think about" and "think through".
+                     "I think it's at 5pm, can you check", "THINK.", "what do you think", "think hard"] {
             #expect(ClaudeRouter.choose(text: text) == .init(model: .sonnet, effort: "medium", reason: "the usual model"), "\(text)")
         }
         for text in ["do a deep dive on SQLite's WAL mode", "Deep-dive into this", "deepdive: rust lifetimes", "two deep dives please",
-                     "think about which laptop suits me", "THINK.", "help me decide between these two flats", "Decide: tea or coffee?",
-                     "I think it's at 5pm, can you check"] {
+                     "think about which laptop suits me", "Think  through the trade-offs with me", "help me decide between these two flats",
+                     "Decide: tea or coffee?", "let's think\nabout it"] {
             #expect(ClaudeRouter.choose(text: text) == .init(model: .opus, effort: "high", reason: "you asked for more thought"), "\(text)")
         }
         // A model or an effort you picked is used as picked; the other still follows the words.
         #expect(ClaudeRouter.choose(text: "hello", model: .opus) == .init(model: .opus, effort: "high", reason: "you chose Opus"))
         #expect(ClaudeRouter.choose(text: "hello", model: .haiku) == .init(model: .haiku, effort: "medium", reason: "you chose Haiku"))
-        #expect(ClaudeRouter.choose(text: "think it over", model: .haiku) == .init(model: .haiku, effort: "high", reason: "you chose Haiku"))
-        #expect(ClaudeRouter.choose(text: "think it over", effort: .low) == .init(model: .opus, effort: "low", reason: "you asked for more thought"))
+        #expect(ClaudeRouter.choose(text: "think through it", model: .haiku) == .init(model: .haiku, effort: "high", reason: "you chose Haiku"))
+        #expect(ClaudeRouter.choose(text: "think through it", effort: .low) == .init(model: .opus, effort: "low", reason: "you asked for more thought"))
         #expect(ClaudeRouter.choose(text: "hello", effort: .high) == .init(model: .sonnet, effort: "high", reason: "the usual model"))
     }
 
@@ -942,7 +944,7 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         }
         let first = try await ask("Say hello in one word.")
         #expect(first.model.contains("sonnet") && first.effort == "medium")
-        let second = try await ask("Think: is 17 a prime number? Answer in one word.")
+        let second = try await ask("Think about this: is 17 a prime number? Answer in one word.")
         #expect(second.model.contains("opus") && second.effort == "high")
         let third = try await ask("Say goodbye in one word.")
         #expect(third.model.contains("sonnet") && third.effort == "medium")

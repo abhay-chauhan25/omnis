@@ -163,8 +163,32 @@ public final class MessageStore {
 
     private static func message(_ row: OpaquePointer) -> ReaderMessage {
         let mine = sqlite3_column_int64(row, 2) != 0
+        let sender = mine ? "" : string(row, 3)
         return ReaderMessage(chat: string(row, 0), time: seconds(sqlite3_column_int64(row, 1)), fromMe: mine,
-                             sender: mine ? "" : string(row, 3), text: words(row, text: 4, body: 5))
+                             sender: sender, text: hidingCodes(words(row, text: 4, body: 5), sender: sender))
+    }
+
+    static let hiddenCode = "[hidden: this looks like a verification code or a sign-in link]"
+    static let hiddenAutomated = "[hidden: sent by an automated short number]"
+
+    private static let codeWords = try! NSRegularExpression(
+        pattern: #"\b(code|codes|otp|passcode|pass code|one[- ]time|verif\w*|2fa|two[- ]factor|authenticat\w*|security|log ?in|sign ?in|pin|password|reset|confirm\w*)\b"#,
+        options: [.caseInsensitive])
+    private static let codeDigits = try! NSRegularExpression(pattern: #"(?<![\d.,/])(\d[ -]?){3,7}\d(?![\d/])|\b[A-Z]-\d{4,8}\b"#)
+    private static let link = try! NSRegularExpression(pattern: #"https?://"#, options: [.caseInsensitive])
+
+    /// Sign-in codes and reset links are worth more to a thief than any other
+    /// message, and nothing OMNIS does needs them. They never leave this
+    /// program: the words are replaced before anything is searched or sent on.
+    static func hidingCodes(_ text: String, sender: String) -> String {
+        guard !text.isEmpty else { return text }
+        // Banks and services send from short numbers: digits only, a handful of them.
+        if !sender.isEmpty, sender.count <= 8, sender.allSatisfy(\.isNumber) { return hiddenAutomated }
+        let whole = NSRange(text.startIndex..., in: text)
+        guard codeWords.firstMatch(in: text, range: whole) != nil else { return text }
+        let hasDigits = codeDigits.firstMatch(in: text, range: whole) != nil
+        let hasLink = link.firstMatch(in: text, range: whole) != nil
+        return hasDigits || hasLink ? hiddenCode : text
     }
 
     private static func since(_ days: Int, now: Date) -> Int64 {

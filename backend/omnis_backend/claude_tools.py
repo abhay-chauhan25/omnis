@@ -66,6 +66,9 @@ SERVICE_TOOLS = [
     _tool("spotify_now_playing", "Say what Spotify is playing.", {}),
     _tool("spotify_control", "Control Spotify playback at once.", {"action": "One of: play, pause, toggle, next, previous."}),
     _tool("spotify_search", "Open Spotify showing search results for something.", {"query": "What to search for."}),
+    _tool("messages_send", "Prepare a text message from the user to one person. The user sees it and must click Send; nothing is sent by you.",
+          {"to": "The person's name as it is in the user's contacts.", "text": "The words of the message, exactly as the user wants them.",
+           "contact": "Only after messages_send listed several matches and the user chose one: that match's id, like c2."}, ["text"]),
     _tool("photos_search", "List photos in the user's library, newest first, by when they were taken. Each has an id like p3. "
           "This does not show what is in them.",
           {"from": "Earliest day, as YYYY-MM-DD. Leave out for no limit.", "to": "Latest day, as YYYY-MM-DD. Leave out for no limit.",

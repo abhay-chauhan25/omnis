@@ -1148,6 +1148,14 @@ public enum PersonalIntent {
         pattern: #"\b(delete|remove|get rid of)\b(?!.*\b(from|on|in|off) (my|the) calendar\b).{0,60}?\bcalendar\b"#,
         options: [.caseInsensitive])
 
+    private static let sendPattern = try! NSRegularExpression(
+        pattern: #"\b(text|texts|message|imessage|sms|send|tell|reply|respond|let .{1,40} know)\b"#, options: [.caseInsensitive])
+
+    /// True when the user's own words ask for a message to be sent.
+    public static func asksToSend(_ text: String) -> Bool {
+        sendPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
     /// True when the user's own words ask for something to be deleted.
     public static func asksToDelete(_ text: String) -> Bool {
         deletePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
