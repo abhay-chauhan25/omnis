@@ -30,7 +30,7 @@ public struct ClaudeConfig: Sendable {
 
     /// The only tools a session may report having. Anything else and the session is not used.
     public static func isExpected(tool: String) -> Bool {
-        tool == "WebSearch" || tool.hasPrefix("mcp__omnis__calendar_")
+        tool == "WebSearch" || tool.hasPrefix("mcp__omnis__calendar_") || tool == "mcp__omnis__project_create"
     }
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
@@ -90,6 +90,8 @@ public struct ClaudeRequest: Sendable {
     public var reason: String
     public var web: Bool
     public var access: CalendarToolAccess
+    /// True when the user's own message asked for a new project to be set up.
+    public var allowProject = false
 
     public init(text: String, history: [ChatTurn] = [], attachments: [Attachment] = [], model: ClaudeModel = .haiku,
                 effort: String = "low", reason: String = "", web: Bool = true,
@@ -170,10 +172,15 @@ public final class ClaudeService: @unchecked Sendable {
     private var usage = UsageWindows()
     private var usageHandler: (@Sendable (UsageWindows) -> Void)?
     private var personalDataHandler: (@Sendable () -> Void)?
+    private let projectPlanner: ProjectPlanner?
 
-    public init(config: ClaudeConfig, tools: CalendarTools) {
+    /// Turns what the model asked for into a project plan, or refuses.
+    public typealias ProjectPlanner = @Sendable ([String: String]) async throws -> ProjectPlan
+
+    public init(config: ClaudeConfig, tools: CalendarTools, projects: ProjectPlanner? = nil) {
         self.config = config
         self.tools = tools
+        self.projectPlanner = projects
     }
 
     deinit {
@@ -557,6 +564,10 @@ public final class ClaudeService: @unchecked Sendable {
             return
         }
         let tool = String(name.dropFirst(prefix.count))
+        if tool == "project_create" {
+            projectAsked(id: id, input: input, question: current)
+            return
+        }
         let writing = CalendarTools.writeTools.contains(tool)
         // The model is always given an answer in words, so it can explain or try again.
         func answer(_ text: String) { allow(id, input: ["_result": text]) }
@@ -611,6 +622,46 @@ public final class ClaudeService: @unchecked Sendable {
                 outcome = .failure(error)
             }
             self?.queue.async { reply(outcome) }
+        }
+    }
+
+    /// Claude wants a new project set up. It only ever becomes a preview.
+    private func projectAsked(id: String, input: [String: Any], question current: Active) {
+        func answer(_ text: String) { allow(id, input: ["_result": text]) }
+        func refuse(_ error: Error) {
+            let why = String(error.localizedDescription.prefix(240))
+            active?.continuation.yield(.eventRefused(why))
+            answer("The project could not be prepared: \(why). Nothing was created.")
+        }
+        guard current.request.allowProject, let projectPlanner else {
+            refuse(ProjectError.notAsked)
+            return
+        }
+        var arguments: [String: String] = [:]
+        for (key, value) in input where key.count <= 40 && !key.hasPrefix("_") {
+            if let text = value as? String { arguments[key] = String(text.prefix(300)) }
+        }
+        let question = current.id
+        let session = generation
+        Task { [weak self] in
+            let outcome: Result<ProjectPlan, Error>
+            do {
+                outcome = .success(try await projectPlanner(arguments))
+            } catch {
+                outcome = .failure(error)
+            }
+            self?.queue.async {
+                guard let self, session == self.generation, self.active?.id == question else { return }
+                switch outcome {
+                case .success(let plan):
+                    self.active?.continuation.yield(.projectProposed(plan))
+                    answer("A preview of this project is now shown to the user with a button to confirm. NOTHING has been "
+                        + "created, and you cannot create it. In one short sentence, say what you prepared and ask them to "
+                        + "check it and confirm. Do not say it has been created.")
+                case .failure(let error):
+                    refuse(error)
+                }
+            }
         }
     }
 

@@ -100,7 +100,8 @@ struct ChatView: View {
                     }
                     ForEach(model.conversation.messages) { message in
                         MessageView(message: message, open: model.open, confirm: model.confirm, decline: model.decline,
-                                    answerLocally: model.answerLocally)
+                                    answerLocally: model.answerLocally, confirmProject: model.confirmProject,
+                                    declineProject: model.declineProject)
                     }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -287,6 +288,8 @@ private struct MessageView: View {
     let confirm: (UUID) -> Void
     let decline: (UUID) -> Void
     let answerLocally: (UUID) -> Void
+    let confirmProject: (UUID) -> Void
+    let declineProject: (UUID) -> Void
 
     var body: some View {
         switch message.role {
@@ -331,6 +334,9 @@ private struct MessageView: View {
                 Button("Answer on this Mac instead") { answerLocally(message.id) }
                     .controlSize(.small)
                     .help("Use the model on this Mac for this question and the rest of this chat.")
+            }
+            ForEach(message.projects) { proposal in
+                ProjectCard(proposal: proposal, confirm: { confirmProject(proposal.id) }, decline: { declineProject(proposal.id) })
             }
             ForEach(message.proposals) { proposal in
                 EventCard(proposal: proposal, confirm: { confirm(proposal.id) }, decline: { decline(proposal.id) })
@@ -417,6 +423,77 @@ private struct MessageView: View {
                 .help(source.url.absoluteString)
                 .accessibilityLabel("Source \(index + 1): \(source.title), \(source.host). Opens in your browser.")
             }
+        }
+    }
+}
+
+/// A new project, shown for the user to check. Nothing is created until the button is clicked.
+private struct ProjectCard: View {
+    let proposal: ProjectProposal
+    let confirm: () -> Void
+    let decline: () -> Void
+
+    private var isLive: Bool { proposal.state == .waiting || proposal.state == .saving }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "folder.badge.plus").font(.system(size: 18))
+                    .foregroundStyle(isLive ? Color.accentColor : Color.secondary).frame(width: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("NEW PROJECT").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    Text(proposal.plan.name).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    ForEach(Array(proposal.plan.rows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(row.label).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
+                            Text(row.value).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.system(size: 12))
+                    }
+                    if isLive, let warning = proposal.plan.warning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium)).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            footer
+        }
+        .padding(12)
+        .frame(maxWidth: 440, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("New project: \(proposal.plan.name)")
+    }
+
+    @ViewBuilder private var footer: some View {
+        switch proposal.state {
+        case .waiting:
+            HStack(spacing: 8) {
+                Text("Nothing created yet").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Button("Don't Create", action: decline)
+                Button("Create Project", action: confirm).buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        case .saving:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(proposal.progress ?? "Working").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        case .done(let result):
+            Label(result, systemImage: "checkmark.circle.fill").font(.system(size: 12)).foregroundStyle(.green)
+                .fixedSize(horizontal: false, vertical: true)
+        case .declined:
+            Text("Not created").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .replaced:
+            Text("Not created. Replaced by a newer preview below.").font(.system(size: 12)).foregroundStyle(.secondary)
+        case .failed(let why):
+            Label(why, systemImage: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

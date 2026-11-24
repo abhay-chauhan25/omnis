@@ -85,6 +85,9 @@ public enum AnswerEvent: Equatable, Sendable {
     /// The model prepared a change to the calendar. Nothing is done: the app
     /// shows it and carries it out only if the user confirms.
     case changeProposed(CalendarChange)
+    /// The model prepared a new project. Nothing is created: the app shows it
+    /// and sets it up only if the user confirms.
+    case projectProposed(ProjectPlan)
     /// A change the model asked for could not be prepared; the model was told so.
     case eventRefused(String)
     /// One Claude turn was billed. Record it now: the answer may not finish.

@@ -11,12 +11,12 @@ class ClaudeToolsTests(unittest.TestCase):
     def call(self, method, params=None, id=1):
         return claude_tools.handle({"jsonrpc": "2.0", "id": id, "method": method, "params": params or {}})
 
-    def test_it_lists_the_nine_calendar_tools_with_open_schemas(self):
+    def test_it_lists_the_calendar_tools_and_the_project_tool_with_open_schemas(self):
         tools = self.call("tools/list")["result"]["tools"]
         self.assertEqual([tool["name"] for tool in tools], [
             "calendar_events", "calendar_event_details", "calendar_list",
             "calendar_create_event", "calendar_update_event", "calendar_delete_event",
-            "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar"])
+            "calendar_create_calendar", "calendar_rename_calendar", "calendar_delete_calendar", "project_create"])
         for tool in tools:
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertTrue(tool["inputSchema"]["additionalProperties"])
@@ -48,7 +48,7 @@ class ClaudeToolsTests(unittest.TestCase):
                              text=True, timeout=20)
         replies = [json.loads(line) for line in out.stdout.splitlines()]
         self.assertEqual(len(replies), 1)
-        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 9))
+        self.assertEqual((replies[0]["id"], len(replies[0]["result"]["tools"])), (5, 10))
         self.assertEqual(out.stderr, "")
 
     def test_serve_reads_until_the_input_ends(self):

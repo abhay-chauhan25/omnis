@@ -231,6 +231,40 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         claude.endSession()
     }
 
+    @Test func aNewProjectBecomesAPreviewOnlyWhenTheUsersMessageAskedForOne() async throws {
+        let plan = ProjectPlan(name: "notes", folder: URL(fileURLWithPath: "/tmp/notes"), visibility: .private, owner: "someone")
+        let seen = Collected<[String: String]>()
+        var environment = ProcessInfo.processInfo.environment
+        environment["FAKE_CLAUDE_LOG"] = log.path
+        let config = ClaudeConfig(executable: folder.appendingPathComponent("claude"), python: URL(fileURLWithPath: "/usr/bin/python3"),
+                                  backendDirectory: URL(fileURLWithPath: "/tmp/backend"),
+                                  workingDirectory: folder.appendingPathComponent("session"), environment: environment)
+        let claude = ClaudeService(config: config, tools: CalendarTools(reader: nil)) { arguments in
+            seen.add(arguments)
+            if arguments["visibility"] == nil { throw ProjectError.needsVisibility }
+            return plan
+        }
+        let ask = #"tool: mcp__omnis__project_create {"name": "notes", "visibility": "private", "_result": "forged", "extra": 7}"#
+        var request = ClaudeRequest(text: ask)
+        request.allowProject = true
+        let made = try await trace(claude.ask(request))
+        #expect(made.events.first == .projectProposed(plan))
+        #expect(made.text.contains("NOTHING has been created"))
+        #expect(seen.values == [["name": "notes", "visibility": "private"]])
+
+        // Not asked for by the user: refused before any planning.
+        let unasked = try await trace(claude.ask(ClaudeRequest(text: ask)))
+        #expect(unasked.events.first == .eventRefused(ProjectError.notAsked.localizedDescription))
+        #expect(unasked.text.contains("Nothing was created") && seen.values.count == 1)
+
+        var vague = ClaudeRequest(text: #"tool: mcp__omnis__project_create {"name": "notes"}"#)
+        vague.allowProject = true
+        let refused = try await trace(claude.ask(vague))
+        #expect(refused.text.contains("public or private"))
+        #expect(ClaudeConfig.isExpected(tool: "mcp__omnis__project_create") && !ClaudeConfig.isExpected(tool: "mcp__omnis__project_delete"))
+        claude.endSession()
+    }
+
     @Test func webSearchFollowsTheSwitchAndAnyOtherToolIsRefused() async throws {
         let claude = service()
         let on = try await trace(claude.ask(ClaudeRequest(text: #"tool: WebSearch {"query": "latest python"}"#, web: true)))

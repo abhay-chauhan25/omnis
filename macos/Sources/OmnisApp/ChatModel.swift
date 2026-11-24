@@ -41,6 +41,7 @@ final class ChatModel: ObservableObject {
     private let performer: LaunchPerforming
     private let calendarWriter: (any CalendarWriting)?
     private let claude: ClaudeService?
+    private let projectSetup: ProjectSetup?
     let limits = UsageLimits()
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
@@ -50,8 +51,9 @@ final class ChatModel: ObservableObject {
     private var noticeTask: Task<Void, Never>?
 
     init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil,
-         claude: ClaudeService? = nil) {
+         claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil) {
         self.backend = backend
+        self.projectSetup = projectSetup
         self.claude = claude
         self.calendarWriter = calendarWriter
         self.audit = audit
@@ -414,11 +416,14 @@ final class ChatModel: ObservableObject {
             }
             let choice = ClaudeRouter.choose(text: options.text, hasDocument: attachments.contains { $0.kind == .text },
                                              model: modelChoice, effort: effortChoice)
-            stream = claude.ask(ClaudeRequest(
+            var request = ClaudeRequest(
                 text: options.text, history: history, attachments: attachments, model: choice.model, effort: choice.effort,
                 reason: choice.reason, web: webEnabled && options.web,
                 access: CalendarToolAccess(calendar: true, write: offer.changes, deletes: offer.deletes)
-            ))
+            )
+            // A new project may be prepared only when your own message asks for one.
+            request.allowProject = projectSetup != nil && attachments.isEmpty && conversation.offersProject(for: options.text)
+            stream = claude.ask(request)
         }
 
         let audit = self.audit
@@ -464,6 +469,11 @@ final class ChatModel: ObservableObject {
                         if case .create(let draft) = change, draft.calendarName == nil {
                             self.fillCalendarName(for: proposal.id)
                         }
+                    case .projectProposed(let plan):
+                        // A preview only. It is set up in `confirmProject`, on the user's click.
+                        self.conversation.add(ProjectProposal(plan: plan), to: answerID)
+                        audit.record(action: "project_propose", outcome: "ok")
+                        self.announce("New project ready to check")
                     case .eventRefused(let why):
                         self.conversation.update(answerID) { $0.proposalProblem = why }
                         // The reason can name a calendar, so it is not logged.
@@ -533,6 +543,42 @@ final class ChatModel: ObservableObject {
                 self?.announce("The calendar was not changed")
             }
         }
+    }
+
+    // MARK: New projects
+
+    /// Sets up a previewed project: folder, git, GitHub repository, editor.
+    /// Called only by the user's click on that preview, and only once.
+    func confirmProject(_ proposalID: UUID) {
+        guard let projectSetup, let plan = conversation.beginProject(proposalID) else { return }
+        let audit = self.audit
+        Task { [weak self] in
+            do {
+                try await projectSetup.perform(plan) { step in
+                    Task { @MainActor in self?.conversation.updateProject(proposalID) { $0.progress = step } }
+                }
+                // The name of the project is the user's own and is recorded like any launch target.
+                audit.record(action: "project_create", target: plan.name, outcome: "ok", detail: plan.visibility.rawValue)
+                guard let self else { return }
+                self.reloadRegistry()
+                var result = "Created \(plan.repository) and pushed the first commit"
+                if let entry = self.registry.entries.first(where: { $0.kind == .project && $0.url.standardizedFileURL == plan.folder.standardizedFileURL }) {
+                    self.launch(entry, clearInput: false)
+                    result += ". Opening it in \(self.registry.editor.name)"
+                }
+                self.conversation.updateProject(proposalID) { $0.state = .done(result); $0.progress = nil }
+                self.announce("Project created")
+            } catch {
+                audit.record(action: "project_create", target: plan.name, outcome: "error", detail: error.localizedDescription)
+                self?.conversation.updateProject(proposalID) { $0.state = .failed(error.localizedDescription); $0.progress = nil }
+                self?.announce("The project was not fully set up")
+            }
+        }
+    }
+
+    func declineProject(_ proposalID: UUID) {
+        guard conversation.declineProject(proposalID) else { return }
+        audit.record(action: "project_create", outcome: "declined")
     }
 
     /// The user chose not to add a previewed event.

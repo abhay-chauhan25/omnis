@@ -33,9 +33,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             BackendService(config: $0, webSearch: web?.search, tools: tools)
         }
         // Claude answers by default, through Claude Code on the user's own plan.
-        claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools) }
+        // Setting up a project needs git and the GitHub tool. Without them it is simply not offered.
+        let projectSetup: ProjectSetup? = {
+            guard let git = Commands.find("git"), let gh = Commands.find("gh") else { return nil }
+            return ProjectSetup(git: git, gh: gh)
+        }()
+        let planner: ClaudeService.ProjectPlanner? = projectSetup.map { setup in
+            { arguments in
+                // New projects go in the first projects folder named in the registry.
+                let config = try ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)
+                guard let first = config.projectRoots.first else { throw ProjectError.noProjectsFolder("(none set)") }
+                let root = URL(fileURLWithPath: NSString(string: first).expandingTildeInPath, isDirectory: true)
+                return try ProjectPlan.make(arguments: arguments, root: root, owner: await setup.owner())
+            }
+        }
+        claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner) }
         // Changing the calendar goes through the chat model, on the user's click.
-        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude)
+        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude,
+                              projectSetup: projectSetup)
         chat = ChatWindowController(model: model)
         // The dashboard is the main window. A question typed there is answered in the chat window.
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,

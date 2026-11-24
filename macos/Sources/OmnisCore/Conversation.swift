@@ -48,6 +48,21 @@ public struct EventProposal: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A new project shown to the user for confirmation.
+public struct ProjectProposal: Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let plan: ProjectPlan
+    public var state: EventProposal.State
+    /// The step being carried out, while it is being set up.
+    public var progress: String?
+
+    public init(id: UUID = UUID(), plan: ProjectPlan, state: EventProposal.State = .waiting) {
+        self.id = id
+        self.plan = plan
+        self.state = state
+    }
+}
+
 /// One message shown in the chat window.
 public struct ChatMessage: Equatable, Identifiable, Sendable {
     public enum Role: Sendable { case user, assistant }
@@ -83,6 +98,8 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var offersLocal = false
     /// New events proposed in this answer, each waiting for the user's decision.
     public var proposals: [EventProposal] = []
+    /// New projects proposed in this answer, each waiting for the user's decision.
+    public var projects: [ProjectProposal] = []
     /// Why an event could not be prepared, if one failed.
     public var proposalProblem: String?
     /// The "which model answered" line.
@@ -173,6 +190,77 @@ public struct Conversation: Equatable, Sendable {
     }
 
     public static let maxProposalsPerAnswer = 5
+
+    // MARK: New projects
+
+    private var offerProjectNext = false
+
+    /// Whether the model may prepare a new project for this message: only
+    /// when the user's own words ask for one, or answer a question about one
+    /// (such as "public or private?") straight after.
+    public mutating func offersProject(for text: String) -> Bool {
+        let asks = ProjectIntent.asksToCreate(text)
+        let offered = asks || offerProjectNext
+        offerProjectNext = asks
+        return offered
+    }
+
+    /// Adds a proposed project to an answer. One per answer, and a newer one
+    /// withdraws any still waiting elsewhere.
+    public mutating func add(_ proposal: ProjectProposal, to answerID: UUID) {
+        guard let target = messages.firstIndex(where: { $0.id == answerID }), messages[target].projects.isEmpty else { return }
+        for index in messages.indices where index != target {
+            for position in messages[index].projects.indices where messages[index].projects[position].state == .waiting {
+                messages[index].projects[position].state = .replaced
+            }
+        }
+        messages[target].projects.append(proposal)
+        offerProjectNext = true
+    }
+
+    public func project(_ id: UUID) -> ProjectProposal? {
+        messages.lazy.flatMap(\.projects).first { $0.id == id }
+    }
+
+    public mutating func updateProject(_ id: UUID, _ change: (inout ProjectProposal) -> Void) {
+        for index in messages.indices {
+            if let position = messages[index].projects.firstIndex(where: { $0.id == id }) {
+                change(&messages[index].projects[position])
+                return
+            }
+        }
+    }
+
+    /// The user clicked to set a project up. Returns the plan and marks it as
+    /// under way, or nil if it may not be run: only a waiting preview can be.
+    /// Unlike a calendar change, a failed set-up is not retried, because part
+    /// of it may already exist.
+    public mutating func beginProject(_ id: UUID) -> ProjectPlan? {
+        guard let found = project(id), found.state == .waiting else { return nil }
+        updateProject(id) { $0.state = .saving }
+        return found.plan
+    }
+
+    public mutating func declineProject(_ id: UUID) -> Bool {
+        guard project(id)?.state == .waiting else { return false }
+        updateProject(id) { $0.state = .declined }
+        return true
+    }
+
+    static func projectNotes(_ projects: [ProjectProposal]) -> String {
+        projects.map { proposal in
+            let outcome: String
+            switch proposal.state {
+            case .waiting: outcome = "preview shown, not yet confirmed by the user, NOT created"
+            case .saving: outcome = "the user confirmed it and it is being set up now"
+            case .done: outcome = "the user confirmed it and it was set up"
+            case .declined: outcome = "the user chose not to create it"
+            case .replaced: outcome = "replaced by a later preview, not created"
+            case .failed(let why): outcome = "setting it up failed: \(why)"
+            }
+            return "\n[Project preview: \(proposal.plan.line). Status: \(outcome).]"
+        }.joined()
+    }
 
     /// True when the last exchange was about adding an event, so a follow-up
     /// such as "make it 2pm" or "tomorrow at 3" may still prepare one.
@@ -277,6 +365,7 @@ public struct Conversation: Equatable, Sendable {
         calendarTouched = false
         deleteNext = false
         hasFile = false
+        offerProjectNext = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.
@@ -319,10 +408,12 @@ public struct Conversation: Equatable, Sendable {
             let answer = messages[index + 1]
             if question.role == .user, answer.role == .assistant {
                 let usable = (answer.state == .done || answer.state == .stopped)
-                    && (!answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !answer.proposals.isEmpty)
+                    && (!answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !answer.proposals.isEmpty
+                        || !answer.projects.isEmpty)
                 if usable {
                     turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
-                    turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)))
+                    turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)
+                                          + Self.projectNotes(answer.projects)))
                 }
                 index += 2
             } else {

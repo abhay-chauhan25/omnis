@@ -916,7 +916,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed: break
             }
         }
         return (text, model, chunks)
@@ -1125,7 +1125,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused: break
+            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed: break
             }
         }
         #expect(text.contains("Paris"))

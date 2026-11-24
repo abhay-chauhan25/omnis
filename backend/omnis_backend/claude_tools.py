@@ -19,6 +19,25 @@ from typing import Any, TextIO
 from .engine import CALENDAR_READ_TOOLS, CALENDAR_WRITE_TOOLS
 
 SERVER_NAME = "omnis"
+
+PROJECT_TOOL = {
+    "name": "project_create",
+    "description": (
+        "Prepare a new coding project: a folder in the user's projects folder, git, a GitHub repository, "
+        "and opening it in their editor. The user sees a preview and must confirm before anything is created."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Folder and repository name: letters, digits, dashes, dots, underscores."},
+            "visibility": {"type": "string", "enum": ["private", "public"],
+                           "description": "Whether the GitHub repository is private or public. Ask the user; never guess."},
+            "description": {"type": "string", "description": "One line about the project, if the user gave one."},
+        },
+        "required": ["name", "visibility"],
+        "additionalProperties": True,
+    },
+}
 UNAVAILABLE = "This tool is not available right now. Tell the user that OMNIS could not carry it out."
 
 
@@ -31,7 +50,7 @@ def tools() -> list[dict[str, Any]]:
         # The app replaces the arguments with its reply, so anything must be accepted here.
         schema["additionalProperties"] = True
         listed.append({"name": function["name"], "description": function["description"], "inputSchema": schema})
-    return listed
+    return listed + [PROJECT_TOOL]
 
 
 def handle(message: dict[str, Any]) -> dict[str, Any] | None:
