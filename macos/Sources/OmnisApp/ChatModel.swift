@@ -184,6 +184,16 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// A message that was spoken. It is answered like a typed one, with a note
+    /// to Claude on how to word a reply that will be read aloud. Opening apps
+    /// and typed commands work by voice too.
+    func askSpoken(_ text: String, style: String) {
+        spokenStyle = style
+        askFromDashboard(text)
+        spokenStyle = nil
+    }
+    private var spokenStyle: String?
+
     /// Called when the window is hidden. The conversation is kept for now.
     func windowHidden() {
         hiddenAt = Date()
@@ -459,6 +469,7 @@ final class ChatModel: ObservableObject {
             request.toolAccess = conversation.serviceAccess(for: options.text)
             // Once the chat holds something personal, a search outside is asked about first, once.
             request.sensitive = conversation.hasPersonalData
+            request.spokenStyle = spokenStyle
             request.searchConsent = conversation.searchConsent
             request.allowProject = projectSetup != nil && attachments.isEmpty && conversation.offersProject(for: options.text)
             stream = claude.ask(request)

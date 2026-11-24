@@ -54,7 +54,9 @@ struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject var chat: ChatModel
     @ObservedObject var project: ProjectModeModel
+    @ObservedObject var voice: VoiceModel
     @FocusState private var askFocused: Bool
+    @State private var showVoiceSettings = false
     /// Whether the extra usage facts are showing. Hidden until asked for.
     @AppStorage("OMNISShowMoreFacts") private var showMoreFacts = false
 
@@ -113,6 +115,7 @@ struct DashboardView: View {
                     .font(.mono(11)).foregroundStyle(Ink.gold)
             }
             Spacer()
+            voiceControl
             chip(chat.usesLocal ? "This Mac" : "Claude \u{00B7} \(chat.modelChoice.title)", color: Ink.text)
             if let usage = chat.usageLabel { chip(usage, color: chat.usageIsHigh ? .orange : Ink.text) }
             VStack(alignment: .trailing, spacing: 1) {
@@ -121,6 +124,23 @@ struct DashboardView: View {
             }
             .accessibilityElement(children: .combine)
         }
+    }
+
+    /// The voice switch. Clicking it opens the switch itself and how OMNIS should sound.
+    private var voiceControl: some View {
+        Button { showVoiceSettings.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: voice.isOn ? "mic.fill" : "mic.slash").font(.system(size: 10))
+                Text(voice.isOn ? "Voice on" : "Voice off").font(.mono(11))
+            }
+            .foregroundStyle(voice.isOn ? Ink.gold : Ink.muted)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .overlay(Capsule().strokeBorder(voice.isOn ? Ink.gold.opacity(0.5) : Color.white.opacity(0.10)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(voice.isOn ? "Voice is on. Open voice settings" : "Voice is off. Open voice settings")
+        .popover(isPresented: $showVoiceSettings, arrowEdge: .bottom) { VoiceSettingsView(voice: voice) }
     }
 
     private func modeButton(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
@@ -219,14 +239,27 @@ struct DashboardView: View {
             }
             // The core takes the room that is left, up to a comfortable size,
             // so the ask bar and tiles below it are always in view.
-            CoreView(level: chat.isAnswering ? 0.13 : 0.045, running: model.isVisible)
-                .animation(.easeInOut(duration: 0.9), value: chat.isAnswering)
+            // In a spoken conversation the dots swell with the voice: OMNIS's own
+            // while it speaks, yours while it listens.
+            CoreView(level: voice.inConversation ? 0.06 + voice.level * 0.34 : chat.isAnswering ? 0.13 : 0.045, running: model.isVisible)
+                .animation(voice.inConversation ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.9),
+                           value: voice.inConversation ? voice.level : (chat.isAnswering ? 1 : 0))
                 .aspectRatio(1, contentMode: .fit)
                 .frame(minHeight: 150, maxHeight: 380)
                 .accessibilityHidden(true)
             HStack(spacing: 10) {
-                Circle().fill(chat.isAnswering ? Ink.gold : Ink.faint).frame(width: 7, height: 7)
-                Text(chat.isAnswering ? "ANSWERING" : "READY").font(.mono(12)).tracking(1.5).foregroundStyle(Ink.muted)
+                Circle().fill(chat.isAnswering || voice.inConversation ? Ink.gold : Ink.faint).frame(width: 7, height: 7)
+                if voice.inConversation {
+                    Text(voice.stateLine).font(.mono(12)).foregroundStyle(Ink.muted).lineLimit(1).truncationMode(.head)
+                    if voice.state == .speaking {
+                        Button("Stop") { voice.interrupt() }.buttonStyle(.plain).font(.mono(11)).foregroundStyle(Ink.gold)
+                            .keyboardShortcut(.escape, modifiers: [])
+                            .help("Stop reading this aloud (Esc)")
+                    }
+                } else {
+                    Text(chat.isAnswering ? "ANSWERING" : voice.isOn ? "READY \u{00B7} SAY \u{201C}HEY OMNIS\u{201D}" : "READY")
+                        .font(.mono(12)).tracking(1.5).foregroundStyle(Ink.muted)
+                }
             }
             .accessibilityElement(children: .combine)
             askBar

@@ -9,7 +9,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     private let project: ProjectModeModel
     private let window: NSWindow
 
-    init(model: DashboardModel, chat: ChatModel, project: ProjectModeModel) {
+    init(model: DashboardModel, chat: ChatModel, project: ProjectModeModel, voice: VoiceModel) {
         self.model = model
         self.project = project
         window = NSWindow(
@@ -28,7 +28,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
         window.backgroundColor = NSColor(red: 0.024, green: 0.031, blue: 0.043, alpha: 1)
         window.minSize = NSSize(width: 1120, height: 680)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: DashboardView(model: model, chat: chat, project: project))
+        window.contentView = NSHostingView(rootView: DashboardView(model: model, chat: chat, project: project, voice: voice))
         window.delegate = self
         window.center()
         window.setFrameAutosaveName("OMNISDashboard")

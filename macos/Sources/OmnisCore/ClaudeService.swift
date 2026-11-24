@@ -154,6 +154,8 @@ public struct ClaudeRequest: Sendable {
     public var sensitive = false
     /// What the user has said about searching outside from such a chat.
     public var searchConsent: SearchConsent = .notAsked
+    /// Set when the message was spoken: how the reply should be worded for reading aloud.
+    public var spokenStyle: String?
 
     public init(text: String, history: [ChatTurn] = [], attachments: [Attachment] = [], model: ClaudeModel = .haiku,
                 effort: String = "low", reason: String = "", web: Bool = true,
@@ -493,6 +495,7 @@ public final class ClaudeService: @unchecked Sendable {
             }
         }
         let question = request.text.isEmpty && !request.attachments.isEmpty ? "What is in the attached file?" : request.text
+        if let style = request.spokenStyle, !style.isEmpty { blocks.append(["type": "text", "text": style]) }
         blocks.append(["type": "text", "text": question])
         return blocks
     }

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var claude: ClaudeService?
     private var dashboard: DashboardWindowController!
     private var projectMode: ProjectModeModel!
+    private var voice: VoiceModel!
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
 
@@ -79,7 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
                                             openChat: { [weak self] in self?.chat.show() })
         projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
-        dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode)
+        voice = VoiceModel(chat: model, audit: audit, showChat: { [weak self] in self?.chat.show() })
+        dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode, voice: voice)
         // "Continue VoyagerAI in project mode", from either window, lands here.
         model.openProjectMode = { [weak self] entry, resume in
             self?.dashboard.show()
@@ -126,6 +128,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         projectMode?.closeAll()
+        // The microphone is let go of before anything else.
+        if voice?.isOn == true { voice.stopForQuit() }
         backend?.stop()
         // Waits until Claude Code has gone, so nothing is left running.
         claude?.shutdown()

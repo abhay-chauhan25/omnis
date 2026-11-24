@@ -163,6 +163,11 @@ public enum ActivityLog {
         case "service":
             let acted = detail.hasPrefix("Controlled")
             return row(detail.isEmpty ? "Used a service" : detail, "done", "", detail.hasPrefix("Searched") ? [.searches] : acted ? [.changes] : [.reads])
+        case "voice": return row(record.outcome == "on" ? "Voice was switched on" : "Voice was switched off", record.outcome)
+        case "voice_confirm":
+            let what = target == "web_search" ? "a web search" : target == "event" ? "a new event" : "a prepared change"
+            return row("A spoken answer about \(what)", record.outcome == "yes" ? "you said yes" : "you said no", "",
+                       record.outcome == "yes" ? [.changes] : [.refused], record.outcome == "yes" ? .changed : .stopped)
         case "session_setting": return row("Claude Code did not accept a change of model or effort", "refused", "", [.refused], .stopped)
         case "hotkey": return row("The keyboard shortcut could not be set", "failed", detail)
         default:
