@@ -36,7 +36,7 @@ Independent review: pass with warnings. Nothing was found that changes a photo, 
 | Loading a photo kept only in iCloud could wait for ever | Fixed. Given up on after 30 seconds; answered once only. |
 | A picture dropped on the way was not mentioned to the model | Fixed. It is told how many were left out. |
 | Any tool's reply could have carried pictures | Fixed. Only `photos_show` can. |
-| Album names are given to the model, and a name can say where photos were taken | Left as is, for the user to decide. |
+| Album names are given to the model, and a name can say where photos were taken | Left as is. The user said on 2026-11-24 that Claude may see album names. |
 
 ## Limits and things not verified
 

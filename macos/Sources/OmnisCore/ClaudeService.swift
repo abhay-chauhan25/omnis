@@ -548,6 +548,11 @@ public final class ClaudeService: @unchecked Sendable {
                 try? write(["type": "control_response", "response": ["subtype": "error", "request_id": id,
                                                                      "error": "not supported by OMNIS"]])
             }
+        case "control_response":
+            // Claude Code's reply to a change OMNIS asked for, such as another model. A refusal is noted.
+            if let response = event["response"] as? [String: Any], response["subtype"] as? String == "error" {
+                gateHandler?("session_setting", "claude_code", "refused", nil)
+            }
         case "system":
             // At the start Claude Code lists the tools the session has. If
             // anything is there that OMNIS did not ask for, such as a file or
@@ -587,7 +592,8 @@ public final class ClaudeService: @unchecked Sendable {
             inputTokens: count("input_tokens") + count("cache_read_input_tokens") + count("cache_creation_input_tokens"),
             outputTokens: count("output_tokens"),
             totalMilliseconds: Int(Date().timeIntervalSince(current.started) * 1000),
-            searches: current.sources.isEmpty ? 0 : current.searches, calendarReads: current.calendarReads
+            searches: current.sources.isEmpty ? 0 : current.searches, calendarReads: current.calendarReads,
+            effort: current.request.effort
         )
         current.continuation.yield(.finished(model: model, details: details))
         current.continuation.finish()

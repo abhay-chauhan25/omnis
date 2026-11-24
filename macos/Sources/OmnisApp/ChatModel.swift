@@ -447,7 +447,7 @@ final class ChatModel: ObservableObject {
                 fail(hit.message, log: "claude usage limit", offerLocal: backend != nil)
                 return
             }
-            let choice = ClaudeRouter.choose(text: options.text, hasDocument: attachments.contains { $0.kind == .text },
+            let choice = ClaudeRouter.choose(text: options.text,
                                              model: modelChoice, effort: effortChoice)
             var request = ClaudeRequest(
                 text: options.text, history: history, attachments: attachments, model: choice.model, effort: choice.effort,
@@ -708,6 +708,7 @@ final class ChatModel: ObservableObject {
             parts.append("\(model), on this Mac")
         case "claude":
             parts.append(Self.claudeName(model))
+            if let effort = details.effort { parts.append("\(effort) effort") }
         default:
             return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
         }
@@ -733,6 +734,7 @@ final class ChatModel: ObservableObject {
         var parts = ["model \(model ?? "unknown")"]
         if let route = details.route { parts.append("route \(route)") }
         if let reason = details.reason { parts.append("why: \(reason)") }
+        if let effort = details.effort { parts.append("effort \(effort)") }
         if let input = details.inputTokens { parts.append("in \(input) tokens") }
         if let output = details.outputTokens { parts.append("out \(output) tokens") }
         if let load = details.loadMilliseconds { parts.append("load \(load) ms") }

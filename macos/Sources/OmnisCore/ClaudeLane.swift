@@ -38,36 +38,35 @@ public enum ClaudeRouter {
         public let reason: String
     }
 
-    // Signs that a question needs more than a quick answer.
-    private static let hard = try! NSRegularExpression(
-        pattern: #"\b(think (hard|deeply|carefully)|step by step|prove|proof|derive|algorithm|leetcode|complexity|big[- ]o|debug|refactor|architecture|trade-?offs?|analy[sz]e|in depth|in detail|research|essay|critique|optimi[sz]e|write (a|an|the|me a) (program|script|function|class|query|regex)|implement|explain why|compare)\b"#,
-        options: [.caseInsensitive]
+    // Words that ask for the strongest model and the most thought.
+    private static let deep = try! NSRegularExpression(
+        pattern: #"\b(deep[- ]?dives?|think|decide)\b"#, options: [.caseInsensitive]
     )
 
-    /// With both on Auto: Haiku for ordinary questions, Sonnet for hard or
-    /// long ones or ones with a document. Opus is used only when chosen.
-    public static func choose(text: String, hasDocument: Bool = false, model: ModelChoice = .auto,
-                              effort: EffortChoice = .auto) -> Choice {
-        let looksHard = hard.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
-            || text.count > 700 || hasDocument
+    /// True when the message uses one of the words that ask for more: "deep dive", "think" or "decide".
+    public static func asksForDepth(_ text: String) -> Bool {
+        deep.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// With both on Auto: Sonnet at medium effort, and Opus at high effort
+    /// when the message says "deep dive", "think" or "decide". A model or an
+    /// effort the user picked is always used as picked.
+    public static func choose(text: String, model: ModelChoice = .auto, effort: EffortChoice = .auto) -> Choice {
+        let deeper = asksForDepth(text)
         let chosen: ClaudeModel
         let reason: String
         if let fixed = ClaudeModel(rawValue: model.rawValue) {
             chosen = fixed
             reason = "you chose \(fixed.title)"
         } else {
-            chosen = looksHard ? .sonnet : .haiku
-            reason = looksHard ? "a harder question" : "an ordinary question"
+            chosen = deeper ? .opus : .sonnet
+            reason = deeper ? "you asked for more thought" : "the usual model"
         }
         let level: String
         if effort != .auto {
             level = effort.rawValue
         } else {
-            switch chosen {
-            case .haiku: level = "low"
-            case .sonnet: level = looksHard ? "medium" : "low"
-            case .opus: level = "high"
-            }
+            level = deeper || chosen == .opus ? "high" : "medium"
         }
         return Choice(model: chosen, effort: level, reason: reason)
     }

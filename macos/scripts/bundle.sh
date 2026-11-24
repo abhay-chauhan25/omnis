@@ -70,15 +70,40 @@ add NSCalendarsFullAccessUsageDescription string "OMNIS reads your calendar to a
 # the same, a rebuilt OMNIS is still the same app and keeps its permissions.
 # Without one, each build is signed "ad hoc", looks new to macOS, and is asked
 # again. scripts/make-signing-identity.sh creates the identity, once.
-identity_name="OMNIS Local Signing"
-identity="$(security find-certificate -c "$identity_name" -Z 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}')"
+#
+# The key is best kept in its own keychain with its own password
+# (scripts/protect-signing-key.sh). It is then unlocked only for the moment
+# this script signs, and locked again when the script ends, so no other
+# program can sign as OMNIS. With the key still in the login keychain the
+# build works as before, but the Messages reader is not built.
+identity_name="${OMNIS_SIGNING_NAME:-OMNIS Local Signing}"
+signing_keychain="${OMNIS_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/omnis-signing.keychain-db}"
+protected=""
+if [ -f "$signing_keychain" ]; then
+    protected=yes
+    identity="$(/usr/bin/security find-certificate -c "$identity_name" -Z "$signing_keychain" 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}' || true)"
+    if [ -z "$identity" ]; then
+        echo "error: \"$identity_name\" was not found in $signing_keychain" >&2
+        exit 1
+    fi
+    trap '/usr/bin/security lock-keychain "$signing_keychain" >/dev/null 2>&1 || true' EXIT
+    if [ -t 0 ]; then
+        echo "Unlocking the OMNIS signing keychain. Enter the password you chose for it."
+        /usr/bin/security unlock-keychain "$signing_keychain" || { echo "error: the signing keychain was not unlocked" >&2; exit 1; }
+    fi
+    sign() { perl -e 'alarm shift; exec @ARGV' 45 /usr/bin/codesign --force --keychain "$signing_keychain" --sign "$identity" "$@" >/dev/null 2>&1; }
+else
+    identity="$(/usr/bin/security find-certificate -c "$identity_name" -Z 2>/dev/null | awk '/SHA-1 hash:/ {print $NF; exit}' || true)"
+    sign() { perl -e 'alarm shift; exec @ARGV' 45 /usr/bin/codesign --force --sign "$identity" "$@" >/dev/null 2>&1; }
+fi
 signed=""
 # A reader left from an earlier build is never kept: it is rebuilt below or not at all.
 rm -rf "$package/build/OMNIS Messages Reader.app"
-if [ -n "$identity" ]; then
+if [ -n "$identity" ] && [ -n "$protected" ]; then
     # The Messages reader: a separate small program, so that it and not OMNIS
     # holds the permission to read messages. Each recognises the other by this
-    # Mac's signing identity, so it is built only when that identity exists.
+    # Mac's signing identity, so it is built only when the key is protected:
+    # otherwise any program could sign itself as the reader.
     leaf="$(printf '%s' "$identity" | tr 'A-F' 'a-f')"
     reader="$package/build/OMNIS Messages Reader.app"
     case "$leaf" in *[!0-9a-f]*|"") echo "error: the signing identity's fingerprint could not be read" >&2; exit 1 ;; esac
@@ -100,26 +125,29 @@ if [ -n "$identity" ]; then
     radd LSUIElement bool YES
     # The only program it answers: OMNIS, signed with this identity.
     radd OMNISCallerRequirement string "identifier \"local.omnis.app\" and certificate leaf = H\"$leaf\""
-    if perl -e 'alarm shift; exec @ARGV' 45 /usr/bin/codesign --force --options runtime --sign "$identity" --identifier local.omnis.messages-reader "$reader" >/dev/null 2>&1 \
+    if sign --options runtime --identifier local.omnis.messages-reader "$reader" \
         && [[ "$(/usr/bin/codesign -d --verbose=2 "$reader" 2>&1)" == *flags=*runtime* ]]; then
         add OMNISMessagesReaderPath string "$reader"
         add OMNISMessagesReaderRequirement string "identifier \"local.omnis.messages-reader\" and certificate leaf = H\"$leaf\""
     else
         rm -rf "$reader"
     fi
-    # The first use makes macOS ask whether codesign may use the key. If
-    # nobody answers, give up after a while and fall back, so a build never hangs.
-    if perl -e 'alarm shift; exec @ARGV' 45 codesign --force --sign "$identity" --identifier local.omnis.app "$app" >/dev/null 2>&1; then
+fi
+if [ -n "$identity" ]; then
+    # If nobody answers a question from macOS about the key, give up after a
+    # while and fall back, so a build never hangs.
+    if sign --identifier local.omnis.app "$app"; then
         signed="with \"$identity_name\": permissions are kept across rebuilds"
+        [ -n "$protected" ] || signed="$signed. The key is not protected yet, so the Messages reader was not built (see scripts/protect-signing-key.sh)"
+    elif [ -n "$protected" ]; then
+        echo "error: OMNIS could not be signed. The signing keychain is locked: run this script yourself in Terminal so it can ask for the password." >&2
+        exit 1
     fi
 fi
 if [ -z "$signed" ]; then
-    codesign --force --sign - "$app" >/dev/null 2>&1
+    /usr/bin/codesign --force --sign - "$app" >/dev/null 2>&1
     signed="ad hoc: macOS will ask for permissions again after each rebuild (see scripts/make-signing-identity.sh)"
 fi
 
 echo "Built $app"
 echo "Signed $signed"
-exit 0
-
-echo "Built $app"

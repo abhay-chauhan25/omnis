@@ -795,22 +795,24 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
 }
 
 @Suite struct ClaudeLaneTests {
-    @Test func autoPicksHaikuForOrdinaryQuestionsAndSonnetForHardOnes() {
-        for text in ["what's on my calendar tomorrow", "who won the F1 race", "add lunch at 1", "hello"] {
-            #expect(ClaudeRouter.choose(text: text) == .init(model: .haiku, effort: "low", reason: "an ordinary question"), "\(text)")
+    @Test func autoUsesSonnetAtMediumAndOpusAtHighWhenAskedToThinkDecideOrDeepDive() {
+        for text in ["what's on my calendar tomorrow", "who won the F1 race", "add lunch at 1", "hello",
+                     "solve this leetcode problem: two sum", "compare Postgres and SQLite", String(repeating: "long ", count: 200),
+                     // Words that only look like the key words.
+                     "rethinking the plan", "a decided advantage", "thinks", "deepdiving", "the decision"] {
+            #expect(ClaudeRouter.choose(text: text) == .init(model: .sonnet, effort: "medium", reason: "the usual model"), "\(text)")
         }
-        for text in ["solve this leetcode problem: two sum", "explain why quicksort is O(n log n) step by step",
-                     "debug this function", "compare Postgres and SQLite", String(repeating: "long ", count: 200)] {
-            let choice = ClaudeRouter.choose(text: text)
-            #expect(choice.model == .sonnet && choice.effort == "medium", "\(text)")
+        for text in ["do a deep dive on SQLite's WAL mode", "Deep-dive into this", "deepdive: rust lifetimes", "two deep dives please",
+                     "think about which laptop suits me", "THINK.", "help me decide between these two flats", "Decide: tea or coffee?",
+                     "I think it's at 5pm, can you check"] {
+            #expect(ClaudeRouter.choose(text: text) == .init(model: .opus, effort: "high", reason: "you asked for more thought"), "\(text)")
         }
-        #expect(ClaudeRouter.choose(text: "summarise", hasDocument: true).model == .sonnet)
-        // Opus only when chosen; a chosen effort always wins.
-        #expect(ClaudeRouter.choose(text: "prove P != NP").model != .opus)
+        // A model or an effort you picked is used as picked; the other still follows the words.
         #expect(ClaudeRouter.choose(text: "hello", model: .opus) == .init(model: .opus, effort: "high", reason: "you chose Opus"))
-        #expect(ClaudeRouter.choose(text: "hello", model: .sonnet).effort == "low")
-        #expect(ClaudeRouter.choose(text: "prove it", model: .haiku, effort: .high) == .init(model: .haiku, effort: "high", reason: "you chose Haiku"))
-        #expect(ClaudeRouter.choose(text: "hello", effort: .medium).effort == "medium")
+        #expect(ClaudeRouter.choose(text: "hello", model: .haiku) == .init(model: .haiku, effort: "medium", reason: "you chose Haiku"))
+        #expect(ClaudeRouter.choose(text: "think it over", model: .haiku) == .init(model: .haiku, effort: "high", reason: "you chose Haiku"))
+        #expect(ClaudeRouter.choose(text: "think it over", effort: .low) == .init(model: .opus, effort: "low", reason: "you asked for more thought"))
+        #expect(ClaudeRouter.choose(text: "hello", effort: .high) == .init(model: .sonnet, effort: "high", reason: "the usual model"))
     }
 
     @Test func ordinaryChatsStopAtSeventyPercentOfTheWeekOrEightyOfFiveHours() {
@@ -906,5 +908,46 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         #expect(blocks[3]["text"] as? String == "What is in the attached file?")
         #expect(ClaudeService.content(for: request, withHistory: false).count == 3)
         #expect(ClaudeService.links(in: "Links: [{\"url\":\"https://a.example\"}]").isEmpty)      // not a search result
+    }
+}
+
+/// The real Claude Code on the user's own plan: three short questions on Auto
+/// in one chat, to see the model and effort really change.
+///   OMNIS_LIVE_TESTS=1 swift test --filter liveAuto
+@Suite(.serialized) struct LiveAutoTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OMNIS_LIVE_TESTS"] == "1"), .timeLimit(.minutes(4)))
+    func liveAutoSwitchesModelAndEffortInsideOneChat() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let backend = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("backend")
+        let session = FileManager.default.temporaryDirectory.appendingPathComponent("omnis-live-\(UUID().uuidString)")
+        let config = ClaudeConfig(
+            executable: URL(fileURLWithPath: environment["OMNIS_CLAUDE"] ?? home + "/.local/bin/claude"),
+            python: URL(fileURLWithPath: environment["OMNIS_PYTHON"] ?? "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"),
+            backendDirectory: backend, workingDirectory: session)
+        let claude = ClaudeService(config: config, tools: CalendarTools(reader: nil))
+        let refused = Collected<String>()
+        claude.onGate { action, _, outcome, _ in refused.add("\(action) \(outcome)") }
+
+        func ask(_ text: String) async throws -> (model: String, effort: String) {
+            let choice = ClaudeRouter.choose(text: text)
+            var answer = "", model = "", effort = ""
+            for try await event in claude.ask(ClaudeRequest(text: text, model: choice.model, effort: choice.effort, reason: choice.reason, web: false)) {
+                if case .chunk(let piece) = event { answer += piece }
+                if case .finished(let name, let details) = event { model = name ?? ""; effort = details.effort ?? "" }
+            }
+            print("LIVE_AUTO asked for \(choice.model.rawValue)/\(choice.effort) | answered by \(model) at \(effort) | \(answer.prefix(60).replacingOccurrences(of: "\n", with: " "))")
+            return (model, effort)
+        }
+        let first = try await ask("Say hello in one word.")
+        #expect(first.model.contains("sonnet") && first.effort == "medium")
+        let second = try await ask("Think: is 17 a prime number? Answer in one word.")
+        #expect(second.model.contains("opus") && second.effort == "high")
+        let third = try await ask("Say goodbye in one word.")
+        #expect(third.model.contains("sonnet") && third.effort == "medium")
+        #expect(refused.values.isEmpty, "\(refused.values)")
+        claude.shutdown()
+        try? FileManager.default.removeItem(at: session)
     }
 }

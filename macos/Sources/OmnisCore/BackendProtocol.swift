@@ -28,6 +28,8 @@ public struct AnswerDetails: Equatable, Sendable {
     public var outputTokens: Int?
     public var loadMilliseconds: Int?
     public var totalMilliseconds: Int?
+    /// How hard Claude was asked to think: "low", "medium" or "high". Nil for the model on this Mac.
+    public var effort: String?
     /// How many web searches were made for this answer.
     public var searches: Int?
     /// How many times the calendar was read for this answer.
@@ -35,7 +37,8 @@ public struct AnswerDetails: Equatable, Sendable {
 
     public init(route: String? = nil, reason: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
                 loadMilliseconds: Int? = nil, totalMilliseconds: Int? = nil,
-                searches: Int? = nil, calendarReads: Int? = nil) {
+                searches: Int? = nil, calendarReads: Int? = nil, effort: String? = nil) {
+        self.effort = effort
         self.route = route
         self.reason = reason
         self.inputTokens = inputTokens

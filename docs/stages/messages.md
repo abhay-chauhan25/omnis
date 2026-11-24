@@ -30,7 +30,7 @@ An independent security review advised against giving the reader Full Disk Acces
 | Finding | Action |
 |---|---|
 | Code could be loaded into the reader when it starts, and would have its access | Fixed. The reader is built with the hardened runtime and no exceptions. Tried on this Mac: a test library loads into OMNIS (which is not hardened) and does not load into the reader. The build fails closed if the setting is missing, and OMNIS refuses a reader without it. |
-| The signing key can be used without asking, so any program running as the user could sign its own "reader" and inherit the grant | **Open. Needs the user's decision.** Until it is closed, Full Disk Access should not be given. |
+| The signing key can be used without asking, so any program running as the user could sign its own "reader" and inherit the grant | Decided 2026-11-24: the key moves to its own password-protected keychain and is replaced. `macos/scripts/protect-signing-key.sh` does it; the user has to run it, since it asks for a password. The build script now builds the reader only when the key is protected. Tried with a throwaway key: the build signs while unlocked, locks the keychain when it ends, and fails plainly when locked. **Not yet run on the real key.** |
 | The same test library loads into OMNIS itself, which the reader then trusts | **Open.** OMNIS needs the hardened runtime, with each permission it uses re-tested. |
 | A search can return verification codes and reset links like any other message | **Open. A policy for the user to choose** before the reading tools are built. |
 | No record of who asked the reader what | Fixed. `helper/reader.log` records each request and each refused caller: the kind of question and counts, never whose messages or which words. |

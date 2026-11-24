@@ -163,6 +163,7 @@ public enum ActivityLog {
         case "service":
             let acted = detail.hasPrefix("Controlled")
             return row(detail.isEmpty ? "Used a service" : detail, "done", "", detail.hasPrefix("Searched") ? [.searches] : acted ? [.changes] : [.reads])
+        case "session_setting": return row("Claude Code did not accept a change of model or effort", "refused", "", [.refused], .stopped)
         case "hotkey": return row("The keyboard shortcut could not be set", "failed", detail)
         default:
             if action.hasSuffix("_propose") {

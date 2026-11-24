@@ -60,3 +60,11 @@ The fixes were re-run live but not reviewed a second time.
 - The retired API-key lane is still in the code, unused. Removing it is a clean-up step.
 - Project mode is not built.
 - The numbered source marks the local model uses do not apply to Claude's answers; the Sources list is still shown.
+
+## Change, 2026-11-24: what Auto chooses
+
+Decided by the user. With Model and Effort on Auto, Claude answers with Sonnet at medium effort. A message that says "deep dive", "think" or "decide" is answered by Opus at high effort. Haiku is used only when picked. A model or effort the user picked is used as picked. The line under an answer now also says the effort.
+
+Checked live in one chat (`OMNIS_LIVE_TESTS=1 swift test --filter liveAuto`): Sonnet answered the first question, Opus the second ("Think: ..."), Sonnet the third, by Claude Code's own count of which model produced words on each turn. Claude Code accepted each change of effort; what difference the effort makes to an answer was not measured.
+
+Any message containing the word "think", such as "I think it's at 5", uses Opus, which uses the plan's allowance faster.
