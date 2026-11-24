@@ -174,6 +174,10 @@ public enum DashboardData {
         public let calendar: String
         public let start: Date
         public let isNext: Bool
+
+        public init(id: String, time: String, title: String, calendar: String, start: Date, isNext: Bool) {
+            self.id = id; self.time = time; self.title = title; self.calendar = calendar; self.start = start; self.isNext = isNext
+        }
     }
 
     /// Today's remaining and current events, in order, with the next one marked.

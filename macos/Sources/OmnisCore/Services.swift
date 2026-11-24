@@ -321,7 +321,11 @@ public final class SpotifyTools: AssistantTools, Sendable {
         tell application "Spotify"
             if player state is stopped then return "nothing"
             set gap to (ASCII character 31)
-            return (player state as string) & gap & (name of current track) & gap & (artist of current track)
+            set art to ""
+            try
+                set art to (artwork url of current track)
+            end try
+            return (player state as string) & gap & (name of current track) & gap & (artist of current track) & gap & art
         end tell
     else
         return "closed"
@@ -336,6 +340,28 @@ public final class SpotifyTools: AssistantTools, Sendable {
             throw ToolRefusal(why)
         }
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// What is playing, piece by piece, for showing rather than for telling a model.
+    public struct Track: Equatable, Sendable {
+        public let title: String
+        public let artist: String
+        public let playing: Bool
+        /// Where the cover picture is, if Spotify gave an ordinary web address for it.
+        public let artwork: URL?
+
+        public init(title: String, artist: String, playing: Bool, artwork: URL?) {
+            self.title = title; self.artist = artist; self.playing = playing; self.artwork = artwork
+        }
+    }
+
+    /// The track in Spotify now, or nil if it is closed or nothing is loaded.
+    public func track() async throws -> Track? {
+        let parts = try await script(Self.nowPlaying).components(separatedBy: "\u{1F}")
+        guard parts.count >= 3 else { return nil }
+        let art = parts.count > 3 ? URL(string: parts[3]) : nil
+        return Track(title: CalendarFormatter.clean(parts[1]), artist: CalendarFormatter.clean(parts[2]), playing: parts[0] == "playing",
+                     artwork: art?.scheme == "https" ? art : nil)
     }
 
     func describe() async throws -> String {

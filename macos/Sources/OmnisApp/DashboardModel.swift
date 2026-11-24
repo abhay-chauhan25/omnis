@@ -80,10 +80,40 @@ final class DashboardModel: ObservableObject {
         refreshTimer = timer
     }
 
+    /// Made-up contents for drawing a picture of the notch panel (development aid).
+    func fillForPicture() {
+        now = Date()
+        calendarAllowed = true
+        let start = now.addingTimeInterval(83 * 60)
+        agenda = [DashboardData.AgendaRow(id: "sample", time: "19:30", title: "Design review with Priya", calendar: "Work", start: start, isNext: true)]
+        let today = Calendar.current.startOfDay(for: now)
+        busyDays = Set([-2, 0, 1, 3].compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) })
+        tiles = ["Safari", "Notes", "Music", "Calendar", "Reminders"].map {
+            RegistryEntry(kind: .app, name: $0, url: URL(fileURLWithPath: "/System/Applications/\($0).app"))
+        }
+    }
+
     /// The clock and today's events only: enough for a glance from the notch.
     func refreshGlance() {
         now = Date()
         refreshAgenda()
+        loadBusyDays()
+    }
+
+    /// Which of the days around today have something on, for the dots under the notch's week strip.
+    /// Only whether a day has an event is kept: no titles, no times.
+    @Published private(set) var busyDays: Set<Date> = []
+
+    private func loadBusyDays() {
+        guard EventKitCalendar.isAllowed else { return }
+        let reader = calendar
+        Task { [weak self] in
+            let current = Calendar.current
+            let today = current.startOfDay(for: Date())
+            guard let start = current.date(byAdding: .day, value: -3, to: today), let end = current.date(byAdding: .day, value: 4, to: today),
+                  let events = try? await reader.events(from: start, to: end) else { return }
+            self?.busyDays = Set(events.map { current.startOfDay(for: $0.start) })
+        }
     }
 
     func refresh() {

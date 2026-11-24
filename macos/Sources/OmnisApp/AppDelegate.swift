@@ -1,6 +1,7 @@
 import AppKit
 import OmnisCore
 import OmnisHelperLink
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -103,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The panel at the notch: voice away from the dashboard, and a few everyday things on hover.
         notchModel = NotchModel(dashboard: dashboardModel, chat: model, voice: voice,
                                 music: services.first { $0.service == "spotify" }, reminders: reminderStore, audit: audit)
+        if let folder = AppEnvironment.renderNotch {
+            renderNotch(to: folder)
+            return
+        }
         notch = NotchWindowController(model: notchModel)
         // "Continue VoyagerAI in project mode", from either window, lands here.
         model.openProjectMode = { [weak self] entry, resume in
@@ -176,6 +181,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await search.shutdown()
                 exit(1)
             }
+        }
+    }
+
+    /// Draws the notch panel's two views to pictures, over a plain backdrop, and exits.
+    private func renderNotch(to folder: URL) {
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        Task { @MainActor in
+            for (name, voiceView, height) in [("everyday", false, 32.0 + 10 + 136 + 12 + 36 + 16), ("voice", true, 32.0 + 142)] {
+                notchModel.showForPicture(voice: voiceView)
+                // Time for the calendar, the music and the tiles to arrive.
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                let picture = ZStack(alignment: .top) {
+                    LinearGradient(colors: [Color(red: 0.36, green: 0.47, blue: 0.62), Color(red: 0.62, green: 0.56, blue: 0.48)],
+                                   startPoint: .top, endPoint: .bottom)
+                    NotchView(model: notchModel, notchHeight: 32, notchWidth: 185).frame(width: voiceView ? 540 : 720, height: height)
+                    // Where the real notch would be.
+                    UnevenRoundedRectangle(bottomLeadingRadius: 9, bottomTrailingRadius: 9).fill(.black).frame(width: 185, height: 32)
+                }
+                .frame(width: 900, height: height + 70)
+                let renderer = ImageRenderer(content: picture)
+                renderer.scale = 2
+                if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+                   let png = bitmap.representation(using: .png, properties: [:]) {
+                    try? png.write(to: folder.appendingPathComponent("\(name).png"))
+                    print("drew \(name)")
+                }
+            }
+            exit(0)
         }
     }
 

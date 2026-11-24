@@ -59,6 +59,21 @@ Checked by running it, with the pointer moved onto the notch by a small program 
 
 That check covers opening and closing only. How the panel looks is still unseen.
 
+## Redesign (2026-11-24)
+
+The user saw the first version and called it plain and ugly, and sent a reference: a wide, low panel with a music card showing the cover and a strip of the week. Rebuilt along those lines, in OMNIS's own black and gold:
+
+- A wide panel (720 points) with three cards: music (cover, song, artist, three controls), the week (month, seven days centred on today, a dot under days with events, the next event and reminders due), and OMNIS (the dots, the voice switch, two usage meters).
+- Below: the ask box, and launch tiles with each app's or folder's real icon.
+- A top band beside the notch with the name and which model answers.
+- It springs open from the notch. The voice view is narrower (540 points), with a larger orb.
+- The cover picture is fetched from Spotify's own picture servers and nowhere else, only once the user has clicked "Show music".
+- The dots under the week come from a read of seven days of the calendar; only whether a day has something on is kept.
+
+**The look can now be checked without a screen.** `OMNIS --render-notch <folder>` draws both views to PNG files with made-up contents and exits. Controls that macOS draws itself (the text box, the switch, the scrolling row of tiles) come out as yellow placeholders or blank in these pictures; that is the drawing tool, not the panel. The populated layout was checked this way and adjusted three times (a wrapping button, a card that overflowed, a cramped orb).
+
+Not re-checked after the redesign: opening and closing by hover (checked before it, see above), the tiles row, the cover picture, and the real calendar's dots.
+
 ## Tests
 
 - Swift 300, Python 120, all passing. New: the next-event line and its "in 40 min"; reminders due today and overdue; reading the playing track; where the panel sits on a notched screen, a plain one, and one too small for it.

@@ -99,6 +99,14 @@ enum AppEnvironment {
         return arguments[index + 1].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
+    /// Development aid: `--render-notch <folder>` draws the notch panel to pictures in
+    /// that folder and exits, with no window shown. It is how the look is checked.
+    static var renderNotch: URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--render-notch"), index + 1 < arguments.count else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+    }
+
     /// Development aid: `--show-on-launch` opens the popup immediately, and
     /// `--query <text>` pre-fills it. Used for screenshots and manual checks.
     static var showOnLaunch: Bool { CommandLine.arguments.contains("--show-on-launch") }

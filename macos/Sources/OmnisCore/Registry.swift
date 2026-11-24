@@ -14,6 +14,12 @@ public struct RegistryEntry: Equatable, Identifiable, Sendable {
     public let name: String
     public let url: URL
 
+    public init(kind: EntryKind, name: String, url: URL) {
+        self.kind = kind
+        self.name = name
+        self.url = url
+    }
+
     public var id: String { RegistryEntry.makeID(kind: kind, name: name) }
 
     public static func makeID(kind: EntryKind, name: String) -> String {

@@ -12,7 +12,10 @@ final class NotchModel: ObservableObject {
     enum Showing: Equatable { case nothing, everyday, voice }
 
     @Published private(set) var showing: Showing = .nothing
-    @Published private(set) var track: (title: String, playing: Bool)?
+    @Published private(set) var track: SpotifyTools.Track?
+    /// The cover of the track that is playing, once fetched.
+    @Published private(set) var artwork: NSImage?
+    private var artworkURL: URL?
     @Published private(set) var musicNote: String?
     /// True when Spotify is open but has not yet been shown here. The user asks
     /// for it once with a click, so macOS's question about controlling Spotify
@@ -173,16 +176,29 @@ final class NotchModel: ObservableObject {
         }
         offersMusic = false
         // The question is put to Spotify by a separate program, off the main thread, with a time limit.
-        guard case .read(let content, _)? = try? await music.run(tool: "spotify_now_playing", arguments: [:], access: ToolAccess()) else {
-            // Not allowed after all, or Spotify did not answer: back to offering it.
-            UserDefaults.standard.set(false, forKey: Self.musicKey)
+        guard let spotify = music as? SpotifyTools, let playing = try? await spotify.track() else {
+            // Nothing is loaded in Spotify, it has just closed, or OMNIS is not allowed after all.
             track = nil
-            musicNote = nil
-            offersMusic = true
+            artwork = nil
+            artworkURL = nil
+            musicNote = spotifyIsOpen ? "Nothing playing" : nil
             return
         }
-        track = NotchData.track(from: content)
-        musicNote = track == nil ? content : nil
+        track = playing
+        musicNote = nil
+        await loadArtwork(playing.artwork)
+    }
+
+    /// Fetches the cover picture from Spotify's own picture servers, and from nowhere else.
+    private func loadArtwork(_ url: URL?) async {
+        guard url != artworkURL else { return }
+        artworkURL = url
+        artwork = nil
+        guard let url, url.scheme == "https", let host = url.host, host.hasSuffix(".scdn.co") || host.hasSuffix(".spotifycdn.com") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpShouldHandleCookies = false
+        guard let (data, _) = try? await URLSession.shared.data(for: request), data.count < 3_000_000, url == artworkURL else { return }
+        artwork = NSImage(data: data)
     }
 
     /// The user clicked "Show what's playing". From now on it is shown without asking.
@@ -198,6 +214,8 @@ final class NotchModel: ObservableObject {
         audit.record(action: "service", outcome: "ok", detail: "Controlled Spotify")
         Task { [weak self] in
             _ = try? await music.run(tool: "spotify_control", arguments: ["action": action], access: ToolAccess())
+            // Spotify takes a moment to move on.
+            try? await Task.sleep(nanoseconds: 350_000_000)
             await self?.loadMusic()
         }
     }
@@ -219,6 +237,17 @@ final class NotchModel: ObservableObject {
         dashboard.ask = text
         dashboard.submit()
         close()
+    }
+
+    /// Shows the everyday view at once, for drawing a picture of it (development aid).
+    func showForPicture(voice: Bool) {
+        showing = voice ? .voice : .everyday
+        guard !voice else { return }
+        // Made-up contents, so the picture shows the panel full without reading anything of the user's.
+        dashboard.fillForPicture()
+        track = SpotifyTools.Track(title: "Clair de Lune", artist: "Claude Debussy", playing: true, artwork: nil)
+        reminders = ["Pay rent", "Call the bank"]
+        offersMusic = false
     }
 
     func launch(_ entry: RegistryEntry) {

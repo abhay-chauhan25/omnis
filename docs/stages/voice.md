@@ -54,6 +54,14 @@ A second review confirmed the fixes above by reading the code, and found no path
 | The limit on waiting for an answer was pushed back by anything overheard | Fixed. |
 | Opening an app by voice is answered "Okay" even if it could not be opened; a preview declined on screen is spoken as "That did not work" | Left as is. |
 
+### "That chat was closed" (found by the user, 2026-11-24)
+
+Every spoken question was answered "Sorry, that did not work. That chat was closed." Cause: asking one question changes the chat several times in a row, and the voice code looked at each change using the picture of the chat as it was when the change was announced. One of those earlier pictures, looked at a moment late, had no answer in it yet, and that was taken to mean the chat had been cleared. Fixed: the chat is always read as it stands.
+
+Reproduced and confirmed with a new development aid, `OMNIS --rehearse-voice "line one|line two"`, which runs a spoken conversation with no microphone, no sound and no windows, and prints both sides. The answers are real. With the old code it printed the error; with the fix it answered "what is two plus two?", remembered it for "and times ten?", ended on "that's all", and started the next conversation fresh.
+
+The rehearsal does not cover the microphone, the recogniser or the speaking voice.
+
 ## Tests
 
 - Swift 296, Python 120, all passing. New: the wake phrase and its near misses; endings and yes or no as whole utterances only; answers tidied for speech; the personality text; which previews a spoken yes may confirm; a whole conversation from wake to "that's all"; silence; unclear answers; the search question; switching off; and the recogniser's real pattern of growing and settled results.

@@ -38,6 +38,46 @@ public enum NotchData {
     }
 }
 
+/// One day in the panel's strip of the week.
+public struct NotchDay: Equatable, Sendable, Identifiable {
+    public let date: Date
+    /// "M", "T", "W".
+    public let letter: String
+    public let number: Int
+    public let isToday: Bool
+    public var id: Date { date }
+}
+
+public extension NotchData {
+    /// The seven days centred on today: three before, today, three after.
+    static func week(around now: Date = Date(), calendar: Calendar = .current) -> [NotchDay] {
+        let today = calendar.startOfDay(for: now)
+        let letters = calendar.veryShortWeekdaySymbols
+        return (-3...3).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
+            let weekday = calendar.component(.weekday, from: date)
+            return NotchDay(date: date, letter: letters[(weekday - 1) % letters.count], number: calendar.component(.day, from: date), isToday: offset == 0)
+        }
+    }
+
+    /// "Nov", for the month the strip is centred on.
+    static func month(of now: Date = Date(), calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "MMM"
+        return formatter.string(from: now)
+    }
+
+    /// The next event as a title and a line under it: ("Dentist", "10:00 · in 40 min").
+    static func nextEventParts(in agenda: [DashboardData.AgendaRow], now: Date = Date()) -> (title: String, when: String)? {
+        guard let line = nextEvent(in: agenda, now: now), let divider = line.range(of: " \u{00B7} ") else { return nil }
+        let rest = String(line[divider.upperBound...]).replacingOccurrences(of: " (", with: " \u{00B7} ").replacingOccurrences(of: ")", with: "")
+        return (String(line[..<divider.lowerBound]), rest)
+    }
+}
+
 /// Where the panel goes on the built-in screen. Sizes are in points, with the
 /// origin at the bottom left, as macOS measures screens.
 public struct NotchGeometry: Equatable, Sendable {
