@@ -498,6 +498,32 @@ struct DashboardView: View {
             row("Web search", chat.webEnabled ? "on" : "off", dim: !chat.webEnabled)
             row("Calendar", model.calendarAllowed ? "allowed" : "not allowed", dim: !model.calendarAllowed)
             row("Claude Code sessions", model.sessions.isEmpty ? "none running" : "\(model.sessions.count) running", dim: model.sessions.isEmpty)
+            if let memory = model.memory {
+                Rectangle().fill(Ink.line).frame(height: 1)
+                row("Memory in use", memory.memoryLabel)
+                row("Swap in use", memory.swapLabel, dim: memory.swapLabel == "none")
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Memory pressure").font(.system(size: 13)).foregroundStyle(Ink.muted)
+                    Spacer(minLength: 12)
+                    Text(memory.pressure == .unknown ? "\u{2013}" : memory.pressure.rawValue).font(.mono(12))
+                        .foregroundStyle(memory.pressure == .critical ? .red : memory.pressure == .warning ? .orange : Ink.text)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if !model.energy.isEmpty {
+                Rectangle().fill(Ink.line).frame(height: 1)
+                Text("USING THE MOST ENERGY").font(.mono(10)).foregroundStyle(Ink.faint)
+                ForEach(model.energy) { item in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(item.name).font(.system(size: 13)).foregroundStyle(Ink.muted).lineLimit(1)
+                        Spacer(minLength: 12)
+                        Text(String(format: "%.1f", item.impact)).font(.mono(12))
+                            .foregroundStyle(item.impact >= 50 ? .orange : Ink.text)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(item.name), energy impact \(String(format: "%.0f", item.impact))")
+                }
+            }
         }
     }
 

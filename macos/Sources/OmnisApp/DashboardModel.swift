@@ -18,6 +18,9 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var history = DashboardData.history(from: [])
     @Published private(set) var notesToday = 0
     @Published private(set) var claudeSessionOpen = false
+    @Published private(set) var memory: MemoryUsage?
+    /// The programs using the most energy just now.
+    @Published private(set) var energy: [EnergyUse.Item] = []
     @Published private(set) var isVisible = false
     @Published private(set) var focus = FocusTimer()
     @Published private(set) var focusDone = false
@@ -75,6 +78,7 @@ final class DashboardModel: ObservableObject {
         now = Date()
         claudeSessionOpen = claude?.isSessionOpen ?? false
         notesToday = notes.countToday()
+        memory = MemoryUsage.current()
         refreshAgenda()
 
         let entries = chat.registryEntries
@@ -94,7 +98,8 @@ final class DashboardModel: ObservableObject {
                     recentProjects: DashboardData.tiles(from: records, entries: projectEntries, limit: 5),
                     projectEntries: projectEntries,
                     sessions: SessionScanner.scan(excluding: [ownSession]),
-                    stats: ClaudeStats.load()
+                    stats: ClaudeStats.load(),
+                    energy: EnergyUse.current()
                 )
             }.value
             guard let self else { return }
@@ -103,6 +108,7 @@ final class DashboardModel: ObservableObject {
             self.tiles = loaded.tiles
             self.sessions = loaded.sessions
             self.claudeStats = loaded.stats
+            self.energy = loaded.energy
             // Projects with a session running come first, then the ones opened most.
             var shown = loaded.projectEntries.filter { entry in
                 loaded.sessions.contains { $0.folder == entry.url.resolvingSymlinksInPath().path }
@@ -120,6 +126,7 @@ final class DashboardModel: ObservableObject {
         let projectEntries: [RegistryEntry]
         let sessions: [SessionScanner.Session]
         let stats: ClaudeStats?
+        let energy: [EnergyUse.Item]
     }
 
     var statsSummary: ClaudeStats.Summary? { claudeStats?.summary(statsRange, now: now) }
