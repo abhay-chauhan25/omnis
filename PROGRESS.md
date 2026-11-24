@@ -13,15 +13,15 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Stage 1: local models | Built 2026-11-16; models since replaced | `docs/stages/stage-1.md` |
 | Web search | Built and reviewed 2026-11-17 | ADR-0008 |
 | Local model `gemma4:12b` | Chosen by measurement 2026-11-17 | ADR-0007, `docs/benchmarks/model-bake-off.md` |
-| Chat window with conversation memory | Built and reviewed 2026-11-17; user testing in progress | ADR-0010 |
-| Claude lane through an API key | Retired 2026-11-23, never run live. Replaced by Claude Code on the user's plan (ADR-0013). Its code is still in the repo, unused | ADR-0009 |
-| Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; user testing in progress | `docs/stages/attachments.md` |
-| Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test with the real calendar | ADR-0011, `docs/stages/calendar-read.md` |
-| Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; waiting for the user's test and first real save | `docs/stages/calendar-events.md` |
-| Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
-| Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; controls not yet seen on screen | ADR-0013, `docs/stages/claude-regular-mode.md` |
-| Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; reviewed, findings fixed; the view not yet seen on screen and no real project set up | ADR-0014, `docs/stages/project-mode.md` |
-| Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; not yet run against the real Reminders or Spotify | `docs/stages/services.md` |
+| Chat window with conversation memory | Built and reviewed 2026-11-17; tried by the user 2026-11-24 | ADR-0010 |
+| Claude lane through an API key | Retired 2026-11-23, never run live. Replaced by Claude Code on the user's plan (ADR-0013). Its code was removed 2026-11-24 | ADR-0009 |
+| Image and file attachments | Built and reviewed 2026-11-17; review findings fixed; tried by the user 2026-11-24 | `docs/stages/attachments.md` |
+| Calendar, reading | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; tried by the user 2026-11-24 | ADR-0011, `docs/stages/calendar-read.md` |
+| Calendar, creating events | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; tried by the user 2026-11-24 | `docs/stages/calendar-events.md` |
+| Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; tried by the user 2026-11-24 | ADR-0012, `docs/stages/calendar-full-control.md` |
+| Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; tried by the user 2026-11-24 | ADR-0013, `docs/stages/claude-regular-mode.md` |
+| Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; reviewed, findings fixed; tried by the user 2026-11-24 | ADR-0014, `docs/stages/project-mode.md` |
+| Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; tried by the user 2026-11-24 | `docs/stages/services.md` |
 | Services: Gmail, Messages, browser | Not started. Each needs a decision from the user | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
 | Icon and signing | Halo mark for the Dock and menu bar; the app is signed with a local identity so rebuilds keep their permissions (to be confirmed by the user over a few rebuilds) | `macos/scripts/make-icon.swift`, `macos/scripts/make-signing-identity.sh` |
@@ -52,30 +52,30 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 **Known loose ends**
 
-- The unused API-key lane (`backend/omnis_backend/claude.py`, `CloudLane.swift`, the ledger, the Keychain key code) is still to be removed.
 - The new services have no dashboard panels yet. The Mail panel is a placeholder.
 - Spotify cannot pick and play a named song (needs Spotify's web service and a developer key).
 - The new services and project setup are offered to Claude only, not to the model on this Mac.
-- Several things have never run for real and are listed in their stage documents under "not verified": calendar writes, the first project set-up, Reminders and Spotify.
+- On 2026-11-24 the user reported having tried everything built so far and found it working. The "not verified" lists in the stage documents predate that.
+- If a Claude API key was ever saved, it is still in the Keychain (service `local.omnis.app`, account `anthropic-api-key`), and `claude-usage.csv` may still be in the support folder. Nothing reads either now.
 
 ## Tests
 
-- Python: 154. Swift: 251. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 119. Swift: 240. (Fewer than before: the retired API-key lane's tests went with it.) Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items
 
-- [ ] User's hands-on check of the chat window (look, feel, dragging, sources, launch strip).
-- [ ] User's test of calendar questions against the real calendar (needs the macOS permission prompt).
-- [ ] User's test of adding events, including the first real save and an all-day event.
+- [x] User's hands-on check of the chat window (look, feel, dragging, sources, launch strip).
+- [x] User's test of calendar questions against the real calendar (needs the macOS permission prompt).
+- [x] User's test of adding events, including the first real save and an all-day event.
 - [ ] User's feedback on the look of the event preview card.
-- [ ] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
-- [ ] User's look at the Model and Effort sliders, usage reading and typed commands.
-- [ ] Remove the retired API-key lane from the code.
+- [x] User's test of changing and deleting in a throwaway calendar (steps in `docs/stages/calendar-full-control.md`).
+- [x] User's look at the Model and Effort sliders, usage reading and typed commands.
+- [x] Remove the retired API-key lane from the code.
 - [ ] Gmail, Messages and browser: waiting on the user's choices (see the top of this file).
-- [ ] User's first use of Reminders and Spotify (each asks for a macOS permission once).
-- [ ] User's look at the dashboard on screen.
-- [ ] User's first run of project mode: open a terminal session, try the advisor, set up one real project.
+- [x] User's first use of Reminders and Spotify (each asks for a macOS permission once).
+- [x] User's look at the dashboard on screen.
+- [x] User's first run of project mode: open a terminal session, try the advisor, set up one real project.
 - [ ] Voice ("Hey OMNIS"): the user will decide separately. Not built.
 - [ ] Test the local model on personal-data tasks (email summaries, replies, calendar events) before trusting it with them.
 - [ ] Read the licence for `gemma4:12b`.
@@ -124,7 +124,6 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 - **Accuracy:** on current-events questions the local model was right 20 to 23 times in 26 across four runs. Its mistakes are mostly about dates.
 - **Search engines throttle bursts.** Heavy testing got this network refused by three engines for some hours. More engines are now switched on and tests pause between searches.
 - **Memory:** 7.7 GB while the model is loaded; nothing when idle.
-- **The real Claude connection is untested.** It is written from the library's documentation and has never run.
 - **Ghidra** is launched by a script, registered in `registry.json`; "voyager" is an alias for the `VoyagerAI` project.
 
 ## Environment (checked 2026-11-17)
@@ -133,9 +132,9 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 - Xcode 26.6, Python 3.13, Docker Desktop, Homebrew, VS Code `code` command.
 - Ollama 0.40.16 (Homebrew), started on demand. Model on disk: `gemma4:12b` (7.7 GB).
 - Docker image `searxng/searxng:latest`, started on demand.
-- Not installed: the `anthropic` Python package, the GitHub `gh` CLI. Each needs approval.
+- The GitHub `gh` CLI is installed (`/opt/homebrew/bin/gh`).
 - The Verification Agent is pinned to Sonnet; the other agents inherit the session model.
 
 ## Next step
 
-The user tries project mode and the dashboard. Then: voice, mail, or removing the unused API-key code.
+The user chooses what comes next: Gmail, Messages, the browser, voice, or memory (a small reviewed fact store was recommended; see ADR-0005).

@@ -37,7 +37,6 @@ final class ChatModel: ObservableObject {
     private var registry = Registry(entries: [], editor: RegistryConfig.standard.editor)
     private let backend: BackendService?
     private let audit: AuditLog
-    private let ledger: UsageLedger
     private let performer: LaunchPerforming
     private let calendarWriter: (any CalendarWriting)?
     private let claude: ClaudeService?
@@ -73,7 +72,7 @@ final class ChatModel: ObservableObject {
     private var askTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
-    init(backend: BackendService?, audit: AuditLog, ledger: UsageLedger, calendarWriter: (any CalendarWriting)? = nil,
+    init(backend: BackendService?, audit: AuditLog, calendarWriter: (any CalendarWriting)? = nil,
          claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil, services: [any AssistantTools] = []) {
         self.backend = backend
         self.services = services
@@ -81,7 +80,6 @@ final class ChatModel: ObservableObject {
         self.claude = claude
         self.calendarWriter = calendarWriter
         self.audit = audit
-        self.ledger = ledger
         self.performer = SystemLaunchPerformer(onLateFailure: { url, status in
             audit.record(action: "launch", kind: EntryKind.launcher.rawValue, target: url.lastPathComponent,
                          outcome: "error", detail: "exited with status \(status)")
@@ -519,8 +517,6 @@ final class ChatModel: ObservableObject {
                         self.conversation.update(answerID) { $0.proposalProblem = why }
                         // The reason can name a calendar, so it is not logged.
                         audit.record(action: "calendar_propose", outcome: "refused")
-                    case .usage:
-                        break
                     case .finished(let model, let details):
                         self.conversation.update(answerID) {
                             $0.state = .done
@@ -681,19 +677,14 @@ final class ChatModel: ObservableObject {
     // MARK: Labels
 
     /// The "which model answered" line under an answer.
-    static func sourceLabel(model: String?, details: AnswerDetails, budgetWarning: String? = nil) -> String? {
+    static func sourceLabel(model: String?, details: AnswerDetails) -> String? {
         guard let model else { return nil }
         var parts: [String] = []
         switch details.route {
         case "local":
-            // Say first if Claude was wanted and could not be used.
-            if let fallback = details.fallback { parts.append(fallback) }
             parts.append("\(model), on this Mac")
         case "claude":
             parts.append(Self.claudeName(model))
-        case "cloud":
-            parts.append(Self.claudeName(model))
-            if let cost = details.costUSD { parts.append(Self.costText(cost)) }
         default:
             return model == "mock" ? "Mock reply, no model used" : "Answered by \(model)"
         }
@@ -702,7 +693,6 @@ final class ChatModel: ObservableObject {
         if let total = details.totalMilliseconds {
             parts.append(String(format: "%.1f s", Double(total) / 1000))
         }
-        if let budgetWarning { parts.append(budgetWarning) }
         return parts.joined(separator: " \u{00B7} ")
     }
 
@@ -715,14 +705,7 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Small amounts are shown in cents so they do not all read as "$0.00".
-    static func costText(_ dollars: Double) -> String {
-        if dollars <= 0 { return "no charge" }
-        if dollars < 0.01 { return String(format: "%.2f\u{00A2}", dollars * 100) }
-        return String(format: "$%.2f", dollars)
-    }
-
-    /// Numbers only: which model, which route, how long, how many tokens, what it cost.
+    /// Numbers only: which model, which route, how long, how many tokens.
     static func auditDetail(model: String?, details: AnswerDetails) -> String {
         var parts = ["model \(model ?? "unknown")"]
         if let route = details.route { parts.append("route \(route)") }
@@ -731,9 +714,7 @@ final class ChatModel: ObservableObject {
         if let output = details.outputTokens { parts.append("out \(output) tokens") }
         if let load = details.loadMilliseconds { parts.append("load \(load) ms") }
         if let total = details.totalMilliseconds { parts.append("total \(total) ms") }
-        if let cost = details.costUSD { parts.append(String(format: "cost %.4f USD", cost)) }
         if let searches = details.searches, searches > 0 { parts.append("web searches \(searches)") }
-        if let fallback = details.fallback { parts.append("fallback: \(fallback)") }
         if let reads = details.calendarReads, reads > 0 { parts.append("calendar reads \(reads)") }
         return parts.joined(separator: ", ")
     }

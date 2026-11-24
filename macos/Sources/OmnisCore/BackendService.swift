@@ -12,11 +12,6 @@ public struct BackendConfig: Sendable {
     /// How long a web search may take before the app gives up on it. Kept
     /// shorter than the backend's own wait (70 s).
     public var searchDeadline: TimeInterval = 50
-    /// Supplies the Claude key each time the backend starts (from the
-    /// Keychain, in the app). It is sent to the backend as a message over the
-    /// pipe and held there in memory. It is never put in the environment,
-    /// where other programs could read it.
-    public var claudeKey: (@Sendable () -> String?)?
 
     public init(
         executable: URL,
@@ -95,8 +90,6 @@ public enum AnswerEvent: Equatable, Sendable {
     case projectProposed(ProjectPlan)
     /// A change the model asked for could not be prepared; the model was told so.
     case eventRefused(String)
-    /// One Claude turn was billed. Record it now: the answer may not finish.
-    case usage(model: String, inputTokens: Int, outputTokens: Int, costUSD: Double)
     case finished(model: String?, details: AnswerDetails)
 }
 
@@ -108,7 +101,6 @@ public final class BackendService: @unchecked Sendable {
         let route: String
         let web: Bool
         let history: [ChatTurn]
-        let cloud: CloudPermission
         let attachments: [Attachment]
         let personal: Bool
         let calendar: Bool
@@ -192,7 +184,6 @@ public final class BackendService: @unchecked Sendable {
         route: String = "auto",
         web: Bool = true,
         history: [ChatTurn] = [],
-        cloud: CloudPermission = CloudPermission(),
         attachments: [Attachment] = [],
         personal: Bool = false,
         calendar: Bool = false,
@@ -209,7 +200,7 @@ public final class BackendService: @unchecked Sendable {
                 if case .cancelled = reason { self?.cancel(id) }
             }
             queue.async {
-                self.pending[id] = Pending(text: text, route: route, web: web, history: history, cloud: cloud,
+                self.pending[id] = Pending(text: text, route: route, web: web, history: history,
                                            attachments: attachments, personal: personal,
                                            calendar: calendar && self.tools.reader != nil,
                                            calendarWrite: calendarWrite,
@@ -244,7 +235,7 @@ public final class BackendService: @unchecked Sendable {
             // process, and the exit handling will retry or fail it.
             pending[id]?.sent = true
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud, attachments: request.attachments,
+                           attachments: request.attachments,
                            personal: request.personal, calendar: request.calendar,
                            calendarWrite: request.calendarWrite, calendarDelete: request.deletes))
         } catch let error as BackendError {
@@ -351,13 +342,10 @@ public final class BackendService: @unchecked Sendable {
         // so a failed write cannot leave them unowned.
         for id in resend { pending[id]?.sent = true }
         try write(.hello(protocolVersion: BackendProtocol.version))
-        if let key = config.claudeKey?(), !key.isEmpty {
-            try write(.configure(claudeKey: key))
-        }
         for id in resend {
             guard let request = pending[id] else { continue }
             try write(.ask(id: id, text: request.text, route: request.route, web: request.web, history: request.history,
-                           cloud: request.cloud, attachments: request.attachments,
+                           attachments: request.attachments,
                            personal: request.personal, calendar: request.calendar,
                            calendarWrite: request.calendarWrite, calendarDelete: request.deletes))
         }
@@ -400,13 +388,6 @@ public final class BackendService: @unchecked Sendable {
             guard let request = pending.removeValue(forKey: id) else { return }
             request.continuation.yield(.finished(model: model.map { String($0.prefix(Self.maxDisplayLength)) }, details: details))
             request.continuation.finish()
-        case .usage(let id, let model, let inputTokens, let outputTokens, let costUSD):
-            guard pending[id] != nil else { return }
-            // Something was billed for this request, so it must not be sent
-            // again automatically if the backend then stops.
-            pending[id]?.receivedAny = true
-            pending[id]?.continuation.yield(.usage(model: model, inputTokens: inputTokens,
-                                                    outputTokens: outputTokens, costUSD: costUSD))
         case .toolRequest(let id, let callID, let tool, let query, let arguments):
             if tool.hasPrefix("calendar_") {
                 calendarTool(requestID: id, callID: callID, tool: tool, arguments: arguments)

@@ -1,7 +1,6 @@
-"""Answers questions with the local model or with Claude.
+"""Answers questions with the model on this Mac.
 
-One request runs at a time. If Claude is wanted but cannot be used, the local
-model answers and the reason is passed back so the user is told.
+One request runs at a time.
 """
 
 from __future__ import annotations
@@ -13,11 +12,9 @@ import re
 import time
 from collections.abc import AsyncIterator
 
-from .models import AnswerError, AnswerInfo, ToolRequest, UsageEvent
+from .models import AnswerError, AnswerInfo, ToolRequest
 from .ollama import OllamaClient
-from . import claude as claude_lane
-from .claude import ClaudeClient, ClaudeUnavailable
-from .router import Decision, Target, decide, wants_claude
+from .router import Decision, Target, decide
 
 SYSTEM_PROMPT = (
     "You are OMNIS, an assistant that runs on the user's Mac. Answer directly and briefly, "
@@ -270,17 +267,6 @@ MAX_QUERY_CHARS = 200
 MAX_SNIPPET_CHARS = 500
 MAX_RESULTS_SHOWN = 6
 
-# The same tool, in the shape the Claude API expects.
-CLAUDE_WEB_SEARCH_TOOL = {
-    "name": "web_search",
-    "description": WEB_SEARCH_TOOL["function"]["description"],
-    "input_schema": WEB_SEARCH_TOOL["function"]["parameters"],
-}
-
-# How long Claude is left alone after a failure that will not fix itself quickly.
-CLOUD_REST_SECONDS = 600.0
-
-
 class LocalEngine:
     def __init__(
         self,
@@ -293,7 +279,6 @@ class LocalEngine:
         whole_answer_timeout: float = 600.0,
         search_timeout: float = 70.0,
         think: bool | None = False,
-        claude: ClaudeClient | None = None,
     ):
         self._client = client
         self._models = {Target.LIGHT: light_model, Target.MODERATE: moderate_model}
@@ -308,19 +293,6 @@ class LocalEngine:
         self._lock = asyncio.Lock()
         self._in_memory: str | None = None
         self._used: set[str] = set()
-        # The Claude lane. None means it is off and everything is answered locally.
-        self._claude = claude
-        # Set when a key was supplied but Claude still cannot be used.
-        self._claude_missing = ""
-        self._cloud_rest_until = 0.0
-        self._cloud_rest_reason = ""
-
-    def configure(self, settings: dict) -> None:
-        """Settings handed over by the app after start-up. The Claude key
-        arrives this way, in memory, and is kept nowhere else."""
-        key = settings.get("claude_key")
-        self._claude, self._claude_missing = claude_lane.make_client(key if isinstance(key, str) else None)
-        self._cloud_rest_until = 0.0
 
     async def answer(
         self,
@@ -328,71 +300,29 @@ class LocalEngine:
         route: str = "auto",
         web: bool = True,
         history: list | None = None,
-        cloud: dict | None = None,
         attachments: list | None = None,
         options: dict | None = None,
-    ) -> AsyncIterator[str | AnswerInfo | ToolRequest | UsageEvent]:
-        """`cloud` is the app's say on Claude for this request:
-        {"allowed": bool, "max_usd": float, "reason": str}. The app, not this
-        process, owns the spending limits."""
+    ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
         history = history or []
-        cloud = cloud or {}
         attachments = attachments or []
         options = options or {}
         # A file is personal data, and so is the calendar. A message that uses
-        # either, or a chat that already has, stays on this Mac and does not
-        # search the web: a search could carry that information to the search
+        # either, or a chat that already has, does not search the web: a search could carry that information to the search
         # engines. The app says so with `personal`; a file says so by itself.
         personal = (bool(attachments) or any(turn.get("attachments") for turn in history)
                     or bool(options.get("personal")))
         web_wanted = web
         if personal:
             web = False
-        ready, why_not = self._cloud_ready(cloud)
-        decision = decide(text, route, cloud_ready=ready, personal=personal)
-        # Say that Claude was passed over only when the user would expect it:
-        # they asked for it, or it is set up but cannot be used right now.
-        configured = self._claude is not None or bool(self._claude_missing)
-        expected = not personal and (wants_claude(text, route) or (configured and route != "local"))
-        fallback = f"Claude could not be used ({why_not})" if expected and not ready else ""
+        decision = decide(text, route, personal=personal)
 
         async with self._lock:
-            if decision.target is Target.CLOUD:
-                shown = False
-                try:
-                    async for item in self._cloud(text, decision, web, history, cloud):
-                        if isinstance(item, str):
-                            shown = True
-                        yield item
-                    return
-                except ClaudeUnavailable as error:
-                    if error.kind in ClaudeUnavailable.LASTING:
-                        self._cloud_rest_until = time.monotonic() + CLOUD_REST_SECONDS
-                        self._cloud_rest_reason = error.message
-                    if shown:
-                        # Half an answer is already on screen; do not start a second one.
-                        raise AnswerError("claude_failed", f"Claude stopped part-way: {error.message}.") from None
-                    fallback = f"Claude could not be used ({error.message})"
-                    decision = decide(text, route if route == "local" else "auto", cloud_ready=False)
-
             async for item in self._local(text, decision, web, history, attachments,
                                           web_off_for_file=personal and web_wanted,
                                           calendar=bool(options.get("calendar")),
                                           calendar_write=bool(options.get("calendar_write")),
                                           calendar_delete=str(options.get("calendar_delete") or "none")):
-                if isinstance(item, AnswerInfo):
-                    item.fallback = fallback
                 yield item
-
-    def _cloud_ready(self, cloud: dict) -> tuple[bool, str]:
-        """Whether Claude can be used for this request, and if not, why."""
-        if self._claude is None:
-            return False, self._claude_missing or "it is not set up"
-        if not cloud.get("allowed", True):
-            return False, str(cloud.get("reason") or "it is not allowed right now")
-        if time.monotonic() < self._cloud_rest_until:
-            return False, self._cloud_rest_reason
-        return True, ""
 
     async def close(self) -> None:
         # Unload everything this engine loaded, in case an earlier unload failed.
@@ -599,97 +529,6 @@ class LocalEngine:
             # The stream ended without the model saying it was done: the
             # answer on screen is cut short and must not look complete.
             raise AnswerError("model_unavailable", f"{model} stopped before finishing, so the answer is incomplete.")
-
-    # -- Claude ----------------------------------------------------------
-
-    async def _cloud(
-        self, text: str, decision: Decision, web: bool, history: list, cloud: dict
-    ) -> AsyncIterator[str | AnswerInfo | ToolRequest]:
-        assert self._claude is not None
-        started = time.monotonic()
-
-        # Pick the model, then check the worst this request could cost.
-        model, why = claude_lane.choose_model(text)
-        limit = float(cloud.get("max_usd", 1.0))
-        size = len(text) + sum(len(turn["content"]) for turn in history) + 6000
-        if claude_lane.worst_case_cost(model, size) > limit:
-            model, why = claude_lane.HAIKU, "a stronger model could exceed the per-request limit"
-            if claude_lane.worst_case_cost(model, size) > limit:
-                raise ClaudeUnavailable("over_limit", "the request could exceed the per-request limit")
-
-        today = datetime.date.today().strftime("%d %B %Y")
-        system = SYSTEM_PROMPT + DATE_PROMPT.format(today=today) + (WEB_PROMPT if web else "")
-        messages: list[dict] = [{"role": turn["role"], "content": turn["content"]} for turn in history]
-        messages.append({"role": "user", "content": text})
-        info = AnswerInfo(model=model, route="cloud", reason=f"{decision.reason}; {why}")
-        effort = "low" if model == claude_lane.HAIKU else "medium"
-        shown = False
-        attempts = 0
-
-        # The tool is defined on every turn of a web-enabled answer: the API
-        # rejects a request whose history uses a tool it does not define. Once
-        # the searches are used up, Claude is told it may not call it again.
-        tools = [CLAUDE_WEB_SEARCH_TOOL] if web else []
-        while True:
-            may_search = bool(tools) and attempts < MAX_SEARCHES
-            turn = None
-            async for item in self._claude.turn(model, system, messages, tools, effort, allow_tools=may_search):
-                if isinstance(item, claude_lane.ClaudeTurn):
-                    turn = item
-                else:
-                    shown = True
-                    yield item
-            if turn is None:
-                raise ClaudeUnavailable("server", "Claude sent no reply")
-            info.input_tokens += turn.input_tokens
-            info.output_tokens += turn.output_tokens
-            # Reported at once: this turn is billed whatever happens next.
-            yield UsageEvent(model, turn.input_tokens, turn.output_tokens,
-                             round(claude_lane.cost_usd(model, turn.input_tokens, turn.output_tokens), 6))
-            if turn.stop_reason == "refusal":
-                raise AnswerError("refused", "Claude declined to answer this.")
-            if turn.stop_reason == "max_tokens" and turn.text:
-                note = "\n\n(The answer was cut off at the length limit.)"
-                yield note
-
-            call = None
-            if may_search and turn.stop_reason != "max_tokens":  # a cut-off request is not carried out
-                for use in turn.tool_uses:
-                    arguments = use.get("input")
-                    query = arguments.get("query") if isinstance(arguments, dict) else None
-                    if use.get("name") == "web_search" and isinstance(query, str) and query.strip():
-                        call = use
-                        break
-            if call is None:
-                break
-
-            query = " ".join(call["input"]["query"].split())[:MAX_QUERY_CHARS]
-            attempts += 1
-            request = ToolRequest("web_search", query, asyncio.get_running_loop().create_future())
-            yield request
-            try:
-                outcome = await asyncio.wait_for(request.future, self._search_timeout)
-            except asyncio.TimeoutError:
-                outcome = {"ok": False, "results": [], "error": "the search took too long"}
-            if outcome.get("ok") and outcome.get("results"):
-                info.searches += 1
-            messages.append({"role": "assistant", "content": turn.content})
-            # Every request in the reply needs an answer; only the search gets a real one.
-            results = []
-            for use in turn.tool_uses:
-                if use is call:
-                    results.append({"type": "tool_result", "tool_use_id": use["id"],
-                                    "content": _results_for_model(query, outcome, today)})
-                else:
-                    results.append({"type": "tool_result", "tool_use_id": use["id"],
-                                    "content": "That action is not available.", "is_error": True})
-            messages.append({"role": "user", "content": results})
-
-        if not shown:
-            raise AnswerError("empty_answer", "Claude finished without giving an answer. Try asking again.")
-        info.cost_usd = round(claude_lane.cost_usd(model, info.input_tokens, info.output_tokens), 6)
-        info.total_ms = int((time.monotonic() - started) * 1000)
-        yield info
 
 
 def _count(value: object) -> int:

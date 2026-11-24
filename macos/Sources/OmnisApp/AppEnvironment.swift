@@ -21,15 +21,11 @@ enum AppEnvironment {
         let ollama = ollamaPath.flatMap { path in
             path.hasPrefix("/") && fileManager.isExecutableFile(atPath: path) ? URL(fileURLWithPath: path) : nil
         }
-        var config = BackendConfig.python(
+        return BackendConfig.python(
             URL(fileURLWithPath: python),
             backendDirectory: URL(fileURLWithPath: directory, isDirectory: true),
             ollama: ollama
         )
-        // The Claude key comes from the Keychain each time the backend starts.
-        // With no key saved, the backend runs with Claude off and answers locally.
-        config.claudeKey = { KeychainStore.claudeKey.read() }
-        return config
     }
 
     /// Claude is used through Claude Code, signed in with the user's own Claude

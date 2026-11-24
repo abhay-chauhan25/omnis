@@ -137,3 +137,17 @@ import Testing
         #expect(AnswerFormatter.format(item).runs.allSatisfy { $0.link == nil })
     }
 }
+
+@Suite struct ConversationLocalRuleTests {
+    @Test func keepingOneTurnLocalKeepsTheChatLocalUntilANewChat() {
+        var chat = Conversation()
+        #expect(!chat.staysLocal)
+        let id = chat.begin(question: "private thing")
+        chat.keepLocal()
+        chat.update(id) { $0.text = "ok"; $0.state = .done }
+        _ = chat.begin(question: "a public follow-up")
+        #expect(chat.staysLocal)
+        chat.clear()
+        #expect(!chat.staysLocal)
+    }
+}

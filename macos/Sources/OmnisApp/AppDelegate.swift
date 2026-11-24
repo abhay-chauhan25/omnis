@@ -12,7 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var projectMode: ProjectModeModel!
     private var searchContainer: SearXNGContainer?
     private let audit = AuditLog(url: OmnisPaths.auditLog)
-    private let ledger = UsageLedger(url: OmnisPaths.usageLedger, mirror: .standard)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A backend that has just exited must give a write error, not end the app.
@@ -54,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if FileManager.default.fileExists(atPath: "/Applications/Spotify.app") { services.append(SpotifyTools()) }
         claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }
         // Changing the calendar goes through the chat model, on the user's click.
-        let model = ChatModel(backend: backend, audit: audit, ledger: ledger, calendarWriter: calendar, claude: claude,
+        let model = ChatModel(backend: backend, audit: audit, calendarWriter: calendar, claude: claude,
                               projectSetup: projectSetup, services: services)
         chat = ChatWindowController(model: model)
         // The dashboard is the main window. A question typed there is answered in the chat window.
@@ -133,46 +132,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(1)
             }
         }
-    }
-
-    /// Asks for the Claude API key and keeps it in the Keychain. The field
-    /// hides what is typed, and the key is never shown again or written to a file.
-    @objc private func setClaudeKey() {
-        let hasKey = KeychainStore.claudeKey.read() != nil
-        let alert = NSAlert()
-        alert.messageText = "Claude API key"
-        alert.informativeText = hasKey
-            ? "A key is saved. Paste a new one to replace it, or remove it to keep every answer on this Mac."
-            : "Paste your Anthropic API key to let OMNIS send public questions to Claude. It is stored in the macOS Keychain. Without a key, every answer comes from the model on this Mac."
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        field.placeholderString = "sk-ant-..."
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        if hasKey { alert.addButton(withTitle: "Remove Key") }
-        alert.window.initialFirstResponder = field
-        NSApp.activate(ignoringOtherApps: true)
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            guard !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            let saved = KeychainStore.claudeKey.save(field.stringValue)
-            audit.record(action: "claude_key", outcome: saved ? "saved" : "error")
-            if !saved {
-                let failure = NSAlert()
-                failure.messageText = "The key could not be saved"
-                failure.informativeText = "The macOS Keychain refused it. Any key saved earlier is unchanged."
-                failure.runModal()
-                return
-            }
-        case .alertThirdButtonReturn:
-            KeychainStore.claudeKey.delete()
-            audit.record(action: "claude_key", outcome: "removed")
-        default:
-            return
-        }
-        // The backend reads the key when it starts, so restart it.
-        backend?.stop()
     }
 
     @objc private func openPopup() {

@@ -52,7 +52,7 @@ import Testing
         let hello = try json(.hello(protocolVersion: 1))
         #expect(hello["type"] as? String == "hello")
         #expect(hello["protocol"] as? Int == 1)
-        #expect(BackendProtocol.version == 2)
+        #expect(BackendProtocol.version == 3)
 
         let ask = try json(.ask(id: "q1", text: "line one\nline \"two\" \u{1F600}"))
         #expect(ask["type"] as? String == "ask")
@@ -63,12 +63,7 @@ import Testing
         #expect(ask["web"] as? Bool == true)
         #expect(try json(.ask(id: "q", text: "t", web: false))["web"] as? Bool == false)
         #expect((ask["history"] as? [Any])?.isEmpty == true)
-        let cloud = try #require(ask["cloud"] as? [String: Any])
-        #expect(cloud["allowed"] as? Bool == true)
-        #expect(cloud["max_usd"] as? Double == 1.0)
-        let denied = try json(.ask(id: "q", text: "t", cloud: CloudPermission(allowed: false, maxUSD: 0, reason: "budget used up")))
-        #expect((denied["cloud"] as? [String: Any])?["allowed"] as? Bool == false)
-        #expect((denied["cloud"] as? [String: Any])?["reason"] as? String == "budget used up")
+        #expect(ask["cloud"] == nil)
         let withHistory = try json(.ask(id: "q", text: "next", history: [
             ChatTurn(role: .user, content: "first"), ChatTurn(role: .assistant, content: "reply"),
         ]))
@@ -97,10 +92,6 @@ import Testing
         let calendarResult = try json(.toolResult(id: "q", callID: "c", ok: true, results: [], error: "", content: "Wed 18 Nov: Standup"))
         #expect(calendarResult["content"] as? String == "Wed 18 Nov: Standup")
 
-        let configure = try json(.configure(claudeKey: "sk-test"))
-        #expect(configure["type"] as? String == "configure")
-        #expect(configure["claude_key"] as? String == "sk-test")
-
         let cancel = try json(.cancel(id: "q1"))
         #expect(cancel["type"] as? String == "cancel")
         #expect(cancel["id"] as? String == "q1")
@@ -115,15 +106,10 @@ import Testing
             == .answerDone(id: "q", model: "mock", cancelled: false, details: AnswerDetails()))
         #expect(try decode(#"{"type":"answer_done","id":"q","cancelled":true}"#)
             == .answerDone(id: "q", model: nil, cancelled: true, details: AnswerDetails()))
-        #expect(try decode(#"{"type":"answer_done","id":"q","model":"qwen3:4b","cancelled":false,"route":"local","reason":"short","input_tokens":12,"output_tokens":34,"load_ms":2000,"total_ms":4100,"cost_usd":0.0}"#)
+        #expect(try decode(#"{"type":"answer_done","id":"q","model":"qwen3:4b","cancelled":false,"route":"local","reason":"short","input_tokens":12,"output_tokens":34,"load_ms":2000,"total_ms":4100}"#)
             == .answerDone(id: "q", model: "qwen3:4b", cancelled: false, details: AnswerDetails(
                 route: "local", reason: "short", inputTokens: 12, outputTokens: 34,
-                loadMilliseconds: 2000, totalMilliseconds: 4100, costUSD: 0)))
-        #expect(try decode(#"{"type":"answer_done","id":"q","model":"gemma4:12b","route":"local","fallback":"Claude could not be used (there is no Claude API credit)"}"#)
-            == .answerDone(id: "q", model: "gemma4:12b", cancelled: false, details: AnswerDetails(
-                route: "local", fallback: "Claude could not be used (there is no Claude API credit)")))
-        #expect(try decode(#"{"type":"answer_done","id":"q","model":"m","fallback":""}"#)
-            == .answerDone(id: "q", model: "m", cancelled: false, details: AnswerDetails()))
+                loadMilliseconds: 2000, totalMilliseconds: 4100)))
         // Wrongly typed extras are ignored, not trusted.
         #expect(try decode(#"{"type":"answer_done","id":"q","model":"m","route":7,"input_tokens":"lots","cost_usd":true}"#)
             == .answerDone(id: "q", model: "m", cancelled: false, details: AnswerDetails()))
@@ -135,11 +121,6 @@ import Testing
         #expect(try decode(#"{"type":"tool_request","id":"q","call_id":"c","tool":"calendar_events","query":"","arguments":{"start":"2026-11-18","end":"2026-11-19","junk":7}}"#)
             == .toolRequest(id: "q", callID: "c", tool: "calendar_events", query: "",
                             arguments: ["start": "2026-11-18", "end": "2026-11-19"]))
-        #expect(try decode(#"{"type":"usage","id":"q","model":"claude-haiku-5-5","input_tokens":900,"output_tokens":40,"cost_usd":0.00011}"#)
-            == .usage(id: "q", model: "claude-haiku-5-5", inputTokens: 900, outputTokens: 40, costUSD: 0.00011))
-        // Negative or absurd figures cannot reduce what is recorded.
-        #expect(try decode(#"{"type":"usage","id":"q","model":"m","input_tokens":-5,"output_tokens":3,"cost_usd":-2}"#)
-            == .usage(id: "q", model: "m", inputTokens: 0, outputTokens: 3, costUSD: 0))
         #expect(try decode(#"{"type":"tool_request","id":"q","call_id":"c","tool":"web_search","query":"max plan"}"#)
             == .toolRequest(id: "q", callID: "c", tool: "web_search", query: "max plan"))
     }
@@ -199,100 +180,29 @@ import Testing
         backend.stop()
     }
 
-    /// The backend with a stand-in for Claude (no network, no key, no model).
-    func cloudService() -> BackendService {
-        var environment = ProcessInfo.processInfo.environment
-        environment["OMNIS_CLAUDE"] = "mock"
-        var config = BackendConfig(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0", "--engine", "local"],
-            workingDirectory: Self.backendDirectory, environment: environment
-        )
-        return BackendService(config: config, webSearch: StubSearch())
-    }
-
-    @Test func aPublicQuestionGoesToClaudeAndComesBackWithItsCost() async throws {
-        let backend = cloudService()
-        let run = try await trace(backend.ask("who won the world cup"))
-        #expect(run.text == "Mock Claude reply. No API call was made. You asked: who won the world cup")
-        let details = try #require(run.events.compactMap { event -> (String?, AnswerDetails)? in
-            if case .finished(let model, let details) = event { return (model, details) } else { return nil }
-        }.first)
-        #expect(details.0 == "claude-haiku-5-5")
-        #expect(details.1.route == "cloud")
-        #expect((details.1.costUSD ?? 0) > 0)
-        #expect(details.1.fallback == nil)
-        // The cost also arrives as its own event, as soon as the turn is billed.
-        let billed = run.events.compactMap { event -> Double? in
-            if case .usage(let model, _, _, let cost) = event, model == "claude-haiku-5-5" { return cost } else { return nil }
-        }
-        #expect(billed.count == 1)
-        #expect(abs((billed.first ?? 0) - (details.1.costUSD ?? -1)) < 1e-6)
-        backend.stop()
-    }
-
-    @Test func claudeSearchesThroughTheAppToo() async throws {
-        let stub = StubSearch()
-        var environment = ProcessInfo.processInfo.environment
-        environment["OMNIS_CLAUDE"] = "mock"
-        let backend = BackendService(config: BackendConfig(
-            executable: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: ["python3", "-m", "omnis_backend", "--idle-seconds", "0", "--engine", "local"],
-            workingDirectory: Self.backendDirectory, environment: environment
-        ), webSearch: stub)
-        let run = try await trace(backend.ask("search: latest news"))
-        #expect(stub.queries == ["latest news"])
-        #expect(run.events.contains(.sources(stub.results)))
-        #expect(run.text.hasPrefix("Mock Claude reply written from the search results."))
-        // Turning web off is enforced by the app whatever the backend asks for.
-        let off = try await trace(backend.ask("search: latest news", web: false))
-        #expect(stub.queries.count == 1)
-        #expect(!off.events.contains { if case .sources = $0 { return true } else { return false } })
-        backend.stop()
-    }
-
-    /// The key reaches the backend as a message over the pipe, never through
-    /// the environment, where other programs could read it.
-    @Test(.timeLimit(.minutes(1))) func theClaudeKeyIsHandedOverInAMessageNotTheEnvironment() async throws {
+    /// The backend inherits nothing Anthropic-related from the app's environment.
+    @Test(.timeLimit(.minutes(1))) func theBackendInheritsNoAnthropicSettings() async throws {
         let script = #"""
-        echo '{"type":"hello","protocol":2,"service":"fake","version":"0"}'
-        got=none
+        echo '{"type":"hello","protocol":3,"service":"fake","version":"0"}'
         while read -r line; do
           case "$line" in
-            *'"type":"configure"'*)
-              case "$line" in *'from-the-keychain'*) got=key ;; *) got=other ;; esac ;;
             *'"type":"ask"'*)
               id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
               leaked=$(env | grep -c '^ANTHROPIC_')
-              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"configure=$got anthropic_env_vars=$leaked\"}"
+              echo "{\"type\":\"answer_chunk\",\"id\":\"$id\",\"text\":\"anthropic_env_vars=$leaked\"}"
               echo "{\"type\":\"answer_done\",\"id\":\"$id\",\"model\":\"fake\",\"cancelled\":false}" ;;
           esac
         done
         """#
-        func backend(key: (@Sendable () -> String?)?) -> BackendService {
-            var config = BackendConfig(
-                executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
-                workingDirectory: URL(fileURLWithPath: "/tmp"),
-                environment: ["PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": "from-the-app-environment",
-                              "ANTHROPIC_AUTH_TOKEN": "stray-token", "ANTHROPIC_BASE_URL": "https://elsewhere.example",
-                              "ANTHROPIC_LOG": "debug"]
-            )
-            config.claudeKey = key
-            return BackendService(config: config)
-        }
-        let withKey = backend(key: { "from-the-keychain" })
-        #expect(try await trace(withKey.ask("x")).text == "configure=key anthropic_env_vars=0")
-        withKey.stop()
-
-        // No key saved: no configure message, and still nothing inherited.
-        let noKey = backend(key: { nil })
-        #expect(try await trace(noKey.ask("x")).text == "configure=none anthropic_env_vars=0")
-        noKey.stop()
-
-        // Even a setup with no key provider at all inherits nothing.
-        let bare = backend(key: nil)
-        #expect(try await trace(bare.ask("x")).text == "configure=none anthropic_env_vars=0")
-        bare.stop()
+        let backend = BackendService(config: BackendConfig(
+            executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            environment: ["PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": "from-the-app-environment",
+                          "ANTHROPIC_AUTH_TOKEN": "stray-token", "ANTHROPIC_BASE_URL": "https://elsewhere.example",
+                          "ANTHROPIC_LOG": "debug"]
+        ))
+        #expect(try await trace(backend.ask("x")).text == "anthropic_env_vars=0")
+        backend.stop()
     }
 
     // The mock backend asks for the calendar when a question starts with "calendar:".
@@ -874,7 +784,7 @@ import Testing
     /// must refuse, whatever the request says.
     @Test func anythingOtherThanAWebSearchIsRefused() async throws {
         let script = #"""
-        echo '{"type":"hello","protocol":2,"service":"fake","version":"0"}'
+        echo '{"type":"hello","protocol":3,"service":"fake","version":"0"}'
         while read -r line; do
           case "$line" in
             *'"type":"ask"'*)
@@ -916,7 +826,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece; chunks += 1
             case .finished(let name, _): model = name
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed, .actionProposed, .serviceNote: break
+            case .searching, .sources, .searchFailed, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed, .actionProposed, .serviceNote: break
             }
         }
         return (text, model, chunks)
@@ -1056,7 +966,7 @@ import Testing
         let reply = try output.fileHandleForReading.readToEnd() ?? Data()
         process.waitUntilExit()
         #expect(try ProtocolCodec.decode(reply.split(separator: 0x0A).first.map { Data($0) } ?? Data())
-            == .error(id: nil, code: "unsupported_version", message: "service speaks protocol 2"))
+            == .error(id: nil, code: "unsupported_version", message: "service speaks protocol 3"))
         #expect(process.terminationStatus == 2)
     }
 
@@ -1125,7 +1035,7 @@ import Testing
             switch event {
             case .chunk(let piece): text += piece
             case .finished(let model, let details): finished = (model, details)
-            case .searching, .sources, .searchFailed, .usage, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed, .actionProposed, .serviceNote: break
+            case .searching, .sources, .searchFailed, .readingCalendar, .calendarRead, .calendarFailed, .changeProposed, .eventRefused, .projectProposed, .actionProposed, .serviceNote: break
             }
         }
         #expect(text.contains("Paris"))
@@ -1134,15 +1044,7 @@ import Testing
         #expect(finished?.details.route == "local")
         #expect((finished?.details.outputTokens ?? 0) > 0)
 
-        // With no Claude key, asking for Claude is answered locally and says so.
-        var passedOver: AnswerDetails?
-        for try await event in backend.ask("use claude to say hello in one word") {
-            if case .finished(_, let details) = event { passedOver = details }
-        }
-        #expect(passedOver?.route == "local")
-        #expect(passedOver?.fallback == "Claude could not be used (it is not set up)")
-
-        // A typed route survives the trip: a Claude-sounding request stays local.
+        // A typed route survives the trip.
         var forced: AnswerDetails?
         for try await event in backend.ask("use claude to say hello in one word", route: "local") {
             if case .finished(_, let details) = event { forced = details }

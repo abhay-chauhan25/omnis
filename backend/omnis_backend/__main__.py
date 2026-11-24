@@ -36,12 +36,9 @@ async def _serve(args: argparse.Namespace) -> int:
             moderate_model=args.moderate_model,
             keep_alive_seconds=int(args.keep_alive_seconds),
         )
-        # Claude stays off until the app hands over a key (or the test stand-in is asked for).
-        engine.configure({})
         handler = engine.answer
 
-    service = Service(reader, write, handler, idle_seconds=args.idle_seconds,
-                      on_configure=engine.configure if engine is not None else None)
+    service = Service(reader, write, handler, idle_seconds=args.idle_seconds)
     # The app stops this process with a terminate signal; finish cleanly so the
     # model server we started is stopped too.
     for sig in (signal.SIGTERM, signal.SIGINT):

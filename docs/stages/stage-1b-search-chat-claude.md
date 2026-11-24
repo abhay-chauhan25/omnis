@@ -1,5 +1,7 @@
 # After Stage 1 — Web search, a new local model, the chat window, and the Claude lane
 
+> **Note, 2026-11-24:** the Claude lane described here (API key, spending ledger, `claude.py`, `CloudLane.swift`) was retired by ADR-0013 and its code has been removed. Claude is now reached through Claude Code; see `claude-regular-mode.md`. The rest of this page is kept as a record.
+
 Built on 2026-11-17. Each part was approved by the user in conversation before it was built; the decisions are ADR-0007 to ADR-0010.
 
 ## What changed

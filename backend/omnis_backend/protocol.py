@@ -5,18 +5,14 @@ One JSON object per line, UTF-8, newline terminated.
 App to service:
     {"type": "hello",  "protocol": 1}
     {"type": "ask",    "id": "<request id>", "text": "<question>", "route": "auto"}
-        ("route" is optional: "auto", "local" or "claude")
+        ("route" is optional: "auto" or "local")
     {"type": "cancel", "id": "<request id>"}
-    {"type": "configure", "claude_key": "<key or empty>"}
-        (sent once after hello; the key is held in memory only)
     {"type": "tool_result", "id": "<request id>", "call_id": "...", "ok": true,
      "results": [{"title": "...", "url": "...", "snippet": "..."}], "error": "...",
      "content": "<text for tools that return text, such as the calendar>"}
         ("ask" may also carry "web": false to forbid web search for that question,
          "history": [{"role": "user"|"assistant", "content": "..."}] holding the
          earlier turns of the conversation, oldest first, and
-         "cloud": {"allowed": true, "max_usd": 1.0, "reason": "..."}, the app's
-         say on whether Claude may be used for this question, and
          "attachments": [{"kind": "image", "name": "...", "data": "<base64 JPEG or PNG>"},
                          {"kind": "text", "name": "...", "text": "..."}], files the user
          attached. A history entry from the user may carry "attachments" too.
@@ -31,7 +27,7 @@ Service to app:
     {"type": "answer_chunk", "id": "...", "text": "..."}
     {"type": "answer_done",  "id": "...", "model": "...", "cancelled": false,
      "route": "...", "reason": "...", "input_tokens": 0, "output_tokens": 0,
-     "load_ms": 0, "total_ms": 0, "cost_usd": 0.0}
+     "load_ms": 0, "total_ms": 0}
         (everything after "cancelled" is optional)
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "web_search", "query": "..."}
     {"type": "tool_request", "id": "...", "call_id": "...", "tool": "calendar_events", "query": "",
@@ -40,8 +36,6 @@ Service to app:
      "arguments": {"title": "Lunch", "start": "2026-11-18T13:00", "end": "2026-11-18T14:00",
                    "all_day": "false", "location": "Cafe Rio"}}
     (The app only shows this to the user. Nothing is saved unless the user confirms.)
-    {"type": "usage", "id": "...", "model": "...", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-        (after every Claude turn, so cost is recorded even if the answer does not finish)
     {"type": "error", "code": "...", "message": "...", "id": "..."}   (id optional)
     {"type": "bye", "reason": "idle"}
 """
@@ -54,13 +48,12 @@ from typing import Any
 
 from . import __version__
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 SERVICE_NAME = "omnis-backend"
 MAX_TEXT_CHARS = 100_000
 MAX_ID_CHARS = 128
 
-CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result", "configure")
-MAX_KEY_CHARS = 500
+CLIENT_TYPES = ("hello", "ask", "cancel", "tool_result")
 MAX_ATTACHMENTS = 4
 MAX_IMAGE_BASE64_CHARS = 6_000_000      # about 4.5 MB of image
 MAX_ATTACHMENT_TEXT_CHARS = 60_000
@@ -70,7 +63,7 @@ MAX_HISTORY_CHARS = 12_000
 MAX_TOOL_CONTENT_CHARS = 20_000
 MAX_RESULTS = 8
 MAX_RESULT_FIELD_CHARS = 2000
-ROUTES = ("auto", "local", "claude")
+ROUTES = ("auto", "local")
 
 
 class ProtocolError(Exception):
@@ -109,12 +102,6 @@ def decode_client(line: bytes) -> dict[str, Any]:
             raise ProtocolError("bad_request", "'protocol' must be an integer")
         return {"type": "hello", "protocol": version}
 
-    if kind == "configure":
-        key = obj.get("claude_key", "")
-        if not isinstance(key, str) or len(key) > MAX_KEY_CHARS:
-            raise ProtocolError("bad_request", "'claude_key' must be a short string")
-        return {"type": "configure", "claude_key": key.strip()}
-
     request_id = _require_id(obj)
     if kind == "cancel":
         return {"type": "cancel", "id": request_id}
@@ -128,14 +115,13 @@ def decode_client(line: bytes) -> dict[str, Any]:
         raise ProtocolError("bad_request", "'text' is too long", request_id)
     route = obj.get("route", "auto")
     if route not in ROUTES:
-        raise ProtocolError("bad_request", "'route' must be auto, local or claude", request_id)
+        raise ProtocolError("bad_request", "'route' must be auto or local", request_id)
     web = obj.get("web", True)
     if not isinstance(web, bool):
         raise ProtocolError("bad_request", "'web' must be true or false", request_id)
     return {
         "type": "ask", "id": request_id, "text": text, "route": route, "web": web,
         "history": _decode_history(obj.get("history", []), request_id),
-        "cloud": _decode_cloud(obj.get("cloud", {}), request_id),
         "attachments": _decode_attachments(obj.get("attachments", []), request_id),
         "options": {"personal": _flag(obj, "personal", request_id), "calendar": _flag(obj, "calendar", request_id),
                     "calendar_write": _flag(obj, "calendar_write", request_id),
@@ -191,23 +177,6 @@ def _decode_attachments(raw: Any, request_id: str) -> list[dict[str, str]]:
         else:
             raise ProtocolError("bad_request", "unknown attachment kind", request_id)
     return out
-
-
-def _decode_cloud(raw: Any, request_id: str) -> dict[str, Any]:
-    """The app's permission for Claude. A malformed field is refused outright;
-    a missing one means allowed at the default limit (the app always sends it)."""
-    if not isinstance(raw, dict):
-        raise ProtocolError("bad_request", "'cloud' must be an object", request_id)
-    allowed = raw.get("allowed", True)
-    limit = raw.get("max_usd", 1.0)
-    reason = raw.get("reason", "")
-    if not isinstance(allowed, bool) or isinstance(limit, bool) or not isinstance(limit, (int, float)):
-        raise ProtocolError("bad_request", "'cloud' needs allowed (true/false) and max_usd (a number)", request_id)
-    return {
-        "allowed": allowed,
-        "max_usd": max(0.0, min(float(limit), 100.0)),
-        "reason": reason[:200] if isinstance(reason, str) else "",
-    }
 
 
 def _decode_history(raw: Any, request_id: str) -> list[dict[str, Any]]:
@@ -302,11 +271,6 @@ def answer_done(
     for key, value in (details or {}).items():
         out.setdefault(key, value)
     return out
-
-
-def usage(request_id: str, model: str, input_tokens: int, output_tokens: int, cost_usd: float) -> dict[str, Any]:
-    return {"type": "usage", "id": request_id, "model": model, "input_tokens": input_tokens,
-            "output_tokens": output_tokens, "cost_usd": cost_usd}
 
 
 def tool_request(

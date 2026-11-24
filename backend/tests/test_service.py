@@ -4,7 +4,7 @@ import unittest
 
 from omnis_backend.service import EXIT_OK, EXIT_UNSUPPORTED_VERSION, Service
 
-HELLO = b'{"type":"hello","protocol":2}\n'
+HELLO = b'{"type":"hello","protocol":3}\n'
 
 
 def ask(request_id: str, text: str = "hello") -> bytes:
@@ -46,19 +46,19 @@ class Harness:
         return await asyncio.wait_for(self.task, 2.0)
 
 
-async def three_words(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+async def three_words(text, route="auto", web=True, history=None, attachments=None, options=None):
     for piece in ("one ", "two ", "three"):
         await asyncio.sleep(0)
         yield piece
 
 
-async def slow(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+async def slow(text, route="auto", web=True, history=None, attachments=None, options=None):
     for i in range(1000):
         await asyncio.sleep(0.01)
         yield f"{i} "
 
 
-async def broken(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+async def broken(text, route="auto", web=True, history=None, attachments=None, options=None):
     yield "partial "
     raise RuntimeError("secret detail that must not leak")
 
@@ -69,7 +69,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         h.feed(HELLO + ask("r1"))
         await h.until(lambda: h.of_type("answer_done"))
         self.assertEqual(h.out[0]["type"], "hello")
-        self.assertEqual(h.out[0]["protocol"], 2)
+        self.assertEqual(h.out[0]["protocol"], 3)
         self.assertEqual([m["text"] for m in h.of_type("answer_chunk")], ["one ", "two ", "three"])
         done = h.of_type("answer_done")[0]
         self.assertEqual((done["id"], done["cancelled"], done["model"]), ("r1", False, "mock"))
@@ -143,7 +143,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_tool_request_goes_out_and_its_result_comes_back(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+        async def searcher(text, route="auto", web=True, history=None, attachments=None, options=None):
             request = ToolRequest("web_search", "the query", asyncio.get_running_loop().create_future())
             yield request
             outcome = await request.future
@@ -175,7 +175,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_while_waiting_for_a_search_cleans_up(self):
         from omnis_backend.models import ToolRequest
 
-        async def searcher(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+        async def searcher(text, route="auto", web=True, history=None, attachments=None, options=None):
             request = ToolRequest("web_search", "q", asyncio.get_running_loop().create_future())
             yield request
             await request.future
@@ -193,7 +193,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_conversation_history_reaches_the_handler(self):
         seen = []
 
-        async def recorder(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
+        async def recorder(text, route="auto", web=True, history=None, attachments=None, options=None):
             seen.append(history)
             yield "ok"
 
@@ -206,30 +206,6 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0], [{"role": "user", "content": "first"}, {"role": "assistant", "content": "reply"}])
         self.assertEqual(seen[1], [])
         await h.close()
-
-    async def test_usage_is_sent_as_it_happens_and_the_key_is_never_echoed(self):
-        from omnis_backend.models import UsageEvent
-        configured = []
-
-        async def billed(text, route="auto", web=True, history=None, cloud=None, attachments=None, options=None):
-            yield UsageEvent("claude-haiku-5-5", 100, 20, 0.00002)
-            raise RuntimeError("fails after being billed")
-
-        reader = asyncio.StreamReader()
-        out = []
-        service = Service(reader, lambda data: out.extend(json.loads(l) for l in data.splitlines()),
-                          billed, idle_seconds=0, on_configure=configured.append)
-        task = asyncio.create_task(service.run())
-        reader.feed_data(HELLO + b'{"type":"configure","claude_key":"sk-secret-value"}\n' + ask("r1"))
-        while not any(m["type"] == "error" for m in out):
-            await asyncio.sleep(0.005)
-        self.assertEqual(configured, [{"claude_key": "sk-secret-value"}])
-        usage = [m for m in out if m["type"] == "usage"]
-        self.assertEqual(usage, [{"type": "usage", "id": "r1", "model": "claude-haiku-5-5",
-                                  "input_tokens": 100, "output_tokens": 20, "cost_usd": 0.00002}])
-        self.assertNotIn("sk-secret-value", json.dumps(out))
-        reader.feed_eof()
-        await asyncio.wait_for(task, 2)
 
     async def test_stops_itself_when_idle(self):
         h = Harness(three_words, idle_seconds=0.15)

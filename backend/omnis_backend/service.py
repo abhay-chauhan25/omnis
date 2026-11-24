@@ -9,14 +9,14 @@ from collections.abc import AsyncIterator, Callable
 
 from . import protocol
 from .handlers import MOCK_MODEL
-from .models import AnswerError, AnswerInfo, ToolRequest, UsageEvent
+from .models import AnswerError, AnswerInfo, ToolRequest
 
 # A handler takes the question, the requested route, whether web search is
-# allowed, the earlier turns of the conversation, the app's permission for
-# Claude, and any files attached to the question. It yields pieces of
+# allowed, the earlier turns of the conversation, any files attached to the
+# question, and what the app allows for it. It yields pieces of
 # text, may yield ToolRequests for the app to carry out, and may finish with
 # one AnswerInfo describing what answered.
-Handler = Callable[[str, str, bool, list, dict, list, dict], AsyncIterator["str | AnswerInfo | ToolRequest"]]
+Handler = Callable[[str, str, bool, list, list, dict], AsyncIterator["str | AnswerInfo | ToolRequest"]]
 Writer = Callable[[bytes], None]
 
 EXIT_OK = 0
@@ -37,14 +37,12 @@ class Service:
         handler: Handler,
         idle_seconds: float = 300.0,
         model_name: str = MOCK_MODEL,
-        on_configure: Callable[[dict], None] | None = None,
     ):
         self._reader = reader
         self._write = write
         self._handler = handler
         self._idle_seconds = idle_seconds
         self._model_name = model_name
-        self._on_configure = on_configure
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # (request id, call id) -> the future the handler is waiting on.
         self._tool_waiters: dict[tuple[str, str], asyncio.Future] = {}
@@ -145,12 +143,6 @@ class Service:
             self._send(protocol.error("bad_request", "expected hello first", message.get("id")))
             return
 
-        if kind == "configure":
-            # Never echoed back and never logged.
-            if self._on_configure is not None:
-                self._on_configure({"claude_key": message["claude_key"]})
-            return
-
         request_id = message["id"]
         if kind == "tool_result":
             waiter = self._tool_waiters.pop((request_id, message["call_id"]), None)
@@ -172,23 +164,20 @@ class Service:
         self._tasks[request_id] = asyncio.create_task(
             self._answer(
                 request_id, message["text"], message.get("route", "auto"),
-                message.get("web", True), message.get("history", []), message.get("cloud", {}),
+                message.get("web", True), message.get("history", []),
                 message.get("attachments", []), message.get("options", {}),
             )
         )
 
     async def _answer(
-        self, request_id: str, text: str, route: str, web: bool, history: list, cloud: dict, attachments: list,
+        self, request_id: str, text: str, route: str, web: bool, history: list, attachments: list,
         options: dict,
     ) -> None:
         info: AnswerInfo | None = None
         try:
-            async for piece in self._handler(text, route, web, history, cloud, attachments, options):
+            async for piece in self._handler(text, route, web, history, attachments, options):
                 if isinstance(piece, AnswerInfo):
                     info = piece
-                elif isinstance(piece, UsageEvent):
-                    self._send(protocol.usage(request_id, piece.model, piece.input_tokens,
-                                              piece.output_tokens, piece.cost_usd))
                 elif isinstance(piece, ToolRequest):
                     call_id = uuid.uuid4().hex
                     self._tool_waiters[(request_id, call_id)] = piece.future

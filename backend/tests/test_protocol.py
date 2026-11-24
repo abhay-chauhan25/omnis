@@ -7,14 +7,13 @@ from omnis_backend import protocol
 class DecodeClientTests(unittest.TestCase):
     def test_hello(self):
         self.assertEqual(
-            protocol.decode_client(b'{"type":"hello","protocol":2}'),
-            {"type": "hello", "protocol": 2},
+            protocol.decode_client(b'{"type":"hello","protocol":3}'),
+            {"type": "hello", "protocol": 3},
         )
 
     def test_ask(self):
         got = protocol.decode_client(b'{"type":"ask","id":"a1","text":"hi there"}')
         self.assertEqual(got, {"type": "ask", "id": "a1", "text": "hi there", "route": "auto", "web": True, "history": [],
-                               "cloud": {"allowed": True, "max_usd": 1.0, "reason": ""},
                                "attachments": [], "options": {"personal": False, "calendar": False, "calendar_write": False, "calendar_delete": "none"}})
 
     def test_cancel(self):
@@ -54,17 +53,9 @@ class DecodeClientTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assert_bad(ask(bad))
 
-    def test_configure_carries_the_key_and_nothing_else(self):
-        got = protocol.decode_client(b'{"type":"configure","claude_key":"  sk-test  ","other":"dropped"}')
-        self.assertEqual(got, {"type": "configure", "claude_key": "sk-test"})
-        self.assertEqual(protocol.decode_client(b'{"type":"configure"}'), {"type": "configure", "claude_key": ""})
-        self.assert_bad(b'{"type":"configure","claude_key":5}')
-        self.assert_bad(json.dumps({"type": "configure", "claude_key": "k" * 600}).encode())
-
-    def test_usage_message_shape(self):
-        self.assertEqual(protocol.usage("r", "claude-haiku-5-5", 10, 5, 0.000004), {
-            "type": "usage", "id": "r", "model": "claude-haiku-5-5",
-            "input_tokens": 10, "output_tokens": 5, "cost_usd": 0.000004})
+    def test_the_retired_claude_messages_are_refused(self):
+        self.assert_bad(b'{"type":"configure","claude_key":"sk-test"}')
+        self.assert_bad(b'{"type":"ask","id":"a","text":"hi","route":"claude"}')
 
     def test_attachments_are_checked_and_limited(self):
         def ask(attachments, **extra):
