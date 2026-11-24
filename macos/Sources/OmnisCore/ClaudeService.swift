@@ -649,6 +649,11 @@ public final class ClaudeService: @unchecked Sendable {
             serviceAsked(id: id, tool: tool, input: input, provider: provider, question: current)
             return
         }
+        guard tool.hasPrefix("calendar_") else {
+            // A tool on OMNIS's list for a service that is not set up on this Mac.
+            allow(id, input: ["_result": "That is not available on this Mac right now. Tell the user that OMNIS could not use that service."])
+            return
+        }
         let writing = CalendarTools.writeTools.contains(tool)
         // The model is always given an answer in words, so it can explain or try again.
         func answer(_ text: String) { allow(id, input: ["_result": text]) }

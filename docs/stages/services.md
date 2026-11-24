@@ -1,6 +1,6 @@
 # Services: Reminders, GitHub, Spotify
 
-**Status:** built on 2026-11-24. Tested with stand-ins, and with real Claude for reminders and GitHub. **Not yet run against the user's real Reminders or Spotify**, which need their permission prompts. Independent review pending. Gmail, Messages and the browser are not built: each needs a decision from the user first.
+**Status:** built on 2026-11-24. Tested with stand-ins, and with real Claude for reminders and GitHub. **Not yet run against the user's real Reminders or Spotify**, which need their permission prompts. Reviewed; review findings fixed, fixes not re-reviewed. Gmail, Messages and the browser are not built: each needs a decision from the user first.
 
 The user asked for Gmail (one account), GitHub, Messages, Spotify, the browser and Reminders. These three were built first because they need no new accounts, keys or broad permissions.
 
@@ -34,8 +34,23 @@ These tools are offered to Claude only. The model on this Mac has the calendar t
 
 ## Tests
 
-- Swift 249, Python 154, all passing.
+- Swift 251, Python 154, all passing.
 - Live (`OMNIS_LIVE_TESTS=1 swift test --filter liveServices`): with a made-up reminders list, Claude listed reminders, prepared "call the bank tomorrow at 9am" and "mark the milk one as done" as previews without changing anything, and read GitHub through the real `gh`.
+
+## Review findings
+
+Independent review: pass with warnings. No path reaches a change without the user's click, and no model text reaches an AppleScript or a command.
+
+| Finding | Action |
+|---|---|
+| GitHub lists of about nine or more items were cut off before being read and reported as empty | Fixed. Output is read in full, and a list that cannot be read is said to be unreadable, never empty. |
+| "Delete the milk reminder" was refused in a fresh chat: the delete rule only knew calendar wording | Fixed. Services have their own rule: the user's message must say delete, cancel or remove, whatever is being deleted. |
+| A tool for a service not set up on this Mac answered with a calendar error | Fixed. It says the service is not available. |
+| Marking done or deleting acted on a reminder without checking it still matched the card | Fixed. If its title has changed, or it has gone, nothing is done. |
+| A timed reminder also gets an alert, and a reminder with no list goes to the default list; the card showed neither | Fixed. Both are on the card. |
+| A track name containing "|" was misread; a search with accented letters might not open | Fixed. |
+| Reading reminders or GitHub marks the chat as holding personal information, which also widens when calendar changes are offered | Left as is. A click is still needed for any change. |
+| Pausing a closed Spotify opens it | Left as is. |
 
 ## Limits and things not verified
 

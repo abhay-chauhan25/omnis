@@ -17,6 +17,7 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
     }
     func complete(key: String) async throws { lock.withLock { log.append("complete \(key)") } }
     func delete(key: String) async throws { lock.withLock { log.append("delete \(key)") } }
+    func title(of key: String) async throws -> String? { items.first { $0.key == key }?.title }
 }
 
 @Suite struct ServicesTests {
@@ -42,7 +43,9 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
             tool: "reminders_add", arguments: ["title": "Renew passport", "due": "2026-12-01T09:30", "list": "work", "notes": "Bring photos"],
             access: ToolAccess())))
         #expect(added.heading == "New reminder" && added.title == "Renew passport" && added.confirmLabel == "Add Reminder")
-        #expect(added.rows.map(\.label) == ["Due", "List", "Notes"] && added.rows[1].value == "Work")
+        #expect(added.rows.map(\.label) == ["Due", "Alert", "List", "Notes"] && added.rows[2].value == "Work")
+        let plain = try #require(proposal(try await tools.run(tool: "reminders_add", arguments: ["title": "x", "due": "2026-12-01"], access: ToolAccess())))
+        #expect(plain.rows.map(\.label) == ["Due", "List"] && plain.rows[1].value == "your default list")
         #expect(store.calls.isEmpty)                                                  // nothing happens until it is confirmed
         #expect(try await tools.perform(added) == "Added to Work")
         #expect(store.calls.count == 1 && store.calls[0].hasPrefix("add Renew passport | ") && store.calls[0].hasSuffix("| true | Work | Bring photos"))
@@ -57,6 +60,15 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         let removed = try #require(proposal(try await tools.run(tool: "reminders_delete", arguments: ["reminder": "r2"], access: ToolAccess(deletes: true))))
         #expect(removed.destructive && removed.warning == "This cannot be undone." && removed.confirmLabel == "Delete Reminder")
         #expect(try await tools.perform(removed) == "Deleted")
+
+        // A reminder that changed, or went, after it was listed is not touched.
+        let stale = try #require(proposal(try await tools.run(tool: "reminders_complete", arguments: ["reminder": "r1"], access: ToolAccess())))
+        store.items[0] = ReminderItem(key: "k2", title: "Something else entirely", list: "Work")
+        let before = store.calls.count
+        await #expect(throws: ToolRefusal("that reminder has changed since it was listed. Ask for your reminders again")) { try await tools.perform(stale) }
+        store.items.removeAll { $0.key == "k2" }
+        await #expect(throws: ToolRefusal("that reminder no longer exists")) { try await tools.perform(stale) }
+        #expect(store.calls.count == before)
 
         for bad in [["title": " "], ["title": "x", "due": "soon"], ["title": "x", "list": "Nope"]] {
             await #expect(throws: ToolRefusal.self, "\(bad)") { try await tools.run(tool: "reminders_add", arguments: bad, access: ToolAccess()) }
@@ -88,6 +100,19 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         }
         await #expect(throws: ToolRefusal.self) { try await tools.perform(ActionProposal(service: "github", kind: "x", heading: "x", title: "x", confirmLabel: "x", payload: [:])) }
 
+        // A long list is read in full, a notice before it is skipped, and a list that cannot be read is never called empty.
+        let many = (1...15).map { #"{"number":\#($0),"repository":{"name":"application","nameWithOwner":"someone/application"},"title":"A realistic pull request title number \#($0) with detail"}"# }
+        let busy = GitHubTools(gh: URL(fileURLWithPath: "/fake/gh")) { _, arguments, _ in
+            if arguments.contains("--author") { return CommandResult(status: 0, output: "A new release of gh is available\n[" + many.joined(separator: ",") + "]") }
+            if arguments.contains("--assignee") { return CommandResult(status: 0, output: "{broken") }
+            return CommandResult(status: 0, output: "[]")
+        }
+        guard case .read(let full, _) = try await busy.run(tool: "github_overview", arguments: [:], access: ToolAccess()) else { Issue.record("not a read"); return }
+        #expect(full.components(separatedBy: "someone/application#").count == 16)
+        #expect(full.contains("#15: A realistic pull request title number 15"))
+        #expect(full.contains("Open issues assigned to you:\n(this list could not be read"))
+        #expect(full.contains("Pull requests waiting for your review:\n(none)"))
+
         let down = GitHubTools(gh: URL(fileURLWithPath: "/fake/gh")) { _, _, _ in CommandResult(status: 1, output: "error: not logged in") }
         await #expect(throws: ToolRefusal.self) { try await down.run(tool: "github_overview", arguments: [:], access: ToolAccess()) }
     }
@@ -96,13 +121,13 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         let calls = Collected<[String]>()
         let tools = SpotifyTools { program, arguments, _ in
             calls.add([program.lastPathComponent] + arguments)
-            if arguments.last?.contains("player state") == true { return CommandResult(status: 0, output: "playing|Song \"A\"|The Band|Album\n") }
+            if arguments.last?.contains("player state") == true { return CommandResult(status: 0, output: "playing\u{1F}Song | \"A\"\u{1F}The Band\n") }
             return CommandResult(status: 0, output: "")
         }
         guard case .read(let playing, _) = try await tools.run(tool: "spotify_now_playing", arguments: [:], access: ToolAccess()) else {
             Issue.record("not a read"); return
         }
-        #expect(playing == "Playing: Song \"A\" by The Band.")
+        #expect(playing == "Playing: Song | \"A\" by The Band.")
 
         guard case .done(let result, let note) = try await tools.run(tool: "spotify_control", arguments: ["action": "NEXT"], access: ToolAccess()) else {
             Issue.record("not done"); return
@@ -117,6 +142,8 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         _ = try await tools.run(tool: "spotify_search", arguments: ["query": "daft punk\"; open /etc"], access: ToolAccess())
         #expect(calls.values.count == before + 1)
         #expect(calls.values.last == ["open", "spotify:search:daft%20punk%22%3B%20open%20%2Fetc"])
+        _ = try await tools.run(tool: "spotify_search", arguments: ["query": "café"], access: ToolAccess())
+        #expect(calls.values.last == ["open", "spotify:search:caf%C3%A9"])
         #expect(SpotifyTools.scripts.values.allSatisfy { $0.hasPrefix("tell application \"Spotify\" to ") })
 
         let blocked = SpotifyTools { _, _, _ in CommandResult(status: 1, output: "execution error: Not authorised to send Apple events to Spotify. (-1743)") }
@@ -147,6 +174,22 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         do { let got = chat.declineAction(action.id); #expect(!got) }
         chat.updateAction(action.id) { $0.state = .failed("no access") }
         do { let got = chat.beginAction(action.id); #expect(got != nil) }      // a failed one can be tried again
+    }
+
+    @Test func deletingThroughAServiceNeedsTheUsersOwnWordsWhateverIsDeleted() {
+        var chat = Conversation()
+        // A fresh chat, nothing about the calendar: saying delete is enough.
+        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess(deletes: true))
+        #expect(chat.serviceAccess(for: "yes, that one") == ToolAccess(deletes: true))       // answering a question about it
+        #expect(chat.serviceAccess(for: "thanks") == ToolAccess())
+        for text in ["what reminders do I have", "mark the milk one as done", "update me on Friday", "change the wording"] {
+            #expect(chat.serviceAccess(for: text) == ToolAccess(), "\(text)")
+        }
+        // Never in a chat that holds a file.
+        _ = chat.begin(question: "summarise", attachments: [Attachment(kind: .text, name: "a.txt", text: "x")])
+        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess())
+        chat.clear()
+        #expect(chat.serviceAccess(for: "remove that reminder").deletes)
     }
 
     @Test func toolValuesAndDatesAreReadPlainly() {

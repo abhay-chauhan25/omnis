@@ -454,7 +454,7 @@ final class ChatModel: ObservableObject {
             )
             // A new project may be prepared only when your own message asks for one.
             // Deleting through any service needs your own message to have asked for it.
-            request.toolAccess = ToolAccess(deletes: offer.deletes != .none, sends: false)
+            request.toolAccess = conversation.serviceAccess(for: options.text)
             request.allowProject = projectSetup != nil && attachments.isEmpty && conversation.offersProject(for: options.text)
             stream = claude.ask(request)
         }

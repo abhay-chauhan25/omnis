@@ -157,7 +157,7 @@ public enum Commands {
                     return
                 }
                 continuation.resume(returning: CommandResult(status: process.terminationStatus,
-                                                             output: String(String(decoding: data, as: UTF8.self).suffix(1200))))
+                                                             output: String(String(decoding: data, as: UTF8.self).suffix(2_000_000))))
             }
         }
     }

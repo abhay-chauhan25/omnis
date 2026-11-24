@@ -21,7 +21,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Calendar, full control (change, delete, calendars) | Built and reviewed 2026-11-17; review findings fixed, fixes not re-reviewed; no real change made yet; waiting for the user's test | ADR-0012, `docs/stages/calendar-full-control.md` |
 | Claude as the default (regular mode) | Built, tested live and reviewed 2026-11-23; review findings fixed, fixes not re-reviewed; controls not yet seen on screen | ADR-0013, `docs/stages/claude-regular-mode.md` |
 | Project mode (setup, terminals, advisor, following along) | All stages built 2026-11-24; core tested, advisor tested live; reviewed, findings fixed; the view not yet seen on screen and no real project set up | ADR-0014, `docs/stages/project-mode.md` |
-| Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; not yet run against the real Reminders or Spotify; review pending | `docs/stages/services.md` |
+| Services: Reminders, GitHub (read), Spotify | Built 2026-11-24; tested with stand-ins and live through Claude; reviewed, findings fixed; not yet run against the real Reminders or Spotify | `docs/stages/services.md` |
 | Services: Gmail, Messages, browser | Not started. Each needs a decision from the user | — |
 | Dashboard (main window) | First version built 2026-11-23 from the approved mock; waiting for the user's look; review pending. Voice and mail not built | `docs/stages/dashboard.md` |
 
@@ -29,7 +29,7 @@ The walkthrough for everything built on 2026-11-17 is `docs/stages/stage-1b-sear
 
 ## Tests
 
-- Python: 154. Swift: 249. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 154. Swift: 251. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items

@@ -296,7 +296,8 @@ final class Collected<Value: Sendable>: @unchecked Sendable {
         // A service that is not set up on this Mac answers in words.
         let missing = try await trace(claude.ask(ClaudeRequest(text: #"tool: mcp__omnis__spotify_control {"action": "pause"}"#,
                                                                access: CalendarToolAccess(calendar: true))))
-        #expect(missing.text.contains("TOOL SAID") && !missing.events.contains { if case .serviceNote = $0 { return true } else { return false } })
+        #expect(missing.text.contains("TOOL SAID: That is not available on this Mac right now"))
+        #expect(!missing.events.contains { if case .calendarFailed = $0 { return true } else { return false } })
         #expect(ClaudeConfig.isExpected(tool: "mcp__omnis__reminders_add") && ClaudeConfig.isExpected(tool: "mcp__omnis__spotify_control")
                 && !ClaudeConfig.isExpected(tool: "mcp__omnis__shell_run"))
         claude.endSession()

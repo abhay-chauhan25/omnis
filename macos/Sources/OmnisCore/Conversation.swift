@@ -197,6 +197,19 @@ public struct Conversation: Equatable, Sendable {
 
     // MARK: Changes from other services
 
+    private var serviceDeleteNext = false
+
+    /// What the other services may do for this message. Deleting needs the
+    /// user's own words to say delete, cancel or remove (or to answer a
+    /// question straight after saying so), whatever is being deleted, and is
+    /// never allowed in a chat that holds a file.
+    public mutating func serviceAccess(for text: String) -> ToolAccess {
+        let asks = PersonalIntent.asksToDelete(text)
+        let deletes = !hasFile && (asks || serviceDeleteNext)
+        serviceDeleteNext = asks && !hasFile
+        return ToolAccess(deletes: deletes, sends: false)
+    }
+
     /// Adds a proposed change to an answer. The same change twice is shown once.
     public mutating func add(_ action: ActionProposal, to answerID: UUID) {
         guard let target = messages.firstIndex(where: { $0.id == answerID }),
@@ -428,6 +441,7 @@ public struct Conversation: Equatable, Sendable {
         deleteNext = false
         hasFile = false
         offerProjectNext = false
+        serviceDeleteNext = false
     }
 
     /// The most history sent with one question, matching what the backend accepts.

@@ -28,6 +28,8 @@ public protocol ReminderStoring: Sendable {
     func add(title: String, due: Date?, dueHasTime: Bool, list: String?, notes: String?) async throws -> String
     func complete(key: String) async throws
     func delete(key: String) async throws
+    /// The reminder's title as it is now, or nil if it no longer exists.
+    func title(of key: String) async throws -> String?
 }
 
 public final class RemindersTools: AssistantTools, @unchecked Sendable {
@@ -78,7 +80,10 @@ public final class RemindersTools: AssistantTools, @unchecked Sendable {
                 payload["due"] = String(due.date.timeIntervalSince1970)
                 payload["dueHasTime"] = due.hasTime ? "true" : "false"
                 rows.append(ChangeRow("Due", Self.when(ReminderItem(key: "", title: title, due: due.date, dueHasTime: due.hasTime)) ?? ""))
+                // A reminder with a time also alerts you then. The card says so.
+                if due.hasTime { rows.append(ChangeRow("Alert", "at that time")) }
             }
+            if arguments["list"] == nil { rows.append(ChangeRow("List", "your default list")) }
             if let list = arguments["list"].map(CalendarFormatter.clean), !list.isEmpty {
                 let lists = try await store.lists()
                 guard let match = lists.first(where: { $0.caseInsensitiveCompare(list) == .orderedSame }) else {
@@ -110,7 +115,8 @@ public final class RemindersTools: AssistantTools, @unchecked Sendable {
                 heading: deleting ? "Delete reminder" : "Mark as done", title: CalendarFormatter.clean(item.title), rows: rows,
                 warning: deleting ? "This cannot be undone." : nil,
                 confirmLabel: deleting ? "Delete Reminder" : "Mark as Done", declineLabel: deleting ? "Don't Delete" : "Not Yet",
-                destructive: deleting, payload: ["action": deleting ? "delete" : "complete", "key": key]))
+                destructive: deleting,
+                payload: ["action": deleting ? "delete" : "complete", "key": key, "title": CalendarFormatter.clean(item.title)]))
         default:
             throw ToolRefusal("that is not something OMNIS can do with reminders")
         }
@@ -124,12 +130,19 @@ public final class RemindersTools: AssistantTools, @unchecked Sendable {
             let list = try await store.add(title: payload["title"] ?? "", due: due, dueHasTime: payload["dueHasTime"] == "true",
                                            list: payload["list"], notes: payload["notes"])
             return list.isEmpty ? "Added" : "Added to \(list)"
-        case "complete":
-            try await store.complete(key: payload["key"] ?? "")
+        case "complete", "delete":
+            // If it has changed since it was listed, the card no longer says what would happen.
+            let key = payload["key"] ?? ""
+            guard let current = try await store.title(of: key) else { throw ToolRefusal("that reminder no longer exists") }
+            guard CalendarFormatter.clean(current) == payload["title"] else {
+                throw ToolRefusal("that reminder has changed since it was listed. Ask for your reminders again")
+            }
+            if payload["action"] == "delete" {
+                try await store.delete(key: key)
+                return "Deleted"
+            }
+            try await store.complete(key: key)
             return "Marked as done"
-        case "delete":
-            try await store.delete(key: payload["key"] ?? "")
-            return "Deleted"
         default:
             throw ToolRefusal("that could not be carried out")
         }
@@ -215,6 +228,11 @@ public final class EventKitReminders: ReminderStoring, @unchecked Sendable {
         try await ensureAccess()
         try store.remove(try find(key), commit: true)
     }
+
+    public func title(of key: String) async throws -> String? {
+        try await ensureAccess()
+        return (store.calendarItem(withIdentifier: key) as? EKReminder)?.title
+    }
 }
 
 // MARK: - GitHub
@@ -232,8 +250,12 @@ public final class GitHubTools: AssistantTools, Sendable {
         self.runner = run
     }
 
-    static func lines(from output: String) -> [String] {
-        guard let items = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [[String: Any]] else { return [] }
+    /// The entries in one search result, or nil if the output could not be
+    /// read: that must never be mistaken for "nothing there".
+    static func lines(from output: String) -> [String]? {
+        // Anything `gh` printed before the list, such as a notice, is skipped.
+        guard let start = output.firstIndex(of: "["),
+              let items = try? JSONSerialization.jsonObject(with: Data(output[start...].utf8)) as? [[String: Any]] else { return nil }
         return items.prefix(15).compactMap { item in
             guard let title = item["title"] as? String, let number = (item["number"] as? NSNumber)?.intValue else { return nil }
             let repository = (item["repository"] as? [String: Any])?["nameWithOwner"] as? String ?? ""
@@ -254,7 +276,10 @@ public final class GitHubTools: AssistantTools, Sendable {
         let titles = ["Pull requests waiting for your review", "Your open pull requests", "Open issues assigned to you"]
         var sections: [String] = []
         for (index, result) in results.enumerated() {
-            let found = result.status == 0 ? Self.lines(from: result.output) : []
+            guard result.status == 0, let found = Self.lines(from: result.output) else {
+                sections.append("\(titles[index]):\n(this list could not be read; say so, do not say it is empty)")
+                continue
+            }
             sections.append("\(titles[index]):\n" + (found.isEmpty ? "(none)" : found.map { "- \($0)" }.joined(separator: "\n")))
         }
         return .read(content: ToolArguments.fenced("From the user's GitHub.", sections.joined(separator: "\n\n")), note: "Checked GitHub")
@@ -292,7 +317,8 @@ public final class SpotifyTools: AssistantTools, Sendable {
     if application "Spotify" is running then
         tell application "Spotify"
             if player state is stopped then return "nothing"
-            return (player state as string) & "|" & (name of current track) & "|" & (artist of current track) & "|" & (album of current track)
+            set gap to (ASCII character 31)
+            return (player state as string) & gap & (name of current track) & gap & (artist of current track)
         end tell
     else
         return "closed"
@@ -313,7 +339,8 @@ public final class SpotifyTools: AssistantTools, Sendable {
         let state = try await script(Self.nowPlaying)
         if state == "closed" { return "Spotify is not open." }
         if state == "nothing" { return "Nothing is playing in Spotify." }
-        let parts = state.components(separatedBy: "|")
+        // The parts are separated by a character that cannot appear in a title.
+        let parts = state.components(separatedBy: "\u{1F}")
         guard parts.count >= 3 else { return "Spotify is open." }
         let track = "\(CalendarFormatter.clean(parts[1])) by \(CalendarFormatter.clean(parts[2]))"
         return parts[0] == "playing" ? "Playing: \(track)." : "Paused on: \(track)."
@@ -333,7 +360,8 @@ public final class SpotifyTools: AssistantTools, Sendable {
             return .done(content: "Done. \(now)", note: "Controlled Spotify")
         case "spotify_search":
             let query = CalendarFormatter.clean(arguments["query"] ?? "")
-            guard !query.isEmpty, let encoded = query.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+            guard !query.isEmpty, let encoded = query.addingPercentEncoding(withAllowedCharacters: plain) else {
                 throw ToolRefusal("say what to search for")
             }
             // Handed to `open` as one argument. Only a spotify: address is ever built.
