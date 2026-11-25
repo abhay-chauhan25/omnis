@@ -139,7 +139,12 @@ final class NotchWindowController {
             let rect = geometry.open(width: openWidth, height: openHeight)
             let frame = NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
             if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
-        } else if panel.frame.height > geometry.resting.height + 1, shrink == nil {
+        } else if panel.frame.height <= geometry.resting.height + 1 {
+            // Already small, or not yet placed at all (as when OMNIS has just started): sit at the notch.
+            let resting = geometry.resting
+            let frame = NSRect(x: resting.x, y: resting.y, width: resting.width, height: resting.height)
+            if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+        } else if shrink == nil {
             // The panel is slipping away: the window keeps its size until it has gone, so the
             // movement is not cut off, then takes up only the strip at the notch again.
             closing += 1
