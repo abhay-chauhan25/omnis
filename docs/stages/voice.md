@@ -109,6 +109,14 @@ An independent review read the change before it was committed. All of these were
 | The web-search question could be asked after half a sentence | Only whole sentences are said before it |
 | Opening apps was allowed unless refused | Refused unless allowed, and allowed only in a chat with no file |
 
+### Crash when AirPods connected (found by the user, 2026-11-26)
+
+OMNIS quit a minute after the user put AirPods in. The system log showed why: the microphone had changed to one channel at 24 kHz, and OMNIS asked the audio engine to listen in the form it had before (six channels at 48 kHz, left from echo cancelling). Apple's engine reports that by raising an Objective-C exception, which Swift cannot catch; it unwound through Swift code and the app crashed on the next click.
+
+Fixed three ways. A new audio engine is made each time listening starts or changes, so nothing is remembered of a microphone that has gone. The microphone's form is no longer asked for: the tap takes what it is given and converts from that. And every call into the audio engine goes through a few lines of Objective-C (`OmnisObjC`) that catch such an exception and hand it back as an ordinary error. After a microphone change, listening is tried three times over a few seconds before voice gives up and says why.
+
+Not verified: this has not been run with AirPods by the assistant. The exception guard itself is tested.
+
 ### Finding faults
 
 `OMNIS --voice-trace <file>` writes what voice hears, says and does to a file, with times. It holds spoken words, so it is written only when OMNIS is started that way, and the file should be deleted afterwards. How long the first words took is also in the Activity log (`voice_timing`), as a number and nothing else.

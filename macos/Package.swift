@@ -28,8 +28,10 @@ let package = Package(
         // The helper that is given Full Disk Access instead of OMNIS.
         .executableTarget(name: "OmnisMessagesReader", dependencies: ["MessagesReaderCore"]),
         // The popup, hotkey, menu-bar item and Dock presence.
-        .executableTarget(name: "OmnisApp", dependencies: ["OmnisCore", "OmnisHelperLink", .product(name: "SwiftTerm", package: "SwiftTerm")]),
-        .testTarget(name: "OmnisCoreTests", dependencies: ["OmnisCore", "OmnisHelperLink", "MessagesReaderCore"]),
+        // A few lines of Objective-C: the only way to catch the exceptions Apple's audio engine raises.
+        .target(name: "OmnisObjC"),
+        .executableTarget(name: "OmnisApp", dependencies: ["OmnisCore", "OmnisHelperLink", "OmnisObjC", .product(name: "SwiftTerm", package: "SwiftTerm")]),
+        .testTarget(name: "OmnisCoreTests", dependencies: ["OmnisCore", "OmnisHelperLink", "MessagesReaderCore", "OmnisObjC"]),
     ],
     swiftLanguageModes: [.v5]
 )

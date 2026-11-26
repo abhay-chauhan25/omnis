@@ -1,4 +1,5 @@
 import Foundation
+import OmnisObjC
 import Testing
 @testable import OmnisCore
 
@@ -429,5 +430,18 @@ import Testing
         #expect(ClaudeRouter.choose(text: "hello", model: .sonnet, spoken: true).model == .sonnet)
         #expect(ClaudeRouter.choose(text: "hello", effort: .high, spoken: true).effort == "high")
         #expect(ClaudeRouter.choose(text: "hello").model == .sonnet)
+    }
+}
+
+@Suite struct AudioExceptionTests {
+    // Apple's audio engine reports some failures by raising an exception Swift cannot catch
+    // (a microphone that changed form when AirPods connected crashed OMNIS this way).
+    @Test func anObjectiveCExceptionIsCaughtAndHandedBackRatherThanUnwindingThroughSwift() {
+        let raised = OmnisCatch {
+            NSException(name: .internalInconsistencyException, reason: "Failed to create tap due to format mismatch", userInfo: nil).raise()
+        }
+        #expect(raised?.reason == "Failed to create tap due to format mismatch")
+        var ran = false
+        #expect(OmnisCatch { ran = true } == nil && ran)
     }
 }

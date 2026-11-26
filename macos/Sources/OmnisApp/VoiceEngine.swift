@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import OmnisCore
+import OmnisObjC
 import Speech
 
 enum VoiceProblem: Error, LocalizedError {
@@ -40,7 +41,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     var trace: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
 
-    private let audio = AVAudioEngine()
+    /// Made afresh each time listening starts or changes, so it always takes the microphone as it now is.
+    private var audio = AVAudioEngine()
     private var analyzer: SpeechAnalyzer?
     private var feed: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
@@ -154,14 +156,13 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         soundTime = 0
         fed.reset()
         echoCancelling = false
-        try installTap()
         do {
-            audio.prepare()
-            try audio.start()
+            try startAudio(cancelling: false)
             try await analyzer.start(inputSequence: stream)
         } catch {
             // Only this start's own things are undone: a newer start may already be using the microphone.
             if mine == session { teardown() } else { continuation.finish() }
+            if error is VoiceProblem { throw error }
             throw VoiceProblem.couldNotStart(error.localizedDescription)
         }
         // Switched off, or started afresh, while this one was starting. `stop` has already let go of
@@ -172,9 +173,11 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             throw CancellationError()
         }
         isRunning = true
-        deviceWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio, queue: .main) { [weak self] _ in
+        deviceWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+            let from = note.object as AnyObject?
             Task { @MainActor in
-                guard let self, self.isRunning, mine == self.session, !self.reconfiguring else { return }
+                // Only the engine in use now counts, and not a change OMNIS is making itself.
+                guard let self, self.isRunning, mine == self.session, !self.reconfiguring, from === self.audio else { return }
                 self.onDeviceChange?()
             }
         }
@@ -198,27 +201,42 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
-    /// Puts the microphone's sound through to the recogniser, in the form it wants.
-    private func installTap() throws {
-        guard let wanted, let continuation = feed else { throw VoiceProblem.couldNotStart("listening was not set up") }
-        let input = audio.inputNode
-        let native = input.outputFormat(forBus: 0)
-        guard native.sampleRate > 0, native.channelCount > 0, let converter = AVAudioConverter(from: native, to: wanted) else {
-            throw VoiceProblem.couldNotStart("no microphone was found")
+    /// Turns what the microphone gives into what the recogniser wants. The
+    /// microphone's own form is read from the sound itself, because it changes
+    /// with the device: built-in, AirPods, and echo cancelling all differ.
+    private final class Feeder: @unchecked Sendable {
+        private let wanted: AVAudioFormat
+        private let feed: AsyncStream<AnalyzerInput>.Continuation
+        private let fed: FedClock
+        private var converter: AVAudioConverter?
+        private var from: AVAudioFormat?
+
+        init(wanted: AVAudioFormat, feed: AsyncStream<AnalyzerInput>.Continuation, fed: FedClock) {
+            self.wanted = wanted
+            self.feed = feed
+            self.fed = fed
         }
-        // Some microphones give several channels at once; the first is the voice.
-        if native.channelCount > 1 { converter.channelMap = Array(repeating: 0, count: Int(wanted.channelCount)) }
-        let fed = self.fed
-        input.installTap(onBus: 0, bufferSize: 4096, format: native) { [weak self] buffer, _ in
-            // Loudness, for the picture on screen.
+
+        /// Called on the audio thread, by one tap at a time. Returns how loud the sound was.
+        func take(_ buffer: AVAudioPCMBuffer) -> Double {
+            let native = buffer.format
+            guard native.sampleRate > 0, native.channelCount > 0, buffer.frameLength > 0 else { return 0 }
             var level = 0.0
-            if let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 {
+            if let samples = buffer.floatChannelData?[0] {
                 var sum: Float = 0
                 for index in 0..<Int(buffer.frameLength) { sum += samples[index] * samples[index] }
                 level = min(1, Double((sum / Float(buffer.frameLength)).squareRoot()) * 6)
             }
+            if converter == nil || from != native {
+                converter = AVAudioConverter(from: native, to: wanted)
+                // Some microphones give several channels at once; the first is the voice.
+                if native.channelCount > 1 { converter?.channelMap = Array(repeating: 0, count: Int(wanted.channelCount)) }
+                from = native
+            }
             let ratio = wanted.sampleRate / native.sampleRate
-            guard let converted = AVAudioPCMBuffer(pcmFormat: wanted, frameCapacity: AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32) else { return }
+            guard let converter, let converted = AVAudioPCMBuffer(pcmFormat: wanted, frameCapacity: AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32) else {
+                return level
+            }
             var handed = false
             var failure: NSError?
             converter.convert(to: converted, error: &failure) { _, status in
@@ -231,13 +249,59 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
                 return buffer
             }
             if failure == nil, converted.frameLength > 0 {
-                continuation.yield(AnalyzerInput(buffer: converted))
+                feed.yield(AnalyzerInput(buffer: converted))
                 fed.add(Double(converted.frameLength) / wanted.sampleRate)
             }
-            Task { @MainActor [weak self] in
-                guard let self, !self.speaking else { return }
-                self.onLevel?(level)
+            return level
+        }
+    }
+
+    /// Runs one of Apple's audio calls. A failure they report by raising an
+    /// exception comes back as an ordinary error instead.
+    private func guarded(_ work: () throws -> Void) throws {
+        var thrown: Error?
+        let raised = OmnisCatch {
+            do { try work() } catch { thrown = error }
+        }
+        if let raised { throw VoiceProblem.couldNotStart(raised.reason ?? raised.name.rawValue) }
+        if let thrown { throw thrown }
+    }
+
+    /// Lets go of the microphone. Nothing here can fail in a way that matters.
+    private func stopAudio() {
+        let old = audio
+        _ = OmnisCatch {
+            old.inputNode.removeTap(onBus: 0)
+            old.stop()
+        }
+    }
+
+    /// Starts listening on the microphone as it now is, with or without echo cancelling.
+    private func startAudio(cancelling: Bool) throws {
+        guard let wanted, let continuation = feed else { throw VoiceProblem.couldNotStart("listening was not set up") }
+        stopAudio()
+        // A new engine, so nothing is remembered of a microphone that has since changed.
+        let fresh = AVAudioEngine()
+        audio = fresh
+        let feeder = Feeder(wanted: wanted, feed: continuation, fed: fed)
+        try guarded {
+            let input = fresh.inputNode
+            if cancelling {
+                try input.setVoiceProcessingEnabled(true)
+                input.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
             }
+            guard input.outputFormat(forBus: 0).sampleRate > 0 else { throw VoiceProblem.couldNotStart("no microphone was found") }
+            // No form is asked for: the tap takes whatever the microphone gives.
+            input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+                let level = feeder.take(buffer)
+                Task { @MainActor [weak self] in
+                    guard let self, !self.speaking else { return }
+                    self.onLevel?(level)
+                }
+            }
+            fresh.prepare()
+            try fresh.start()
         }
     }
 
@@ -251,29 +315,15 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         reconfigurations += 1
         let change = reconfigurations
         let mine = session
-        audio.inputNode.removeTap(onBus: 0)
-        audio.stop()
-        func begin(_ wantsCancelling: Bool) throws {
-            try audio.inputNode.setVoiceProcessingEnabled(wantsCancelling)
-            if wantsCancelling {
-                audio.inputNode.voiceProcessingOtherAudioDuckingConfiguration =
-                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
-            }
-            try installTap()
-            audio.prepare()
-            try audio.start()
-        }
         do {
-            try begin(on)
+            try startAudio(cancelling: on)
             echoCancelling = on
-            trace?("echo cancelling \(on ? "on" : "off"), microphone \(audio.inputNode.outputFormat(forBus: 0).channelCount) channel(s)")
+            trace?("echo cancelling \(on ? "on" : "off"), microphone \(audio.inputNode.outputFormat(forBus: 0))")
         } catch {
             trace?("echo cancelling could not be turned \(on ? "on" : "off"): \(error.localizedDescription)")
             // Back to plain listening, which is what worked before.
-            audio.inputNode.removeTap(onBus: 0)
-            audio.stop()
             echoCancelling = false
-            do { try begin(false) } catch {
+            do { try startAudio(cancelling: false) } catch {
                 reconfiguring = false
                 onProblem?("Listening stopped: \(error.localizedDescription)")
                 return
@@ -302,9 +352,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         pauseTask?.cancel()
         resultsTask?.cancel()
         resultsTask = nil
-        audio.inputNode.removeTap(onBus: 0)
-        audio.stop()
-        if echoCancelling { try? audio.inputNode.setVoiceProcessingEnabled(false) }
+        stopAudio()
         echoCancelling = false
         reconfiguring = false
         feed?.finish()

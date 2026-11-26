@@ -130,15 +130,31 @@ final class VoiceModel: ObservableObject {
             self.run(self.flow.interrupt())
             self.engine.stop()
             Task {
-                do {
-                    try await self.engine.start()
-                    // Listening starts again without echo cancelling: it is put back if a conversation is going on.
-                    if self.talkOver, self.inConversation { self.engine.setEchoCancelling(true) }
-                    self.engine.allowsInterruption = self.talkOver && self.engine.echoCancelling && self.flow.canBeInterrupted
-                } catch is CancellationError {} catch {
-                    self.problem = error.localizedDescription
-                    self.isOn = false
+                // A microphone that has just appeared, such as AirPods, takes a moment to be ready.
+                // It is tried a few times before voice gives up and says why.
+                var failure: Error?
+                for wait in [0.6, 1.2, 2.5] {
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    guard self.isOn else { return }
+                    do {
+                        try await self.engine.start()
+                        failure = nil
+                        break
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        failure = error
+                        self.engine.stop()
+                    }
                 }
+                if let failure {
+                    self.problem = failure.localizedDescription
+                    self.isOn = false
+                    return
+                }
+                // Listening starts again without echo cancelling: it is put back if a conversation is going on.
+                if self.talkOver, self.inConversation { self.engine.setEchoCancelling(true) }
+                self.engine.allowsInterruption = self.talkOver && self.engine.echoCancelling && self.flow.canBeInterrupted
             }
         }
         engine.onBargeIn = { [weak self] in
