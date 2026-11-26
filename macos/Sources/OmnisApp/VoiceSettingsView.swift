@@ -50,12 +50,23 @@ struct VoiceSettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 6) {
                 Text("Speaking voice").font(.system(size: 13, weight: .semibold))
-                Text(voice.voiceName).font(.system(size: 12))
+                Picker("Voice", selection: $voice.usesSystemVoice) {
+                    Text("The Mac's System Voice (Siri)").tag(true)
+                    Text("Best other voice installed").tag(false)
+                }
+                .labelsHidden().accessibilityLabel("Which voice OMNIS talks in")
+                HStack {
+                    Text(voice.voiceName).font(.system(size: 12))
+                    Spacer()
+                    Button("Hear it") { voice.sampleVoice() }.controlSize(.small)
+                }
                 Picker("Pace", selection: $voice.speed) {
                     ForEach(VoiceModel.speeds, id: \.value) { pace in Text(pace.title).tag(pace.value) }
                 }
                 .pickerStyle(.segmented).labelsHidden().accessibilityLabel("How fast OMNIS talks")
-                Text("OMNIS uses the best English female voice installed. Better ones are a free download: System Settings, Accessibility, Spoken Content, System Voice, Manage Voices. Look for one marked Premium, such as Ava or Zoe.")
+                Text(voice.usesSystemVoice
+                     ? "Apple lets an app use a Siri voice only as the Mac's System Voice. To choose one: System Settings, Accessibility, Spoken Content, System Voice, and pick Siri (Voice 1). OMNIS then talks in it."
+                     : "OMNIS uses the best English female voice installed. Better ones are a free download: System Settings, Accessibility, Spoken Content, System Voice, Manage Voices. Look for one marked Premium, such as Ava or Zoe.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button("Open Accessibility Settings") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess") { NSWorkspace.shared.open(url) }

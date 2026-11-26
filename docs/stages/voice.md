@@ -125,6 +125,12 @@ The recogniser is now asked for the moment each word was said. When the user tal
 
 A word of the user's said over OMNIS that happens to be one OMNIS was also saying is lost. Not verified with a microphone by the assistant.
 
+### A Siri voice (asked for by the user, 2026-11-26)
+
+The user asked for Siri (Voice 1). Apple does not offer Siri voices to apps by name: none is in the list an app can choose from. The one way to talk in one is to use whatever is set as the Mac's System Voice, through Apple's older speaking interface. So the voice settings now offer "The Mac's System Voice (Siri)", which is the default, beside "Best other voice installed", and a "Hear it" button. The user picks Siri (Voice 1) in System Settings, Accessibility, Spoken Content, System Voice.
+
+The System Voice says one sentence at a time, so OMNIS keeps the rest in line itself. Not verified: nobody has heard it yet, and it is not known whether the pace setting or the moving dots work with a Siri voice.
+
 ### Finding faults
 
 `OMNIS --voice-trace <file>` writes what voice hears, says and does to a file, with times. It holds spoken words, so it is written only when OMNIS is started that way, and the file should be deleted afterwards. How long the first words took is also in the Activity log (`voice_timing`), as a number and nothing else.

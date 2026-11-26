@@ -22,7 +22,15 @@ final class VoiceModel: ObservableObject {
     @Published var persona: VoicePersona {
         didSet { if let data = try? JSONEncoder().encode(persona) { UserDefaults.standard.set(data, forKey: Self.personaKey) } }
     }
-    @Published private(set) var voiceName = VoiceEngine.voiceDescription()
+    @Published private(set) var voiceName = ""
+    /// True to talk in the Mac's System Voice, which is how a Siri voice is used.
+    @Published var usesSystemVoice: Bool {
+        didSet {
+            UserDefaults.standard.set(usesSystemVoice, forKey: Self.systemVoiceKey)
+            engine.usesSystemVoice = usesSystemVoice
+            voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
+        }
+    }
     /// Whether talking over OMNIS stops it. While this is on, the Mac's echo
     /// cancelling is used during a conversation so OMNIS hears less of itself.
     @Published var talkOver: Bool {
@@ -36,6 +44,8 @@ final class VoiceModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(speed, forKey: Self.speedKey)
             engine.speed = speed
+        engine.usesSystemVoice = usesSystemVoice
+        voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
         }
     }
     static let speeds: [(title: String, value: Double)] = [("Usual", 1.0), ("A little faster", 1.08), ("Faster", 1.16)]
@@ -71,6 +81,7 @@ final class VoiceModel: ObservableObject {
     private static let personaKey = "OMNISVoicePersona"
     private static let switchKey = "OMNISVoiceOn"
     private static let talkOverKey = "OMNISVoiceTalkOver"
+    private static let systemVoiceKey = "OMNISVoiceSystem"
     private static let speedKey = "OMNISVoiceSpeed"
 
     var isActive: Bool { state != .off }
@@ -98,6 +109,8 @@ final class VoiceModel: ObservableObject {
             traceFile = nil
         }
         talkOver = UserDefaults.standard.object(forKey: Self.talkOverKey) as? Bool ?? true
+        // The System Voice unless the user chose otherwise: it is where a Siri voice is picked.
+        usesSystemVoice = UserDefaults.standard.object(forKey: Self.systemVoiceKey) as? Bool ?? true
         let savedSpeed = UserDefaults.standard.double(forKey: Self.speedKey)
         speed = Self.speeds.contains { $0.value == savedSpeed } ? savedSpeed : 1.0
         self.chat = chat
@@ -189,7 +202,7 @@ final class VoiceModel: ObservableObject {
         audit.record(action: "voice", outcome: isOn ? "on" : "off")
         if isOn {
             problem = nil
-            voiceName = VoiceEngine.voiceDescription()
+            voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
             Task {
                 do {
                     try await engine.start()
@@ -258,6 +271,12 @@ final class VoiceModel: ObservableObject {
     private func trace(_ line: String) {
         guard let traceFile else { return }
         traceFile.write(Data(String(format: "%.2f  %@\n", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 10_000), line).utf8))
+    }
+
+    /// Says a few words in the chosen voice, so it can be heard without starting a conversation.
+    func sampleVoice() {
+        guard !inConversation else { return }
+        engine.speak("Hello. This is how I sound.")
     }
 
     /// Stops listening as OMNIS quits, without forgetting that the switch was on.

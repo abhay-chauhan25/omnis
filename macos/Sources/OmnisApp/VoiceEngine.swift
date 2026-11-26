@@ -23,7 +23,7 @@ enum VoiceProblem: Error, LocalizedError {
 /// are Apple's own and run on this Mac: no sound leaves it. What is heard is
 /// handed on as text and kept nowhere here.
 @MainActor
-final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
+final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesizerDelegate {
     /// The speaker stopped. The words since the last utterance.
     var onUtterance: ((String) -> Void)?
     /// Words as they are being heard, before the speaker stops.
@@ -37,6 +37,20 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     var allowsInterruption = false
     /// How fast OMNIS talks: 1 is the voice's usual pace.
     var speed = 1.0
+    /// True to talk in the voice chosen as the Mac's System Voice. That is the only way an
+    /// app can use a Siri voice: Apple does not let apps pick one by name.
+    var usesSystemVoice = false
+    /// Speaks in the Mac's System Voice, whatever that is set to.
+    private lazy var systemVoice: NSSpeechSynthesizer = {
+        let made = NSSpeechSynthesizer()
+        made.delegate = self
+        return made
+    }()
+    private var systemQueue: [String] = []
+    private var systemBusy = false
+    /// How many "finished" reports are still to come for sentences that were cut off.
+    private var systemStale = 0
+    private var usualRate: Float?
     /// Development aid: told what is heard and done, for a log that is only written when asked for.
     var trace: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
@@ -110,7 +124,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
-    static func voiceDescription() -> String {
+    static func voiceDescription(system: Bool = false) -> String {
+        if system { return "The Mac's System Voice" }
         guard let voice = bestVoice() else { return "No English voice is installed" }
         switch voice.quality {
         case .premium: return "\(voice.name) (premium)"
@@ -430,18 +445,23 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
     /// Says the words. Called again while still talking, the new words follow on.
     func speak(_ words: String) {
-        let utterance = AVSpeechUtterance(string: words)
-        utterance.voice = voice ?? Self.bestVoice()
-        utterance.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * Float(speed))
         if !speaking {
             speaking = true
             saying = ""
             cut()
         }
         saying += " " + words
-        queued.insert(ObjectIdentifier(utterance))
-        live.append(utterance)
-        synthesizer.speak(utterance)
+        if usesSystemVoice {
+            systemQueue.append(words)
+            sayNextInSystemVoice()
+        } else {
+            let utterance = AVSpeechUtterance(string: words)
+            utterance.voice = voice ?? Self.bestVoice()
+            utterance.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * Float(speed))
+            queued.insert(ObjectIdentifier(utterance))
+            live.append(utterance)
+            synthesizer.speak(utterance)
+        }
         // If the voice never reports that it finished, the conversation must not wait for ever.
         speakTimeout?.cancel()
         let longest = 20 + Double(saying.count) / 8
@@ -450,7 +470,65 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             guard !Task.isCancelled, let self, self.speaking else { return }
             self.retire()
             self.synthesizer.stopSpeaking(at: .immediate)
+            self.stopSystemVoice()
             self.finishedSpeaking()
+        }
+    }
+
+    /// The System Voice says one sentence at a time, so the rest wait their turn here.
+    private func sayNextInSystemVoice() {
+        guard !systemBusy, !systemQueue.isEmpty else { return }
+        let next = systemQueue.removeFirst()
+        if usualRate == nil { usualRate = systemVoice.rate }
+        systemVoice.rate = (usualRate ?? 175) * Float(speed)
+        systemBusy = true
+        if !systemVoice.startSpeaking(next) {
+            // It would not start: carry on as if it had been said, so nothing waits on it.
+            systemBusy = false
+            systemFinished()
+        }
+    }
+
+    private func systemFinished() {
+        if !systemQueue.isEmpty {
+            sayNextInSystemVoice()
+            return
+        }
+        Task { @MainActor [weak self] in
+            // A moment for the room to go quiet. If more is handed over meanwhile, it carries on talking.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, !self.systemBusy, self.systemQueue.isEmpty, self.usesSystemVoice else { return }
+            self.finishedSpeaking()
+        }
+    }
+
+    private func stopSystemVoice() {
+        systemQueue.removeAll()
+        guard systemBusy else { return }
+        systemBusy = false
+        // Stopping it is still reported as a finish, later. That report is not for whatever is said next.
+        systemStale += 1
+        systemVoice.stopSpeaking()
+    }
+
+    nonisolated func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.systemStale > 0 {
+                self.systemStale -= 1
+                return
+            }
+            guard self.systemBusy else { return }
+            self.systemBusy = false
+            self.systemFinished()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ sender: NSSpeechSynthesizer, willSpeakWord characterRange: NSRange, of string: String) {
+        let size = min(1.0, 0.45 + Double(characterRange.length) * 0.06)
+        Task { @MainActor [weak self] in
+            guard let self, self.systemBusy else { return }
+            self.onLevel?(size)
         }
     }
 
@@ -481,6 +559,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         speaking = false
         retire()
         synthesizer.stopSpeaking(at: .immediate)
+        stopSystemVoice()
         onLevel?(0)
     }
 
