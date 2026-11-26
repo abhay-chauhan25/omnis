@@ -127,6 +127,8 @@ enum SpotifyCallback {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             @Sendable func finish(_ result: Result<String, Error>) {
                 guard once.take() else { return }
+                listener.stateUpdateHandler = nil
+                listener.newConnectionHandler = nil
                 listener.cancel()
                 continuation.resume(with: result)
             }
@@ -237,7 +239,7 @@ public final class SpotifyAccount: SpotifyCatalogue, @unchecked Sendable {
     }
 
     /// Signs in through the user's browser. `open` is given Spotify's sign-in page to show.
-    public func connect(clientID: String, open: @Sendable (URL) -> Void) async throws {
+    public func connect(clientID: String, open: @escaping @Sendable (URL) -> Void) async throws {
         guard SpotifyAuth.isClientID(clientID) else { throw ToolRefusal("that is not a Spotify client ID, which is 32 letters and digits") }
         let busy = lock.withLock { () -> Bool in
             if signingIn { return true }
@@ -249,9 +251,7 @@ public final class SpotifyAccount: SpotifyCatalogue, @unchecked Sendable {
         let state = SpotifyAuth.random(24), verifier = SpotifyAuth.random()
         let page = SpotifyAuth.authorizeURL(clientID: clientID, state: state, verifier: verifier)
         // The browser is sent to Spotify only once this Mac is ready for it to come back.
-        let code = try await withoutActuallyEscaping(open) { open in
-            try await SpotifyCallback.wait(state: state, ready: { open(page) })
-        }
+        let code = try await SpotifyCallback.wait(state: state, ready: { open(page) })
         let fresh: SpotifyTokens
         do {
             fresh = try await token(["grant_type": "authorization_code", "code": code, "redirect_uri": SpotifyAuth.redirect,

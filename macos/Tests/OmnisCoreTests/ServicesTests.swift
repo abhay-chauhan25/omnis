@@ -277,6 +277,29 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         #expect(!SpotifyAuth.carries(state: "st", request: "GET /callback HTTP/1.1") && !SpotifyAuth.carries(state: "st", request: "GET /callback?state=x HTTP/1.1"))
     }
 
+    @Test func aWholeSpotifySignInRunsFromTheBrowserComingBackToTheSignInBeingKept() async throws {
+        let store = MemoryStore()
+        let defaults = UserDefaults(suiteName: "omnis-test-\(UUID().uuidString)")!
+        let asked = Collected<String>()
+        let account = SpotifyAccount(fetch: { request in
+            asked.add(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+            return (Data(#"{"access_token":"a1","refresh_token":"r1","expires_in":3600}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }, store: store, defaults: defaults)
+        // The "browser": first a stray page calling the address, which must not end the sign-in, then Spotify's real reply.
+        try await account.connect(clientID: String(repeating: "c", count: 32)) { page in
+            let state = URLComponents(url: page, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "state" }?.value ?? ""
+            Task {
+                _ = try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:43821/callback?code=stolen&state=wrong")!)
+                _ = try? await URLSession.shared.data(from: URL(string: "http://127.0.0.1:43821/callback?code=the-code&state=\(state)")!)
+            }
+        }
+        #expect(account.isConnected)
+        #expect(asked.values.count == 1 && asked.values[0].contains("code=the-code") && asked.values[0].contains("code_verifier=")
+            && asked.values[0].contains("grant_type=authorization_code"))
+        #expect(store.read(service: "local.omnis.app.spotify", account: "tokens") != nil)
+    }
+
     @Test func spotifyIsSearchedWithTheSignInAndASignInThatHasRunOutIsRenewed() async throws {
         let store = MemoryStore()
         let defaults = UserDefaults(suiteName: "omnis-test-\(UUID().uuidString)")!
