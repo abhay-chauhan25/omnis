@@ -117,6 +117,14 @@ Fixed three ways. A new audio engine is made each time listening starts or chang
 
 Not verified: this has not been run with AirPods by the assistant. The exception guard itself is tested.
 
+### Its own words leaking in after being talked over (reported by the user, 2026-11-26)
+
+The user tried talking over OMNIS. With AirPods it worked well. On the speakers, what was sent on sometimes had a few of OMNIS's own words in it, which changed how the request was understood.
+
+The recogniser is now asked for the moment each word was said. When the user talks over OMNIS, the time is noted at which its voice could last be heard (a quarter of a second after it was stopped). A word said before then is kept only if it is not one of the words OMNIS was saying; every word after then is kept. Leaving out a fixed number of words at the start, as before, is used only if the words come with no times.
+
+A word of the user's said over OMNIS that happens to be one OMNIS was also saying is lost. Not verified with a microphone by the assistant.
+
 ### Finding faults
 
 `OMNIS --voice-trace <file>` writes what voice hears, says and does to a file, with times. It holds spoken words, so it is written only when OMNIS is started that way, and the file should be deleted afterwards. How long the first words took is also in the Activity log (`voice_timing`), as a number and nothing else.

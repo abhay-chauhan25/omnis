@@ -204,6 +204,20 @@ public extension VoiceEcho {
         return count
     }
 
+    /// What the user said when they talked over OMNIS, picked out word by word.
+    /// Each word comes with the moment it was said. A word said while OMNIS
+    /// was still audible is kept only if it is not one of OMNIS's own; every
+    /// word said after that is kept.
+    static func usersWords(_ words: [(text: String, at: Double?)], speaking: String, ownUntil: Double) -> String {
+        let own = Set(VoicePhrases.plain(speaking).split(separator: " "))
+        let kept = words.filter { word in
+            guard let at = word.at, at < ownUntil else { return true }
+            let parts = VoicePhrases.plain(word.text).split(separator: " ")
+            return !parts.isEmpty && !parts.allSatisfy { own.contains($0) }
+        }
+        return kept.map(\.text).joined().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     /// What was heard, without that many words at its start.
     static func dropping(_ count: Int, from heard: String) -> String {
         heard.split(whereSeparator: \.isWhitespace).dropFirst(count).joined(separator: " ")

@@ -421,6 +421,20 @@ import Testing
         #expect(VoiceEcho.ownWords(atStartOf: "wait", speaking: saying) == 0 && VoiceEcho.dropping(0, from: "wait") == "wait")
     }
 
+    @Test func wordsSaidOverOmnisAreSiftedByWhenTheyWereSaidAndWhoseTheyAre() {
+        let saying = "You have the dentist at ten and then lunch with Sam at noon."
+        // OMNIS could be heard until 5.0. Its own words before then go; the user's stay, and so does everything after.
+        let heard: [(text: String, at: Double?)] = [
+            ("dentist ", 4.0), ("at ", 4.2), ("actually ", 4.3), ("ten ", 4.5), ("what ", 4.7), ("lunch ", 4.9),
+            ("about ", 5.1), ("the ", 5.3), ("dentist ", 5.5), ("tomorrow", 5.8),
+        ]
+        #expect(VoiceEcho.usersWords(heard, speaking: saying, ownUntil: 5.0) == "actually what about the dentist tomorrow")
+        // Only its own voice was heard: nothing is left to act on.
+        #expect(VoiceEcho.usersWords([("lunch ", 4.0), ("with ", 4.2), ("Sam", 4.4)], speaking: saying, ownUntil: 5.0) == "")
+        // A word with no time is the user's, since nothing says otherwise.
+        #expect(VoiceEcho.usersWords([("lunch ", nil), ("stop", 4.1)], speaking: saying, ownUntil: 5.0) == "lunch stop")
+    }
+
     @Test func aSpokenQuestionGetsTheQuickModelUnlessMoreIsAskedFor() {
         let quick = ClaudeRouter.choose(text: "what time is it", spoken: true)
         #expect(quick.model == .haiku && quick.effort == "low")

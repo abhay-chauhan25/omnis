@@ -61,6 +61,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     private var live: [AVSpeechUtterance] = []
     /// After being talked over: how many words at the start of what was heard were OMNIS's own.
     private var ownWords = 0
+    /// After being talked over: how far into the sound OMNIS's own voice could still be heard.
+    private var ownUntil: Double?
     private var reconfigurations = 0
     private var voice: AVSpeechSynthesisVoice?
     private var wanted: AVAudioFormat?
@@ -129,7 +131,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         func stillWanted() throws { if mine != session { throw CancellationError() } }
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw VoiceProblem.noMicrophone }
         try stillWanted()
-        let transcriber = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .progressiveTranscription)
+        let transcriber = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .timeIndexedProgressiveTranscription)
         switch await AssetInventory.status(forModules: [transcriber]) {
         case .unsupported: throw VoiceProblem.notSupported
         case .installed: break
@@ -185,10 +187,14 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             do {
                 for try await result in transcriber.results {
                     let start = result.range.start.seconds, end = result.range.end.seconds
-                    let text = String(result.text.characters), final = result.isFinal
+                    let final = result.isFinal
+                    // Each word with the moment it was said, so OMNIS's own voice can be told from the user's.
+                    let words: [(text: String, at: Double?)] = result.text.runs.map { run in
+                        (String(result.text[run.range].characters), run.audioTimeRange?.start.seconds)
+                    }
                     await MainActor.run {
                         guard let self, mine == self.session else { return }
-                        self.took(text, from: start, to: end, final: final)
+                        self.took(words, from: start, to: end, final: final)
                     }
                 }
             } catch {
@@ -366,13 +372,17 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     /// Forgets anything heard so far, so the next utterance starts clean.
     func cut() {
         ownWords = 0
+        ownUntil = nil
         pauseTask?.cancel()
         buffer.cut(upTo: soundTime)
     }
 
-    private func took(_ text: String, from start: Double, to end: Double, final: Bool) {
+    private func took(_ words: [(text: String, at: Double?)], from start: Double, to end: Double, final: Bool) {
         guard isRunning, start.isFinite, end.isFinite else { return }
         soundTime = max(soundTime, end)
+        var text = words.map(\.text).joined()
+        // After being talked over, only the user's words are kept from what overlapped with OMNIS's voice.
+        if let ownUntil, !speaking { text = VoiceEcho.usersWords(words, speaking: saying, ownUntil: ownUntil) }
         if speaking {
             // OMNIS does not listen to itself. But someone talking over it is heard, where that is allowed.
             guard allowsInterruption else { return }
@@ -383,8 +393,17 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             }
             trace?("talked over: \(buffer.current.suffix(60))")
             // Its own voice stops at once. What was heard is kept, less its own words: it is the start of what the user is saying.
-            ownWords = VoiceEcho.ownWords(atStartOf: buffer.current, speaking: saying)
             silence()
+            if words.contains(where: { $0.at != nil }) {
+                // The room goes quiet a moment after the voice is stopped. Words up to then are sifted one by one.
+                let until = fed.now + 0.25
+                ownUntil = until
+                buffer.cut(upTo: start)
+                buffer.take(VoiceEcho.usersWords(words, speaking: saying, ownUntil: until), start: start, end: end, final: final)
+            } else {
+                // No times came with the words: its own words at the start are left out instead.
+                ownWords = VoiceEcho.ownWords(atStartOf: buffer.current, speaking: saying)
+            }
             onBargeIn?()
         } else {
             buffer.take(text, start: start, end: end, final: final)
@@ -444,6 +463,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         // The end of OMNIS's own voice may still be on its way through the recogniser.
         pauseTask?.cancel()
         ownWords = 0
+        ownUntil = nil
         buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
         onLevel?(0)
         onSpeechFinished?()
@@ -470,6 +490,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         silence()
         pauseTask?.cancel()
         ownWords = 0
+        ownUntil = nil
         buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
     }
 
