@@ -28,6 +28,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runWebSearchCheck(web?.search)
             return
         }
+        if let file = AppEnvironment.checkMail {
+            Task {
+                var lines: [String] = []
+                for line in await MailTools.timings() {
+                    lines.append(line)
+                    try? (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+                }
+                try? (lines.joined(separator: "\n") + "\ndone\n").write(to: file, atomically: true, encoding: .utf8)
+                exit(0)
+            }
+            return
+        }
         if AppEnvironment.checkMessagesReader {
             guard let reader = AppEnvironment.messagesReader() else {
                 print("messages reader check: this build has no reader (it needs the stable signing identity)")
@@ -92,6 +104,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
                                             openChat: { [weak self] in self?.chat.show() })
         projectMode = ProjectModeModel(chat: model, claudeConfig: AppEnvironment.claudeConfig(), audit: audit)
+        // The small window can hand its conversation to the dashboard, where there is room for it.
+        chat.onExpand = { [weak self] in
+            guard let self else { return }
+            self.chat.hide()
+            dashboardModel.showActivity = false
+            dashboardModel.showChat = true
+            self.dashboard.show()
+        }
         if let lines = AppEnvironment.voiceRehearsal {
             // No windows, no hotkey, no microphone: only the conversation itself.
             voice = VoiceModel(chat: model, audit: audit, autoStart: false)
@@ -106,6 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the notch panel when there is one, and in the chat window otherwise.
         voice = VoiceModel(chat: model, audit: audit, trace: AppEnvironment.voiceTrace, showChat: { [weak self] in
             guard let self else { return }
+            // Already in front of the user in the dashboard: nothing more to show.
+            if self.dashboard.isVisible, dashboardModel.showChat { return }
             if let notch = self.notch, notch.isAvailable, !self.dashboard.isVisible { self.notchModel.reveal() } else { self.chat.show() }
         })
         dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode, voice: voice)

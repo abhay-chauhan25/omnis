@@ -99,6 +99,14 @@ enum AppEnvironment {
         return arguments[index + 1].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
+    /// Development aid: `--check-mail <file>` times each kind of request to the Mail app and
+    /// writes the times and counts to that file. Nothing of any email is written.
+    static var checkMail: URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--check-mail"), index + 1 < arguments.count else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1])
+    }
+
     /// Development aid: `--voice-trace <file>` writes what voice hears, says and does to that
     /// file, with timings, for finding faults. It holds spoken words, so it is only ever
     /// written when OMNIS is started with this, and the file should be deleted afterwards.

@@ -493,6 +493,8 @@ final class ChatModel: ObservableObject {
     }
 
     private func ask(_ text: String, attachments: [Attachment], onThisMac: Bool) {
+        // A chat being used elsewhere, in the dashboard or by voice, is not one that has been left alone.
+        if hiddenAt != nil { hiddenAt = Date() }
         // The typed prefixes still work for one message.
         let options = RoutePrefix.split(text)
         let local = onThisMac || usesLocal || options.route == "local"

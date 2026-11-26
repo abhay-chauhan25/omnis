@@ -65,7 +65,10 @@ struct DashboardView: View {
         // there is, and a side column scrolls only if the window is too short for it.
         VStack(spacing: 18) {
             header
-            if model.showActivity {
+            if model.showChat {
+                // Chat mode: the same conversation as the small window, with room to read.
+                ChatView(model: chat, onClose: { model.moveChatToSmallWindow() }, embedded: true).frame(maxHeight: .infinity)
+            } else if model.showActivity {
                 // Activity mode replaces the panels with the record of what OMNIS did.
                 ActivityView(model: model).frame(maxHeight: .infinity)
             } else if project.isActive {
@@ -102,9 +105,14 @@ struct DashboardView: View {
         HStack(alignment: .center, spacing: 16) {
             Text("OMNIS").font(.system(size: 17, weight: .semibold)).tracking(5.5)
             HStack(spacing: 2) {
-                modeButton("Dashboard", on: !project.isActive && !model.showActivity) { model.showActivity = false; project.isActive = false }
-                modeButton("Project", on: project.isActive && !model.showActivity) { model.showActivity = false; project.isActive = true }
-                modeButton("Activity", on: model.showActivity) { project.isActive = false; model.showActivity = true }
+                modeButton("Dashboard", on: !project.isActive && !model.showActivity && !model.showChat) {
+                    model.showChat = false; model.showActivity = false; project.isActive = false
+                }
+                modeButton("Chat", on: model.showChat) { model.showActivity = false; model.showChat = true }
+                modeButton("Project", on: project.isActive && !model.showActivity && !model.showChat) {
+                    model.showChat = false; model.showActivity = false; project.isActive = true
+                }
+                modeButton("Activity", on: model.showActivity && !model.showChat) { model.showChat = false; project.isActive = false; model.showActivity = true }
             }
             .padding(3)
             .background(Capsule().fill(Color.white.opacity(0.05)))

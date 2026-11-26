@@ -16,6 +16,8 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     private let model: ChatModel
     private let panel: ChatPanel
     private var keyMonitor: Any?
+    /// Moves the conversation to the dashboard. Set by the app once the dashboard exists.
+    var onExpand: (() -> Void)?
 
     private static let defaultSize = NSSize(width: 430, height: 620)
     private static let minimumSize = NSSize(width: 360, height: 440)
@@ -42,7 +44,8 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         panel.animationBehavior = .none
         panel.minSize = Self.minimumSize
         panel.setAccessibilityTitle("OMNIS")
-        panel.contentView = NSHostingView(rootView: ChatView(model: model, onClose: { [weak self] in self?.hide() }))
+        panel.contentView = NSHostingView(rootView: ChatView(model: model, onClose: { [weak self] in self?.hide() },
+                                                                    onExpand: { [weak self] in self?.onExpand?() }))
         panel.delegate = self
         panel.setFrame(Self.startingFrame(), display: false)
     }

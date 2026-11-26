@@ -6,6 +6,10 @@ import SwiftUI
 struct ChatView: View {
     @ObservedObject var model: ChatModel
     let onClose: () -> Void
+    /// Moves the conversation to the dashboard, where there is room. Only the small window has this.
+    var onExpand: (() -> Void)?
+    /// True when shown inside the dashboard rather than in the small window of its own.
+    var embedded = false
     @FocusState private var inputFocused: Bool
     @State private var showModel = false
     @State private var showEffort = false
@@ -15,14 +19,29 @@ struct ChatView: View {
     private static let bottomID = "bottom"
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            conversation
-            inputBar
+        Group {
+            if embedded {
+                // In the dashboard: the same conversation, in a column wide enough to read comfortably.
+                VStack(spacing: 0) {
+                    header
+                    conversation
+                    inputBar
+                }
+                .frame(maxWidth: 920)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.025)))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    conversation
+                    inputBar
+                }
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
+                .ignoresSafeArea()
+            }
         }
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
-        .ignoresSafeArea()
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: Self.corner, style: .continuous)
@@ -53,13 +72,28 @@ struct ChatView: View {
     private var header: some View {
         ZStack {
             // The whole strip moves the window; the buttons sit on top of it.
-            WindowDragArea()
+            if !embedded { WindowDragArea() }
             HStack {
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 17))
+                if embedded {
+                    Button(action: onClose) {
+                        Label("Small window", systemImage: "arrow.down.right.and.arrow.up.left").font(.system(size: 12, weight: .medium))
+                    }
+                    .help("Carry on in the small window")
+                    .accessibilityLabel("Move this chat to the small window")
+                } else {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 17))
+                    }
+                    .help("Hide OMNIS (Esc)")
+                    .accessibilityLabel("Hide OMNIS")
+                    if let onExpand {
+                        Button(action: onExpand) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 14, weight: .medium))
+                        }
+                        .help("Open this chat in the dashboard")
+                        .accessibilityLabel("Open this chat in the dashboard")
+                    }
                 }
-                .help("Hide OMNIS (Esc)")
-                .accessibilityLabel("Hide OMNIS")
                 Spacer()
                 if model.usesLocal {
                     Label("On this Mac", systemImage: "lock.fill")

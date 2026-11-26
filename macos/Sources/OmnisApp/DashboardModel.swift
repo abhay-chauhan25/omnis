@@ -16,6 +16,8 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var sessions: [SessionScanner.Session] = []
     @Published private(set) var activity: [DashboardData.ActivityLine] = []
     /// Activity mode: the whole record, as lines. Filled only while that mode is showing.
+    /// True while the dashboard is showing the conversation, full size.
+    @Published var showChat = false
     @Published var showActivity = false {
         didSet { if showActivity != oldValue { activityRows = []; if showActivity { refresh() } } }
     }
@@ -272,8 +274,16 @@ final class DashboardModel: ObservableObject {
             refreshSoon()
             return
         }
-        openChat()
+        // The answer is shown here, in the dashboard, where the question was asked.
+        showActivity = false
+        showChat = true
         chat.askFromDashboard(text)
+    }
+
+    /// Carries the conversation on in the small window instead.
+    func moveChatToSmallWindow() {
+        showChat = false
+        openChat()
     }
 
     func launch(_ entry: RegistryEntry) {

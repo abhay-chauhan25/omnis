@@ -61,3 +61,17 @@ Independent review: pass with warnings. Privacy, permissions and the absence of 
 - "Live project sessions" shows Claude Code sessions the user started themselves. Starting one from OMNIS is project mode, which is not built.
 - Mail and voice are not built.
 - Fonts are the system's; the mock used web fonts that are not installed on the Mac.
+
+## Chat in the dashboard (asked for by the user, 2026-11-26)
+
+The dashboard's view switch has a fourth choice, **Chat**: the same conversation as the small window, in a column wide enough to read. It is the same chat, not a copy, so everything in it works as it does there.
+
+- The small window has a new button (arrows pointing outward, beside the close button) that hides it and opens the conversation in the dashboard.
+- In the dashboard, "Small window" at the top left of the chat does the reverse.
+- A question typed into the dashboard's own ask box is now answered there, in Chat view, instead of opening the small window.
+
+Built from the existing chat view and view switch, with no new look of its own. **Not seen on screen by anyone yet, and not run past the user as a design first**: say if the placement or the look should change.
+
+## OMNIS knows what it is (2026-11-26)
+
+The user was told "I can't check it with the tools I have" when asking how many files could be attached. Claude is now given the facts about OMNIS itself: what it does, the limits on attached files, where it lives, the typed commands, and what it does not do. It is told to answer such questions from those facts and never to talk about "its tools".

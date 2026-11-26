@@ -117,6 +117,52 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
     end run
     """
 
+    /// Development aid: how long each kind of request to Mail takes on this Mac. It reports
+    /// times and counts only, never a sender, a subject or any text.
+    public static func timings(run: @escaping CommandRunner = Commands.system, defaults: UserDefaults = .standard) async -> [String] {
+        func step(_ name: String, _ body: String, _ arguments: [String] = []) async -> (String, String) {
+            let text = "on run arguments\ntell application \"Mail\"\nwith timeout of 90 seconds\n\(body)\nend timeout\nend tell\nend run"
+            let began = Date()
+            let result = await run(osascript, ["-e", text, "--"] + arguments, nil)
+            let took = String(format: "%.1f s", Date().timeIntervalSince(began))
+            let out = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ("\(name): \(took), \(result.status == 0 ? "ok" : "failed (\(out.suffix(90)))")", result.status == 0 ? out : "")
+        }
+        var lines: [String] = []
+        let (accounts, names) = await step("accounts switched on", "set found to name of (every account whose enabled is true)\nset AppleScript's text item delimiters to (ASCII character 31)\nreturn found as text")
+        let all = names.components(separatedBy: "\u{1F}").filter { !$0.isEmpty }
+        lines.append(accounts + ", \(all.count) found")
+        guard let account = defaults.string(forKey: accountKey) ?? (all.count == 1 ? all.first : nil) else { return lines + ["no single account to test"] }
+        let box = "mailbox \"Inbox\" of account (item 1 of arguments)"
+        func time(_ name: String, _ body: String) async {
+            let (line, out) = await step(name, body, [account])
+            lines.append(out.count <= 12 && !out.isEmpty ? "\(line) -> \(out)" : line)
+        }
+        await time("count the inbox", "return count of messages of \(box)")
+        await time("is the first email the newest", "return (date received of message 1 of \(box)) > (date received of message -1 of \(box))")
+        for property in ["id", "sender", "subject", "date received", "read status"] {
+            await time("\(property) of 15 emails", "return count of (\(property) of messages 1 thru 15 of \(box))")
+        }
+        await time("everything about 1 email at once", "set one to properties of message 1 of \(box)\nreturn 1")
+        await time("all five things about 15 emails, one request each email", """
+        set seen to 0
+        repeat with n from 1 to 15
+            set {a, b, c, d, e} to {id, sender, subject, date received, read status} of message n of \(box)
+            set seen to seen + 1
+        end repeat
+        return seen
+        """)
+        await time("Mail counts unread itself", "return count of (messages of \(box) whose read status is false)")
+        await time("Mail finds the last 7 days itself", "set d to (current date) - (7 * days)\nreturn count of (messages of \(box) whose date received > d)")
+        await time("Mail finds the last 90 days itself", "set d to (current date) - (90 * days)\nreturn count of (messages of \(box) whose date received > d)")
+        await time("Mail finds a sender itself", "return count of (messages of \(box) whose sender contains \"edu\")")
+        await time("Mail finds a subject itself", "return count of (messages of \(box) whose subject contains \"meeting\")")
+        await time("Mail finds sender and 90 days together", "set d to (current date) - (90 * days)\nreturn count of (messages of \(box) whose date received > d and sender contains \"edu\")")
+        await time("numbers of the last 7 days, found by Mail", "set d to (current date) - (7 * days)\nreturn count of (id of (messages of \(box) whose date received > d))")
+        await time("unread count Mail keeps for the inbox", "return unread count of \(box)")
+        return lines
+    }
+
     struct Row: Equatable {
         let id: Int
         let sender: String
