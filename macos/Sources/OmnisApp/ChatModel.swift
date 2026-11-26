@@ -8,7 +8,52 @@ final class ChatModel: ObservableObject {
     @Published var input = "" {
         didSet { if input != oldValue { refreshSuggestions() } }
     }
-    @Published private(set) var conversation = Conversation()
+    @Published private(set) var conversation = Conversation() {
+        didSet {
+            guard conversation != oldValue else { return }
+            scheduleSave()
+            // A change to what is remembered, made while an answer was being written, takes effect now.
+            if sessionStale, !conversation.isAnswering {
+                sessionStale = false
+                claude?.endSession()
+            }
+        }
+    }
+    /// Saved chats, newest first, narrowed by what is typed in the search box.
+    @Published private(set) var chats: [ChatSummary] = []
+    /// Which saved chat this is. A new chat gets a new one.
+    @Published private(set) var chatID = UUID()
+    /// The chat's name once it has one: from its first question, or the user's own.
+    @Published private(set) var chatTitle: String?
+    /// True for a chat the user has asked not to be saved. Anything already saved of it is removed.
+    @Published var isPrivate = false {
+        didSet { if isPrivate != oldValue, !settingUp { privacyChanged() } }
+    }
+    @Published var chatSearch = "" {
+        didSet { if chatSearch != oldValue { refreshChats() } }
+    }
+    /// What OMNIS has been asked to remember.
+    @Published private(set) var memoryFacts: [MemoryFact] = []
+    /// How many days a chat is kept after it was last used. Zero keeps chats until they are deleted.
+    @Published var retentionDays: Int = ChatModel.savedRetention() {
+        didSet {
+            guard retentionDays != oldValue else { return }
+            UserDefaults.standard.set(retentionDays, forKey: Self.retentionKey)
+            prune()
+        }
+    }
+    /// How many saved chats choosing this many days would remove straight away.
+    func chatsRemoved(byKeeping days: Int) -> Int {
+        store?.countPast(days: days, keeping: chatID) ?? 0
+    }
+    /// True when Claude's session was started with a list of remembered things that has since changed.
+    private var sessionStale = false
+    static let retentionKey = "OMNISChatRetentionDays"
+    static let retentionChoices: [(days: Int, title: String)] = [(30, "30 days"), (90, "90 days"), (0, "Until I delete them")]
+    static func savedRetention() -> Int {
+        let saved = UserDefaults.standard.object(forKey: retentionKey) as? Int
+        return saved.flatMap { value in retentionChoices.contains { $0.days == value } ? value : nil } ?? 30
+    }
     /// Apps and projects matching what is typed, offered above the input.
     @Published private(set) var suggestions: [RegistryEntry] = []
     /// The suggestion Enter would launch, or nil if Enter sends a message.
@@ -43,6 +88,15 @@ final class ChatModel: ObservableObject {
     private let projectSetup: ProjectSetup?
     private let services: [any AssistantTools]
     private let spotify: SpotifyAccount?
+    private let store: ChatStore?
+    private let memory: MemoryStore?
+    private var saveTask: Task<Void, Never>?
+    private var lastSaved: [SavedMessage] = []
+    private var chatCreated = Date()
+    private var chatPinned = false
+    private var chatNamed = false
+    /// True while a chat is being swapped in or out, so switches reset for it do not act on the old one.
+    private var settingUp = false
     let limits = UsageLimits()
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
@@ -75,8 +129,10 @@ final class ChatModel: ObservableObject {
 
     init(backend: BackendService?, audit: AuditLog, calendarWriter: (any CalendarWriting)? = nil,
          claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil, services: [any AssistantTools] = [],
-         spotify: SpotifyAccount? = nil) {
+         spotify: SpotifyAccount? = nil, store: ChatStore? = nil, memory: MemoryStore? = nil) {
         self.spotify = spotify
+        self.store = store
+        self.memory = memory
         self.backend = backend
         self.services = services
         self.projectSetup = projectSetup
@@ -120,6 +176,240 @@ final class ChatModel: ObservableObject {
                 if let data = try? JSONEncoder().encode(merged) { UserDefaults.standard.set(data, forKey: Self.usageKey) }
             }
         }
+        memoryFacts = memory?.facts() ?? []
+        prune()
+    }
+
+    // MARK: Saved chats
+
+    /// True when chats can be saved at all. False in tests and rehearsals that give no store.
+    var keepsChats: Bool { store != nil }
+
+    /// Saves shortly after the conversation last changed, so an answer arriving a word at a time is written once.
+    private func scheduleSave() {
+        guard store != nil, !isPrivate, !conversation.isAnswering else { return }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveNow()
+        }
+    }
+
+    /// Writes the chat to disk if it has changed. See `Conversation.saved` for what is left out.
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        guard let store, !isPrivate else { return }
+        let messages = conversation.saved()
+        guard !messages.isEmpty, messages != lastSaved else { return }
+        // Once a chat has a name it keeps it, whatever is later trimmed from its start.
+        let title = chatTitle ?? SavedChat.title(from: messages)
+        let chat = SavedChat(id: chatID, title: title, named: chatNamed, created: chatCreated, updated: Date(), pinned: chatPinned,
+                             messages: messages, personal: conversation.hasPersonalData,
+                             othersWords: conversation.holdsOthersWords, email: conversation.holdsEmail)
+        do {
+            try store.save(chat)
+            lastSaved = messages
+            chatTitle = title
+            refreshChats()
+        } catch {
+            // Counts and reasons only: nothing of the chat itself is logged.
+            audit.record(action: "chat_save", outcome: "error", detail: error.localizedDescription)
+        }
+    }
+
+    func refreshChats() {
+        guard let store else { return }
+        chats = chatSearch.trimmingCharacters(in: .whitespaces).isEmpty ? store.summaries() : store.search(chatSearch)
+    }
+
+    /// Removes chats that have not been used for longer than the user keeps them.
+    private func prune() {
+        guard let store else { return }
+        let removed = store.prune(olderThanDays: retentionDays, keeping: chatID)
+        if removed > 0 { audit.record(action: "chat_prune", outcome: "ok", detail: "\(removed) removed") }
+        refreshChats()
+    }
+
+    private func privacyChanged() {
+        if isPrivate {
+            saveTask?.cancel()
+            store?.delete(chatID)
+            lastSaved = []
+            refreshChats()
+            audit.record(action: "chat_private", outcome: "on")
+        } else {
+            saveNow()
+            audit.record(action: "chat_private", outcome: "off")
+        }
+    }
+
+    /// Clears the window for a chat that is not on disk yet.
+    private func resetChat() {
+        settingUp = true
+        defer { settingUp = false }
+        chatLocal = false
+        conversation.clear()
+        chatID = UUID()
+        chatCreated = Date()
+        chatPinned = false
+        chatNamed = false
+        chatTitle = nil
+        lastSaved = []
+        isPrivate = false
+    }
+
+    /// Opens a saved chat to read and carry on. Claude is given its earlier
+    /// turns with the next question, as words; nothing in it can be clicked again.
+    func openChat(_ id: UUID) {
+        guard id != chatID, let store else { return }
+        if isAnswering { stop() }
+        saveNow()
+        guard let saved = store.load(id) else {
+            refreshChats()
+            show(notice: "That chat is no longer saved.", seconds: 4)
+            return
+        }
+        askTask?.cancel()
+        askTask = nil
+        claude?.endSession()
+        settingUp = true
+        defer { settingUp = false }
+        chatLocal = false
+        conversation = Conversation(restoring: saved)
+        chatID = saved.id
+        chatCreated = saved.created
+        chatPinned = saved.pinned
+        chatNamed = saved.named
+        chatTitle = saved.title
+        lastSaved = conversation.saved()
+        isPrivate = false
+        notice = nil
+        saveTask?.cancel()
+        openCount += 1
+        audit.record(action: "chat_open", outcome: "ok")
+    }
+
+    func deleteChat(_ id: UUID) {
+        guard let store else { return }
+        if id == chatID {
+            askTask?.cancel()
+            askTask = nil
+            claude?.endSession()
+            saveTask?.cancel()
+            resetChat()
+        }
+        store.delete(id)
+        refreshChats()
+        audit.record(action: "chat_delete", outcome: "ok")
+    }
+
+    func deleteAllChats() {
+        guard let store else { return }
+        askTask?.cancel()
+        askTask = nil
+        claude?.endSession()
+        saveTask?.cancel()
+        resetChat()
+        let count = store.deleteAll()
+        refreshChats()
+        audit.record(action: "chat_delete", outcome: "ok", detail: "all, \(count)")
+    }
+
+    func renameChat(_ id: UUID, to title: String) {
+        let tidy = ChatStore.tidyTitle(title)
+        guard let store, !tidy.isEmpty else { return }
+        if id == chatID {
+            saveNow()
+            chatNamed = true
+            chatTitle = tidy
+        }
+        store.rename(id, to: tidy)
+        refreshChats()
+    }
+
+    func setPinned(_ id: UUID, _ pinned: Bool) {
+        guard let store else { return }
+        if id == chatID {
+            saveNow()
+            chatPinned = pinned
+        }
+        store.setPinned(id, pinned)
+        refreshChats()
+    }
+
+    // MARK: Memory
+
+    /// Adds something to remember, in the user's own words. Returns false, with a notice, if it could not be kept.
+    @discardableResult
+    func remember(_ text: String) -> Bool {
+        guard let memory else { return false }
+        do {
+            try memory.add(text)
+            memoryChanged(by: "added")
+            return true
+        } catch {
+            show(notice: error.localizedDescription, seconds: 7)
+            return false
+        }
+    }
+
+    func updateMemory(_ id: UUID, to text: String) {
+        guard let memory else { return }
+        do {
+            try memory.update(id, to: text)
+            memoryChanged(by: "changed")
+        } catch {
+            show(notice: error.localizedDescription, seconds: 7)
+        }
+    }
+
+    func forget(_ id: UUID) {
+        memory?.remove(id)
+        memoryChanged(by: "removed")
+    }
+
+    /// Reads the list again from disk.
+    func reloadMemory() {
+        memoryFacts = memory?.facts() ?? []
+    }
+
+    func forgetEverything() {
+        memory?.removeAll()
+        memoryChanged(by: "cleared")
+    }
+
+    /// The list changed by the user's own hand. Claude is told the list when a
+    /// session starts, so the session is ended; the next question starts one that has the new list.
+    private func memoryChanged(by what: String) {
+        memoryFacts = memory?.facts() ?? []
+        // What was remembered is never logged, only that the list changed.
+        audit.record(action: "memory", outcome: what, detail: "\(memoryFacts.count) kept")
+        if isAnswering { sessionStale = true } else { claude?.endSession() }
+    }
+
+    /// For the model on this Mac, which has no standing instructions of its own to add to:
+    /// what is remembered goes ahead of the earlier turns, within what the backend accepts.
+    private func withMemory(_ history: [ChatTurn]) -> [ChatTurn] {
+        guard let lines = memory?.promptLines(), !lines.isEmpty else { return history }
+        var note = "Things I have asked you to remember about me:"
+        for line in lines where note.count + line.count < 1_500 { note += "\n- \(line)" }
+        let pair = [ChatTurn(role: .user, content: note), ChatTurn(role: .assistant, content: "Understood. I will keep those in mind.")]
+        var kept = Array(history.suffix(Conversation.maxHistoryMessages - 2))
+        var characters = kept.reduce(pair[0].content.count + pair[1].content.count) { $0 + $1.content.count }
+        while characters > Conversation.maxHistoryCharacters, kept.count >= 2 {
+            characters -= kept[0].content.count + kept[1].content.count
+            kept.removeFirst(2)
+        }
+        return pair + kept
+    }
+
+    /// One of the starting points offered in an empty chat.
+    func ask(suggestion: String) {
+        guard !isAnswering else { return }
+        input = suggestion
+        send()
     }
 
     var editorName: String { registry.editor.name }
@@ -236,21 +526,22 @@ final class ChatModel: ObservableObject {
     /// the user has typed or attached but not yet sent.
     func startFreshForVoice() {
         guard !isAnswering else { return }
+        saveNow()
         claude?.endSession()
-        chatLocal = false
-        conversation.clear()
+        resetChat()
     }
 
     /// Forgets the conversation and starts again.
     func newChat() {
         askTask?.cancel()
         askTask = nil
+        saveNow()
         claude?.endSession()
-        chatLocal = false
-        conversation.clear()
+        resetChat()
         input = ""
         notice = nil
         pendingAttachments = []
+        prune()
     }
 
     // MARK: Attachments
@@ -475,6 +766,11 @@ final class ChatModel: ObservableObject {
             MailTools.forgetAccount()
             audit.record(action: "mail_account", outcome: "forgotten")
             show(notice: "OMNIS has forgotten which email account to read. It will choose again next time you ask about email.", seconds: 6)
+        case .remember(let text):
+            if remember(text) { show(notice: "Remembered: \(MemoryStore.tidy(text))", seconds: 5) }
+        case .memoryHelp:
+            let count = memoryFacts.count
+            show(notice: "OMNIS is remembering \(count == 1 ? "1 thing" : "\(count) things"). See and change them under Memory in the dashboard\u{2019}s Chat view, or type /remember and something to keep.", seconds: 10)
         case .mailHelp:
             show(notice: "OMNIS reads the inbox of the one account switched on in Mail when you first ask. /mail forget makes it choose again.", seconds: 10)
         case .unknown(let help):
@@ -531,7 +827,7 @@ final class ChatModel: ObservableObject {
             let personal = conversation.hasPersonalData || PersonalIntent.mentionsCalendar(options.text)
             let web = webEnabled && options.web && !conversation.hasPersonalData
             conversation.keepLocal()
-            stream = backend.ask(options.text, route: "local", web: web, history: history, attachments: attachments,
+            stream = backend.ask(options.text, route: "local", web: web, history: withMemory(history), attachments: attachments,
                                  personal: personal, calendar: true, calendarWrite: offer.changes, deletes: offer.deletes)
         } else {
             guard let claude else { return }
@@ -712,6 +1008,8 @@ final class ChatModel: ObservableObject {
                 // The kind of change and the outcome only.
                 audit.record(action: "\(action.service)_change", outcome: "ok", detail: action.kind)
                 self?.conversation.updateAction(id) { $0.state = .done(result) }
+                // Remembered or forgotten on the user's click: Claude's next session is given the new list.
+                if action.service == "memory" { self?.memoryChanged(by: action.kind) }
                 self?.announce(result)
             } catch {
                 audit.record(action: "\(action.service)_change", outcome: "error", detail: action.kind)

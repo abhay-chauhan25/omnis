@@ -543,7 +543,7 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         var chat = Conversation()
         #expect(!chat.serviceAccess(for: "what is the weather").mail)
         // The user's own words bring email up; after that a follow-up is enough.
-        #expect(chat.serviceAccess(for: "any unread emails?") == ToolAccess(opens: true, mail: true))
+        #expect(chat.serviceAccess(for: "any unread emails?") == ToolAccess(opens: true, mail: true, remembers: true))
         #expect(!chat.holdsOthersWords)
         #expect(chat.serviceAccess(for: "read the second one").mail)
         chat.markHoldsOthersWords()
@@ -554,7 +554,7 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         #expect(chat.serviceAccess(for: "emails from last year").anyDate && chat.serviceAccess(for: "what did Lee send in March").anyDate)
         #expect(!chat.serviceAccess(for: "read the second one").anyDate)
         chat.clear()
-        #expect(chat.serviceAccess(for: "open Safari") == ToolAccess(opens: true))
+        #expect(chat.serviceAccess(for: "open Safari") == ToolAccess(opens: true, remembers: true))
         #expect(MailTools().deliversOthersWords && !SpotifyTools().deliversOthersWords)
     }
 
@@ -597,11 +597,11 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
     @Test func deletingThroughAServiceNeedsTheUsersOwnWordsWhateverIsDeleted() {
         var chat = Conversation()
         // A fresh chat, nothing about the calendar: saying delete is enough.
-        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess(deletes: true, opens: true))
-        #expect(chat.serviceAccess(for: "yes, that one") == ToolAccess(deletes: true, opens: true))       // answering a question about it
-        #expect(chat.serviceAccess(for: "thanks") == ToolAccess(opens: true))
+        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess(deletes: true, opens: true, remembers: true))
+        #expect(chat.serviceAccess(for: "yes, that one") == ToolAccess(deletes: true, opens: true, remembers: true))       // answering a question about it
+        #expect(chat.serviceAccess(for: "thanks") == ToolAccess(opens: true, remembers: true))
         for text in ["what reminders do I have", "mark the milk one as done", "update me on Friday", "change the wording"] {
-            #expect(chat.serviceAccess(for: text) == ToolAccess(opens: true), "\(text)")
+            #expect(chat.serviceAccess(for: text) == ToolAccess(opens: true, remembers: true), "\(text)")
         }
         // Never in a chat that holds a file.
         _ = chat.begin(question: "summarise", attachments: [Attachment(kind: .text, name: "a.txt", text: "x")])

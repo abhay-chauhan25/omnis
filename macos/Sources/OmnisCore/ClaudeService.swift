@@ -65,7 +65,7 @@ public struct ClaudeConfig: Sendable {
     }
 
     /// The services whose tools OMNIS's own tool list may contain.
-    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "photos", "mail", "messages", "browser", "apps"]
+    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "photos", "mail", "messages", "browser", "apps", "memory"]
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -242,6 +242,8 @@ public final class ClaudeService: @unchecked Sendable {
     private var sessionModel: ClaudeModel?
     private var sessionEffort: String?
     private var needsHistory = true
+    /// What the user has asked OMNIS to remember, read each time a session starts.
+    public var memory: (@Sendable () -> [String])?
     private var idleTimer: DispatchWorkItem?
     private var silenceTimer: DispatchWorkItem?
     private var usage = UsageWindows()
@@ -385,7 +387,7 @@ public final class ClaudeService: @unchecked Sendable {
         child.executableURL = config.executable
         let prompt: String
         switch config.profile {
-        case .assistant: prompt = ClaudePrompt.system()
+        case .assistant: prompt = ClaudePrompt.system(memory: memory?() ?? [])
         case .advisor(_, let project): prompt = ClaudePrompt.advisor(project: project)
         }
         child.arguments = config.arguments(model: request.model, effort: request.effort, systemPrompt: prompt)

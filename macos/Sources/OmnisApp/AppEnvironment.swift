@@ -116,6 +116,14 @@ enum AppEnvironment {
         return URL(fileURLWithPath: arguments[index + 1])
     }
 
+    /// Development aid: `--render-chat <folder>` draws the dashboard's Chat view to pictures in
+    /// that folder and exits. It uses made-up chats kept in that folder, never the user's own.
+    static var renderChat: URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--render-chat"), index + 1 < arguments.count else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+    }
+
     /// Development aid: `--render-notch <folder>` draws the notch panel to pictures in
     /// that folder and exits, with no window shown. It is how the look is checked.
     static var renderNotch: URL? {

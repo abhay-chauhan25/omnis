@@ -76,6 +76,11 @@ SERVICE_TOOLS = [
     _tool("spotify_queue", "Add one song to play next on Spotify, without interrupting what is playing.",
           {"query": "The song's title, with the artist if the user gave one.",
            "pick": "Instead of query: one of the other matches from the last search, like s2."}, []),
+    _tool("memory_remember", "Prepare remembering one thing about the user for later chats. The user must confirm. "
+          "Only when they ask for something to be remembered, or have agreed to your offer.",
+          {"fact": "One short sentence about the user, in the third person. Never a password, code or key."}, ["fact"]),
+    _tool("memory_forget", "Prepare forgetting one remembered thing. The user must confirm.",
+          {"about": "A few words saying which remembered thing to forget."}, ["about"]),
     _tool("apps_open", "Open one of the user's saved apps or projects on their Mac, at once. Use it whenever the user wants an app or "
           "project opened, started, shown or brought up, however they word it. Try it before saying something cannot be opened.",
           {"name": "The app's or project's name, as the user said it."}),

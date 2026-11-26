@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chat: ChatWindowController!
+    private var chatModel: ChatModel?
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem!
     private var backend: BackendService?
@@ -95,10 +96,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         services.append(AppsTools(registry: {
             (try? ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)).flatMap { try? Registry.load(config: $0) }
         }, performer: SystemLaunchPerformer()))
+        // Chats and what OMNIS remembers are kept in files on this Mac. A rehearsal keeps nothing,
+        // and a picture of the Chat view is drawn from made-up chats in its own folder.
+        let sampleFolder = AppEnvironment.renderChat?.appendingPathComponent("sample", isDirectory: true)
+        let chatStore: ChatStore? = AppEnvironment.voiceRehearsal != nil ? nil
+            : ChatStore(folder: sampleFolder?.appendingPathComponent("chats", isDirectory: true) ?? OmnisPaths.chatsFolder)
+        let memoryStore = MemoryStore(file: sampleFolder?.appendingPathComponent("memory.json") ?? OmnisPaths.memoryFile)
+        // A model can only ask for something to be remembered: the user's click on the preview is what keeps it.
+        services.append(MemoryTools(store: memoryStore))
         claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }
+        claude?.memory = { memoryStore.promptLines() }
         // Changing the calendar goes through the chat model, on the user's click.
         let model = ChatModel(backend: backend, audit: audit, calendarWriter: calendar, claude: claude,
-                              projectSetup: projectSetup, services: services, spotify: spotify)
+                              projectSetup: projectSetup, services: services, spotify: spotify,
+                              store: chatStore, memory: memoryStore)
+        chatModel = model
         chat = ChatWindowController(model: model)
         // The dashboard is the main window. A question typed there is answered in the chat window.
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
@@ -124,13 +136,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Something that needs the user's eyes during a spoken conversation is shown in
         // the notch panel when there is one, and in the chat window otherwise.
-        voice = VoiceModel(chat: model, audit: audit, trace: AppEnvironment.voiceTrace, showChat: { [weak self] in
+        voice = VoiceModel(chat: model, audit: audit, autoStart: AppEnvironment.renderChat == nil,
+                           trace: AppEnvironment.voiceTrace, showChat: { [weak self] in
             guard let self else { return }
             // Already in front of the user in the dashboard: nothing more to show.
             if self.dashboard.isVisible, dashboardModel.showChat { return }
             if let notch = self.notch, notch.isAvailable, !self.dashboard.isVisible { self.notchModel.reveal() } else { self.chat.show() }
         })
         dashboard = DashboardWindowController(model: dashboardModel, chat: model, project: projectMode, voice: voice)
+        if let folder = AppEnvironment.renderChat, let chatStore {
+            renderChat(to: folder, store: chatStore, memory: memoryStore, dashboard: dashboardModel, chat: model)
+            return
+        }
         // The panel at the notch: voice away from the dashboard, and a few everyday things on hover.
         notchModel = NotchModel(dashboard: dashboardModel, chat: model, voice: voice,
                                 music: services.first { $0.service == "spotify" }, reminders: reminderStore, audit: audit)
@@ -187,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         projectMode?.closeAll()
         // The microphone is let go of before anything else.
         if voice?.isOn == true { voice.stopForQuit() }
+        // The chat as it stands is written before anything is shut down.
+        chatModel?.saveNow()
         backend?.stop()
         // Waits until Claude Code has gone, so nothing is left running.
         claude?.shutdown()
@@ -238,6 +257,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("drew \(name)")
                 }
             }
+            exit(0)
+        }
+    }
+
+    /// Draws the dashboard's Chat view, with made-up chats, to pictures. Nothing of the user's is read or shown.
+    private func renderChat(to folder: URL, store: ChatStore, memory: MemoryStore, dashboard: DashboardModel, chat: ChatModel) {
+        let now = Date()
+        func chat_(_ title: String, hoursAgo: Double, pinned: Bool = false, _ turns: [(String, String)], notes: [String] = []) -> SavedChat {
+            var messages: [SavedMessage] = []
+            for (index, turn) in turns.enumerated() {
+                messages.append(SavedMessage(role: "user", text: turn.0))
+                messages.append(SavedMessage(role: "assistant", text: turn.1, sourceLine: "Claude Haiku 5.5 \u{00B7} low effort \u{00B7} 1.2 s",
+                                             notes: index == turns.count - 1 ? notes : []))
+            }
+            let when = now.addingTimeInterval(-hoursAgo * 3600)
+            return SavedChat(title: title, created: when, updated: when, pinned: pinned, messages: messages)
+        }
+        store.deleteAll()
+        memory.removeAll()
+        let long = chat_("Explain binary search trees", hoursAgo: 0.4, [
+            ("Explain binary search trees, briefly", """
+            A binary search tree keeps its values in order so that looking one up takes few steps.
+
+            ## The rule
+            - Everything in a node's left branch is smaller than the node.
+            - Everything in its right branch is larger.
+
+            ## Why it is fast
+            Each comparison throws away half of what is left, so a balanced tree of a million values needs about 20 steps.
+
+            ```
+            func contains(_ value: Int, in node: Node?) -> Bool {
+                guard let node else { return false }
+                if value == node.value { return true }
+                return contains(value, in: value < node.value ? node.left : node.right)
+            }
+            ```
+
+            The catch is balance: values added in sorted order make a tree that is really a list.
+            """),
+            ("Add a reminder to revise this on Friday", "The reminder is ready for you to check and confirm."),
+        ], notes: ["New reminder: Revise binary search trees. Added to Reminders."])
+        let samples = [
+            long,
+            chat_("Trip to Lisbon in March", hoursAgo: 30, pinned: true, [("Help me plan four days in Lisbon", "Here is a loose plan, with one neighbourhood a day.")]),
+            chat_("What is on my calendar today?", hoursAgo: 3, [("What is on my calendar today?", "You have two things today: a seminar at 14:00 and dinner at 19:30.")]),
+            chat_("Play something calm", hoursAgo: 27, [("Play something calm", "Playing Weightless by Marconi Union.")]),
+            chat_("Difference between a mutex and a semaphore", hoursAgo: 70, [("Difference between a mutex and a semaphore?", "A mutex lets one thread in; a semaphore lets a set number in.")]),
+            chat_("Draft a note to my landlord", hoursAgo: 200, [("Draft a note to my landlord about the heating", "Here is a short, polite draft.")]),
+        ]
+        for sample in samples { try? store.save(sample) }
+        for fact in ["Prefers metric units", "Studies computer science", "Likes answers short, with an example"] { _ = try? memory.add(fact) }
+        chat.refreshChats()
+        chat.reloadMemory()
+        dashboard.showChat = true
+
+        let size = NSSize(width: 1360, height: 880)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(red: 0.024, green: 0.031, blue: 0.043, alpha: 1)
+        let host = NSHostingView(rootView: DashboardView(model: dashboard, chat: chat, project: projectMode, voice: voice))
+        host.frame = NSRect(origin: .zero, size: size)
+        window.contentView = host
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        Task { @MainActor in
+            for name in ["welcome", "conversation"] {
+                if name == "conversation" { chat.openChat(long.id) }
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                host.layoutSubtreeIfNeeded()
+                guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                if let png = bitmap.representation(using: .png, properties: [:]) {
+                    try? png.write(to: folder.appendingPathComponent("\(name).png"))
+                    print("drew \(name)")
+                }
+            }
+            store.deleteAll()
+            memory.removeAll()
             exit(0)
         }
     }

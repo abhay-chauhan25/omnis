@@ -112,6 +112,12 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     public var sourceLine: String?
     /// Files the user attached to this message.
     public var attachments: [Attachment] = []
+    /// True for an answer written after the chat was given an email's text.
+    /// Its words are shown now but are not written to disk with the chat.
+    public var withheld = false
+    /// In a chat opened again from disk: what was read, used or previewed
+    /// for this message, a line each. They are words only, never buttons.
+    public var archivedNotes: [String] = []
 
     public init(id: UUID = UUID(), role: Role, text: String, state: State = .done) {
         self.id = id
@@ -121,8 +127,8 @@ public struct ChatMessage: Equatable, Identifiable, Sendable {
     }
 }
 
-/// The conversation in the chat window. It lives only in memory: it is gone
-/// when a new chat is started or OMNIS quits.
+/// The conversation in the chat window. What is kept of it on disk, and
+/// what is left out, is decided in `saved()`.
 public struct Conversation: Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
     /// True once the user has kept any turn of this chat on this Mac. From
@@ -182,7 +188,9 @@ public struct Conversation: Equatable, Sendable {
             staysLocal = true
         }
         messages.append(message)
-        let answer = ChatMessage(role: .assistant, text: "", state: .streaming)
+        var answer = ChatMessage(role: .assistant, text: "", state: .streaming)
+        // Once an email is in the chat, any later answer may repeat it.
+        answer.withheld = holdsEmail
         messages.append(answer)
         return answer.id
     }
@@ -237,7 +245,8 @@ public struct Conversation: Equatable, Sendable {
         serviceSendNext = asksSend
         // Email is read only when the user's own words bring it up; after that, "read the second one" is enough.
         if PersonalIntent.asksAboutMail(text) { mailAsked = true }
-        return ToolAccess(deletes: deletes, sends: sends, opens: !hasFile, mail: mailAsked, anyDate: PersonalIntent.namesADate(text))
+        return ToolAccess(deletes: deletes, sends: sends, opens: !hasFile, mail: mailAsked, anyDate: PersonalIntent.namesADate(text),
+                          remembers: !hasFile)
     }
 
     /// Adds a proposed change to an answer. The same change twice is shown once.
@@ -388,7 +397,16 @@ public struct Conversation: Equatable, Sendable {
     public mutating func markHoldsOthersWords() {
         hasFile = true
         hasPersonalData = true
+        holdsEmail = true
+        // The answer being written now is the one that was given the text.
+        if let last = messages.indices.last, messages[last].role == .assistant, messages[last].state == .streaming {
+            messages[last].withheld = true
+        }
     }
+
+    /// True once the chat has been given text written by other people through
+    /// a service, such as an email. Answers from then on are not saved.
+    public private(set) var holdsEmail = false
 
     /// Whether the model may prepare an event for this message. Only when the
     /// user's own words ask for one, or follow straight on from asking, and
@@ -484,10 +502,21 @@ public struct Conversation: Equatable, Sendable {
         calendarTouched = false
         deleteNext = false
         hasFile = false
+        holdsEmail = false
         mailAsked = false
         offerProjectNext = false
         serviceDeleteNext = false
         serviceSendNext = false
+    }
+
+    /// Puts back a chat read from disk. See `init(restoring:)`.
+    mutating func restore(messages restored: [ChatMessage], personal: Bool, othersWords: Bool, email: Bool) {
+        clear()
+        messages = restored
+        hasPersonalData = personal || othersWords || email
+        staysLocal = hasPersonalData
+        hasFile = othersWords || email
+        holdsEmail = email
     }
 
     /// The most history sent with one question, matching what the backend accepts.
@@ -531,11 +560,13 @@ public struct Conversation: Equatable, Sendable {
             if question.role == .user, answer.role == .assistant {
                 let usable = (answer.state == .done || answer.state == .stopped)
                     && (!answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !answer.proposals.isEmpty
-                        || !answer.projects.isEmpty || !answer.actions.isEmpty)
+                        || !answer.projects.isEmpty || !answer.actions.isEmpty || !answer.archivedNotes.isEmpty)
                 if usable {
-                    turns.append(ChatTurn(role: .user, content: question.text, attachments: question.attachments))
+                    let files = question.archivedNotes.isEmpty ? "" : "\n[" + question.archivedNotes.joined(separator: " ") + "]"
+                    turns.append(ChatTurn(role: .user, content: question.text + files, attachments: question.attachments))
                     turns.append(ChatTurn(role: .assistant, content: answer.text + Self.proposalNotes(answer.proposals)
-                                          + Self.projectNotes(answer.projects) + Self.actionNotes(answer.actions)))
+                                          + Self.projectNotes(answer.projects) + Self.actionNotes(answer.actions)
+                                          + answer.archivedNotes.map { "\n[\($0)]" }.joined()))
                 }
                 index += 2
             } else {
@@ -544,6 +575,110 @@ public struct Conversation: Equatable, Sendable {
         }
         return turns
     }
+}
+
+// MARK: - Keeping a chat
+
+public extension Conversation {
+    static let withheldNote = "This answer was about your email, so its words were not saved."
+    static let fileNote = "The file itself was not saved with this chat."
+
+    /// The chat as it is written to disk. An answer still being written is
+    /// left out, with its question, until it has finished.
+    ///
+    /// Left out on purpose: the contents of attached files and pictures (only
+    /// their names are kept), and the words of any answer written once the
+    /// chat had been given an email. Previews become one line each.
+    func saved() -> [SavedMessage] {
+        var kept: [SavedMessage] = []
+        for message in messages {
+            switch message.role {
+            case .user:
+                kept.append(SavedMessage(role: "user", text: message.text, files: message.attachments.map(\.name)
+                                         + Self.fileNames(in: message.archivedNotes)))
+            case .assistant:
+                if message.state == .streaming {
+                    // Its question goes too: half an exchange is not kept.
+                    if kept.last?.role == "user" { kept.removeLast() }
+                    continue
+                }
+                var saved = SavedMessage(role: "assistant", text: message.withheld ? "" : message.text, withheld: message.withheld)
+                switch message.state {
+                // A reason could quote what was being read, so for a withheld answer only the fact of it is kept.
+                case .failed(let why): saved.state = "failed"; saved.failure = message.withheld ? "This answer could not be produced." : why
+                case .stopped: saved.state = "stopped"
+                case .done, .streaming: saved.state = "done"
+                }
+                saved.sourceLine = message.sourceLine
+                if !message.withheld {
+                    saved.sources = message.sources.map { SavedSource(title: $0.title, url: $0.url.absoluteString) }
+                    saved.notes = message.archivedNotes + Self.outcomeNotes(for: message)
+                }
+                kept.append(saved)
+            }
+        }
+        return kept
+    }
+
+    private static let filePrefix = "Attached: "
+
+    private static func fileNames(in notes: [String]) -> [String] {
+        notes.compactMap { $0.hasPrefix(filePrefix) ? String($0.dropFirst(filePrefix.count)) : nil }
+    }
+
+    /// What became of each preview under an answer, and what was read for it.
+    private static func outcomeNotes(for message: ChatMessage) -> [String] {
+        func outcome(_ state: EventProposal.State) -> String {
+            switch state {
+            case .done(let result): return result
+            case .declined: return "not done"
+            case .failed: return "could not be done"
+            case .waiting, .saving, .replaced: return "not confirmed, so not done"
+            }
+        }
+        var notes: [String] = []
+        notes += message.proposals.map { "\($0.change.heading): \($0.change.title). \(outcome($0.state).capitalisedFirst)." }
+        notes += message.actions.map { "\($0.heading): \($0.title). \(outcome($0.state).capitalisedFirst)." }
+        notes += message.projects.map { "New project: \($0.plan.name). \(outcome($0.state).capitalisedFirst)." }
+        if !message.calendarNotes.isEmpty { notes.append("Read your calendar for " + message.calendarNotes.joined(separator: "; ")) }
+        notes += message.serviceNotes
+        return notes
+    }
+
+    /// A chat read back from disk. It opens with the strictest reading of
+    /// what it held: a chat that had a file or an email keeps those rules,
+    /// and nothing that needs asking again is taken as already agreed.
+    init(restoring chat: SavedChat) {
+        self.init()
+        var restored: [ChatMessage] = []
+        for saved in chat.messages {
+            if saved.role == "user" {
+                var message = ChatMessage(role: .user, text: saved.text)
+                message.archivedNotes = saved.files.map { Self.filePrefix + $0 }
+                restored.append(message)
+            } else {
+                let state: ChatMessage.State
+                switch saved.state {
+                case "failed": state = .failed(saved.failure ?? "This answer could not be produced.")
+                case "stopped": state = .stopped
+                default: state = .done
+                }
+                var message = ChatMessage(role: .assistant, text: saved.text, state: state)
+                message.sourceLine = saved.sourceLine
+                message.sources = saved.sources.compactMap { source in
+                    URL(string: source.url).map { SearchResult(title: source.title, url: $0, snippet: "") }
+                }
+                message.archivedNotes = saved.notes + (saved.withheld ? [Self.withheldNote] : [])
+                message.withheld = saved.withheld
+                restored.append(message)
+            }
+        }
+        restore(messages: restored, personal: chat.personal, othersWords: chat.othersWords, email: chat.email)
+    }
+}
+
+extension String {
+    var capitalisedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
 // MARK: - Block formatting

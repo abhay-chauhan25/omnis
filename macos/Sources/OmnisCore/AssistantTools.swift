@@ -71,8 +71,12 @@ public struct ToolAccess: Equatable, Sendable {
     public var mail: Bool
     /// True when the user's own message names a date, so a search may reach further back than usual.
     public var anyDate: Bool
+    /// True when something may be put forward to remember or forget. Never in a chat that holds a file or an email.
+    public var remembers: Bool
 
-    public init(deletes: Bool = false, sends: Bool = false, opens: Bool = false, mail: Bool = false, anyDate: Bool = false) {
+    public init(deletes: Bool = false, sends: Bool = false, opens: Bool = false, mail: Bool = false, anyDate: Bool = false,
+                remembers: Bool = false) {
+        self.remembers = remembers
         self.deletes = deletes
         self.sends = sends
         self.opens = opens
