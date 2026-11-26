@@ -4,7 +4,7 @@ import Foundation
 public enum VoicePhrases {
     // "Omnis" is not a word a recogniser knows, so near misses count: it is often heard as "Omnes".
     private static let wake = try! NSRegularExpression(
-        pattern: #"\b(?:hey|hay|hi|okay|ok|kay|k)[\s,.!]*(?:omn[iea]s|omni's|omni|omnus|omniss|omness|amnis|omnious)\b[\s,.!?:;\-]*"#,
+        pattern: #"\b(?:(?:hey|hay|hi|okay|ok|kay|k|yo)[\s,.!]*(?:omn[iea]s|omni's|omni|omnus|omniss|omness|amnis|omnious)|(?:hey|hay|yo)[\s,.!]+(?:omi|omie|omy|omee))\b[\s,.!?:;\-]*"#,
         options: [.caseInsensitive])
 
     /// What was said after "Hey OMNIS", or nil if the phrase is not there.

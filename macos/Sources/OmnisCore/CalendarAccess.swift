@@ -1158,6 +1158,23 @@ public enum PersonalIntent {
             + #"|\b(reply|respond|write back)\b"#,
         options: [.caseInsensitive])
 
+    private static let mailPattern = try! NSRegularExpression(
+        pattern: #"\b(e-?mails?|g?mail|inbox|outlook|mailbox)\b"#, options: [.caseInsensitive])
+    private static let datePattern = try! NSRegularExpression(
+        pattern: #"\b((19|20)\d\d|jan\w*|feb\w*|mar(ch)?|apr\w*|may|june?|july?|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|last (year|semester|term|spring|summer|fall|autumn|winter)|\d+ (months?|years?) ago|months? ago|years? ago|a year|this year|ever|all time|\d{1,2}/\d{1,2}(/\d{2,4})?)\b"#,
+        options: [.caseInsensitive])
+
+    /// True when the user's own words name a date or a stretch of time long ago,
+    /// which is what lets a search of their email reach further back than usual.
+    public static func namesADate(_ text: String) -> Bool {
+        datePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// True when the user's own words are about their email.
+    public static func asksAboutMail(_ text: String) -> Bool {
+        mailPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
     /// True when the user's own words ask for a message to be sent.
     public static func asksToSend(_ text: String) -> Bool {
         sendPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil

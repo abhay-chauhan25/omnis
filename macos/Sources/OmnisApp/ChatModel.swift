@@ -95,6 +95,9 @@ final class ChatModel: ObservableObject {
         claude?.onPersonalDataDelivered { [weak self] in
             Task { @MainActor in self?.conversation.markPersonal() }
         }
+        claude?.onOthersWordsDelivered { [weak self] in
+            Task { @MainActor in self?.conversation.markHoldsOthersWords() }
+        }
         // The last figures are kept between runs, so they show at once and
         // the limits apply from the first question. A window that has since
         // reset is ignored when they are read.
@@ -468,6 +471,12 @@ final class ChatModel: ObservableObject {
                     self?.show(notice: "Spotify was not connected: \(error.localizedDescription).", seconds: 10)
                 }
             }
+        case .mailForget:
+            MailTools.forgetAccount()
+            audit.record(action: "mail_account", outcome: "forgotten")
+            show(notice: "OMNIS has forgotten which email account to read. It will choose again next time you ask about email.", seconds: 6)
+        case .mailHelp:
+            show(notice: "OMNIS reads the inbox of the one account switched on in Mail when you first ask. /mail forget makes it choose again.", seconds: 10)
         case .unknown(let help):
             show(notice: help, seconds: 8)
         }

@@ -82,6 +82,14 @@ SERVICE_TOOLS = [
     _tool("messages_send", "Prepare a text message from the user to one person. The user sees it and must click Send; nothing is sent by you.",
           {"to": "The person's name as it is in the user's contacts.", "text": "The words of the message, exactly as the user wants them.",
            "contact": "Only after messages_send listed several matches and the user chose one: that match's id, like c2."}, ["text"]),
+    _tool("mail_list", "List the newest emails in the inbox of the user's email account: sender, subject, when, read or unread. "
+          "Each has an id like m3. This does not show what an email says. Reading only.",
+          {"unread": "\"true\" for unread emails only.", "from": "Only emails whose sender's name or address contains this.",
+           "about": "Only emails whose subject contains this.",
+           "since": "Earliest day, as YYYY-MM-DD. Leave out for the last 90 days; give it only when the user names a date.",
+           "until": "Latest day, as YYYY-MM-DD. Leave out for up to now.", "limit": "How many to list, up to 25. Leave out for 15."}, []),
+    _tool("mail_read", "Read what one email says, with the names of its attachments. Reading only.",
+          {"email": "The email's id from mail_list, like m3."}),
     _tool("photos_search", "List photos in the user's library, newest first, by when they were taken. Each has an id like p3. "
           "This does not show what is in them.",
           {"from": "Earliest day, as YYYY-MM-DD. Leave out for no limit.", "to": "Latest day, as YYYY-MM-DD. Leave out for no limit.",

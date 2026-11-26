@@ -506,15 +506,18 @@ final class VoiceModel: ObservableObject {
 
     /// What, if anything, the answer left waiting for the user.
     private func pending(in answer: ChatMessage) -> VoicePending? {
+        // A chat that holds an email or a file takes no spoken yes: what is being proposed
+        // may have come from that text, so it is left on screen for a click.
+        let clickOnly = chat.conversation.holdsOthersWords
         for action in answer.actions where action.state == .waiting {
-            if let summary = VoiceConfirm.summary(of: action) {
+            if !clickOnly, let summary = VoiceConfirm.summary(of: action) {
                 pendingAction = action.id
                 return .confirmable(summary: summary)
             }
             return .onScreen
         }
         for proposal in answer.proposals where proposal.state == .waiting {
-            if let summary = VoiceConfirm.summary(of: proposal) {
+            if !clickOnly, let summary = VoiceConfirm.summary(of: proposal) {
                 pendingEvent = proposal.id
                 return .confirmable(summary: summary)
             }

@@ -210,7 +210,7 @@ public final class ClaudeService: @unchecked Sendable {
 
     private struct Active {
         let id: UUID
-        let request: ClaudeRequest
+        var request: ClaudeRequest
         let continuation: AsyncThrowingStream<AnswerEvent, Error>.Continuation
         let started: Date
         var searches = 0
@@ -247,6 +247,7 @@ public final class ClaudeService: @unchecked Sendable {
     private var usage = UsageWindows()
     private var usageHandler: (@Sendable (UsageWindows) -> Void)?
     private var personalDataHandler: (@Sendable () -> Void)?
+    private var othersWordsHandler: (@Sendable () -> Void)?
     private var gateHandler: (@Sendable (_ action: String, _ tool: String, _ outcome: String, _ detail: String?) -> Void)?
     private let projectPlanner: ProjectPlanner?
     private let services: [any AssistantTools]
@@ -273,6 +274,11 @@ public final class ClaudeService: @unchecked Sendable {
     }
 
     /// Called the moment calendar text has been handed to the model.
+    /// Called when a chat has been given text written by other people, such as an email.
+    public func onOthersWordsDelivered(_ handler: @escaping @Sendable () -> Void) {
+        queue.sync { othersWordsHandler = handler }
+    }
+
     public func onPersonalDataDelivered(_ handler: @escaping @Sendable () -> Void) {
         queue.sync { personalDataHandler = handler }
     }
@@ -819,6 +825,17 @@ public final class ClaudeService: @unchecked Sendable {
                 if provider.holdsPersonalData {
                     personalDataHandler?()
                     active?.sensitive = true
+                }
+                if provider.deliversOthersWords {
+                    // From here on, in this answer and the rest of the chat, nothing may be sent, deleted,
+                    // opened or set up: the text just handed over could be what asks for it.
+                    othersWordsHandler?()
+                    let had = active?.request.toolAccess ?? ToolAccess()
+                    active?.request.toolAccess = ToolAccess(mail: had.mail, anyDate: had.anyDate)
+                    active?.request.allowProject = false
+                    if let calendar = active?.request.access {
+                        active?.request.access = CalendarToolAccess(calendar: calendar.calendar, write: calendar.write, deletes: .none)
+                    }
                 }
                 active?.continuation.yield(.serviceNote(note))
                 answer(content)

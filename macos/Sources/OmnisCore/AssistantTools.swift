@@ -67,11 +67,17 @@ public struct ToolAccess: Equatable, Sendable {
 
     /// True when an app or project may be opened. Never in a chat that holds a file, whose text could be what asks.
     public var opens: Bool
+    /// True when email may be read: the user's own message is about their email, or the chat already is.
+    public var mail: Bool
+    /// True when the user's own message names a date, so a search may reach further back than usual.
+    public var anyDate: Bool
 
-    public init(deletes: Bool = false, sends: Bool = false, opens: Bool = false) {
+    public init(deletes: Bool = false, sends: Bool = false, opens: Bool = false, mail: Bool = false, anyDate: Bool = false) {
         self.deletes = deletes
         self.sends = sends
         self.opens = opens
+        self.mail = mail
+        self.anyDate = anyDate
     }
 }
 
@@ -93,11 +99,16 @@ public protocol AssistantTools: Sendable {
     /// Tools that send words chosen by the model to an outside service, the
     /// way a web search does. They follow the same rule as a web search.
     var outwardTools: Set<String> { get }
+    /// True if what this service reads was written by other people, as email is.
+    /// A chat given such text is held to the rules of a chat that holds a file:
+    /// nothing is sent, deleted or opened from it, since the text could be what asks.
+    var deliversOthersWords: Bool { get }
 }
 
 public extension AssistantTools {
     var holdsPersonalData: Bool { true }
     var outwardTools: Set<String> { [] }
+    var deliversOthersWords: Bool { false }
 }
 
 /// Whether the user has said web searches may go on in a chat that holds

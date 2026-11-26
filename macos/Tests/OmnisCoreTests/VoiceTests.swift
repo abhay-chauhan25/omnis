@@ -11,7 +11,12 @@ import Testing
         #expect(VoicePhrases.afterWake("Hey Omnis.") == "")
         #expect(VoicePhrases.afterWake("so anyway. Hey Omni's! Text Sam I'm late") == "Text Sam I'm late")
         #expect(VoicePhrases.afterWake("OK Omnis: play") == "play")
-        for other in ["what's on my calendar", "hey there", "omnis is a Latin word", "hey ominous clouds", "they omit this", ""] {
+        for said in ["Yo Omnis, play some music", "yo omi play some music", "Hey Omi, play some music", "Yo, Omie! play some music"] {
+            #expect(VoicePhrases.afterWake(said) == "play some music", "\(said)")
+        }
+        for other in ["what's on my calendar", "hey there", "omnis is a Latin word", "hey ominous clouds", "they omit this", "", "hey omit that",
+                      "yo what's up", "oh me oh my", "you owe me", "hey, omicron is a letter", "Komi can't communicate",
+                      "okay, oh me, I forgot my keys", "ok o me", "k omi"] {
             #expect(VoicePhrases.afterWake(other) == nil, "\(other)")
         }
     }

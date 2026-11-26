@@ -73,6 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         services.append(PhotosTools(library: PhotoKitLibrary()))
         // A message is only ever prepared; the user's click on the preview sends it.
         services.append(MessagesTools(contacts: SystemContacts(), sender: MessagesAppSender()))
+        // Email is read through the Mail app, and only read; macOS asks the first time.
+        services.append(MailTools())
         if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
         // Spotify plays here; finding a song by name uses its catalogue, once the user has connected it.
         let spotify = FileManager.default.fileExists(atPath: "/Applications/Spotify.app") ? SpotifyAccount() : nil

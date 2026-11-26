@@ -159,7 +159,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         try stillWanted()
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let context = AnalysisContext()
-        context.contextualStrings[.general] = ["OMNIS", "Hey OMNIS"]
+        context.contextualStrings[.general] = ["OMNIS", "Hey OMNIS", "Yo OMNIS", "Omi", "Hey Omi", "Yo Omi"]
         try? await analyzer.setContext(context)
         guard let wanted = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { throw VoiceProblem.notSupported }
         try stillWanted()

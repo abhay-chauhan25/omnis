@@ -131,6 +131,10 @@ The user asked for Siri (Voice 1). Apple does not offer Siri voices to apps by n
 
 The System Voice says one sentence at a time, so OMNIS keeps the rest in line itself. Not verified: nobody has heard it yet, and it is not known whether the pace setting or the moving dots work with a Siri voice.
 
+### More ways to start (asked for by the user, 2026-11-26)
+
+"Yo OMNIS", "Yo Omi" and "Hey Omi" now start a conversation as "Hey OMNIS" does. The short name is held to a stricter rule than the long one, because it is closer to ordinary words: only after "hey" or "yo", and only as a word of its own.
+
 ### Finding faults
 
 `OMNIS --voice-trace <file>` writes what voice hears, says and does to a file, with times. It holds spoken words, so it is written only when OMNIS is started that way, and the file should be deleted afterwards. How long the first words took is also in the Activity log (`voice_timing`), as a number and nothing else.

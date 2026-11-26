@@ -235,7 +235,9 @@ public struct Conversation: Equatable, Sendable {
         let asksSend = PersonalIntent.asksToSend(text) && !hasFile
         let sends = asksSend || (serviceSendNext && !hasFile)
         serviceSendNext = asksSend
-        return ToolAccess(deletes: deletes, sends: sends, opens: !hasFile)
+        // Email is read only when the user's own words bring it up; after that, "read the second one" is enough.
+        if PersonalIntent.asksAboutMail(text) { mailAsked = true }
+        return ToolAccess(deletes: deletes, sends: sends, opens: !hasFile, mail: mailAsked, anyDate: PersonalIntent.namesADate(text))
     }
 
     /// Adds a proposed change to an answer. The same change twice is shown once.
@@ -372,8 +374,21 @@ public struct Conversation: Equatable, Sendable {
     /// chat. After that, "delete the second one" is enough to ask for a change.
     private var calendarTouched = false
     private var deleteNext = false
-    /// True once a file has been attached in this chat.
+    /// True once the user has asked about their email in this chat.
+    private var mailAsked = false
+    /// True once a file has been attached in this chat, or it has been given
+    /// other people's words some other way, such as an email.
     private var hasFile = false
+
+    /// True once the chat holds a file or other people's words, such as an email.
+    public var holdsOthersWords: Bool { hasFile }
+
+    /// The chat has been given text written by other people. From here it is
+    /// held to the rules of a chat that holds a file.
+    public mutating func markHoldsOthersWords() {
+        hasFile = true
+        hasPersonalData = true
+    }
 
     /// Whether the model may prepare an event for this message. Only when the
     /// user's own words ask for one, or follow straight on from asking, and
@@ -469,6 +484,7 @@ public struct Conversation: Equatable, Sendable {
         calendarTouched = false
         deleteNext = false
         hasFile = false
+        mailAsked = false
         offerProjectNext = false
         serviceDeleteNext = false
         serviceSendNext = false
