@@ -26,7 +26,7 @@ OMNIS is a working chat window on the Mac. It launches apps and projects, answer
 | Photos, reading only | Built 2026-11-24; tested with a stand-in and once live with a made-up picture; not yet run against the real library | `docs/stages/photos.md` |
 | Messages | In progress 2026-11-24. Sending built and tested with stand-ins (Contacts lookup, preview to confirm); no real message sent yet. The separate reader is built, tested with a made-up database and tried on this Mac without access. Reading tools, Contacts names and sending not built. Security-reviewed and hardened. **Full Disk Access must not be given yet:** the signing key has to be protected first, which is waiting on the user | ADR-0015, `docs/stages/messages.md` |
 | Voice ("Hey OMNIS") | Built 2026-11-24; the user has talked to it. Reworked 2026-11-26 for conversation: answers spoken as they are written, Haiku for talk, no "Anything else?", talking over OMNIS, opening apps. Rules tested and rehearsed against real Claude; **sentence-by-sentence speech, talking over and echo cancelling have not been run with a microphone** | ADR-0016, `docs/stages/voice.md` |
-| Email (reading only) | Built 2026-11-26: the inbox of the one account chosen in the Mail app, through fixed scripts. Tested with a stand-in and reviewed, findings fixed. **Never run against Mail itself**; waiting for the user's first question about their email | `docs/stages/mail.md` |
+| Email (reading only) | Built 2026-11-26: the inbox of the one account chosen in the Mail app, through fixed scripts. Tested with a stand-in and reviewed, findings fixed. Reworked the same day after it proved too slow on the user's 7,600-email inbox; each request now timed against Mail at 1 to 9 seconds. Waiting for the user's first question about their email | `docs/stages/mail.md` |
 | Notch panel | Built 2026-11-24 from the approved design (voice view, everyday view, glow). Placement and content rules tested; never seen on screen | `docs/stages/notch.md` |
 | Services: mail (school Outlook), browser | Not started. Probed 2026-11-24: Outlook answers scripts but shows them no accounts and no messages, so reading through the Outlook app is not possible as it is set up. Open routes: the account in Apple Mail, Outlook's older design if the school allows it, or Microsoft's online service with the school's consent | — |
 | Dashboard (main window) | Built 2026-11-23 from the approved mock and reviewed; findings fixed. Since added: usage statistics from Claude Code's summary, memory, swap and energy in System, the Project switch. The user has seen it and asked for changes, all made. Voice and mail not built | `docs/stages/dashboard.md` |
@@ -66,7 +66,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 322. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 323. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items

@@ -37,52 +37,146 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
         defaults.removeObject(forKey: accountKey)
     }
 
-    // Both scripts are fixed text. The account's name, the count and the message's number are handed over beside them.
+    // Every script is fixed text. The account's name, positions, counts, the words searched for and a
+    // message's number are handed over beside them, never written into them.
+    //
+    // Mail answers slowly: measured on the user's inbox of 7,600 emails, about a tenth of a second for each
+    // thing asked about each email, however it is asked. So nothing here looks through the inbox. Each
+    // script touches a couple of dozen emails at most, and Mail itself does the finding where it can.
 
-    /// The newest messages in the account's inbox: number, sender, subject, age in seconds, read or not.
-    /// With no account named, the names of the accounts that are switched on in Mail.
-    static let listScript = """
+    private static let opening = """
     on run arguments
         set wantedAccount to item 1 of arguments
-        set most to (item 2 of arguments) as integer
-        set gap to (ASCII character 31)
-        set rowEnd to (ASCII character 30)
+        set secondValue to ""
+        set thirdValue to ""
+        set fourthValue to ""
+        if (count of arguments) > 1 then set secondValue to item 2 of arguments
+        if (count of arguments) > 2 then set thirdValue to item 3 of arguments
+        if (count of arguments) > 3 then set fourthValue to item 4 of arguments
+        set fieldGap to (ASCII character 31)
+        set rowGap to (ASCII character 30)
+        set unreadOnes to {}
+        set knowsUnread to false
         tell application "Mail"
-            with timeout of 40 seconds
-                set names to name of (every account whose enabled is true)
+            with timeout of 45 seconds
+                set accountNames to name of (every account whose enabled is true)
                 if wantedAccount is "" then
-                    set out to "accounts"
-                    repeat with oneName in names
-                        set out to out & gap & oneName
+                    set answerText to "accounts"
+                    repeat with oneName in accountNames
+                        set answerText to answerText & fieldGap & oneName
                     end repeat
-                    return out
+                    return answerText
                 end if
-                if names does not contain wantedAccount then return "missing"
+                if accountNames does not contain wantedAccount then return "missing"
                 try
-                    set box to mailbox "Inbox" of account wantedAccount
-                    set total to count of messages of box
+                    set theInbox to mailbox "Inbox" of account wantedAccount
+                    set inboxCount to count of messages of theInbox
                 on error
                     return "nobox"
                 end try
-                if total is 0 then return "ok"
-                if total < most then set most to total
-                -- The newest are wanted, whichever end of the inbox Mail keeps them at.
-                set firstOne to 1
-                if (date received of message 1 of box) < (date received of message total of box) then set firstOne to total - most + 1
-                set lastOne to firstOne + most - 1
-                set ids to id of messages firstOne thru lastOne of box
-                set senders to sender of messages firstOne thru lastOne of box
-                set subjects to subject of messages firstOne thru lastOne of box
-                set dates to date received of messages firstOne thru lastOne of box
-                set reads to read status of messages firstOne thru lastOne of box
+                set unreadTotal to unread count of theInbox
+    """
+    private static let closing = """
+        set rightNow to current date
+        repeat with i from 1 to count of gotNumbers
+            set thisNumber to item i of gotNumbers
+            set readWord to "unknown"
+            if knowsUnread then set readWord to ((unreadOnes does not contain thisNumber) as string)
+            set answerText to answerText & rowGap & thisNumber & fieldGap & (item i of gotSenders) & fieldGap & (item i of gotSubjects) & fieldGap & ((rightNow - (item i of gotDates)) as integer) & fieldGap & readWord
+        end repeat
+        return answerText
+    end run
+    """
+    // Which emails are unread is asked of Mail once, as a short list, when there are few enough for that to be quick.
+    private static let unreadLookup = """
+                if unreadTotal < 151 then
+                    set unreadOnes to id of (messages of theInbox whose read status is false)
+                    set knowsUnread to true
+                end if
+    """
+
+    /// Emails by where they sit in the inbox, newest first: so many, starting at a position.
+    /// With no account named, the names of the accounts that are switched on in Mail.
+    static let rangeScript = opening + """
+
+                set startAt to secondValue as integer
+                set howMany to thirdValue as integer
+                set answerText to "ok" & fieldGap & inboxCount & fieldGap & unreadTotal
+                if inboxCount < startAt then return answerText
+                set endAt to startAt + howMany - 1
+                if endAt > inboxCount then set endAt to inboxCount
+                set gotNumbers to id of messages startAt thru endAt of theInbox
+                set gotSenders to sender of messages startAt thru endAt of theInbox
+                set gotSubjects to subject of messages startAt thru endAt of theInbox
+                set gotDates to date received of messages startAt thru endAt of theInbox
+
+    """ + unreadLookup + """
+
             end timeout
         end tell
-        set rightNow to current date
-        set out to "ok"
-        repeat with i from 1 to count of ids
-            set out to out & rowEnd & (item i of ids) & gap & (item i of senders) & gap & (item i of subjects) & gap & ((rightNow - (item i of dates)) as integer) & gap & (item i of reads)
-        end repeat
-        return out
+
+    """ + closing
+
+    /// Emails Mail itself finds: the unread ones, or those whose sender or subject contains some words.
+    /// If more match than can be fetched in time, only how many is reported.
+    static let findScript = opening + """
+
+                set whichSearch to secondValue
+                set searchWords to thirdValue
+                set howMany to fourthValue as integer
+                if whichSearch is "unread" then
+                    if unreadTotal > howMany then return "many" & fieldGap & unreadTotal
+                    set gotNumbers to id of (messages of theInbox whose read status is false)
+                    set gotSenders to sender of (messages of theInbox whose read status is false)
+                    set gotSubjects to subject of (messages of theInbox whose read status is false)
+                    set gotDates to date received of (messages of theInbox whose read status is false)
+                    set unreadOnes to gotNumbers
+                    set knowsUnread to true
+                else if whichSearch is "sender" then
+                    set matchCount to count of (messages of theInbox whose sender contains searchWords)
+                    if matchCount > howMany then return "many" & fieldGap & matchCount
+                    set gotNumbers to id of (messages of theInbox whose sender contains searchWords)
+                    set gotSenders to sender of (messages of theInbox whose sender contains searchWords)
+                    set gotSubjects to subject of (messages of theInbox whose sender contains searchWords)
+                    set gotDates to date received of (messages of theInbox whose sender contains searchWords)
+                else
+                    set matchCount to count of (messages of theInbox whose subject contains searchWords)
+                    if matchCount > howMany then return "many" & fieldGap & matchCount
+                    set gotNumbers to id of (messages of theInbox whose subject contains searchWords)
+                    set gotSenders to sender of (messages of theInbox whose subject contains searchWords)
+                    set gotSubjects to subject of (messages of theInbox whose subject contains searchWords)
+                    set gotDates to date received of (messages of theInbox whose subject contains searchWords)
+                end if
+                set answerText to "ok" & fieldGap & inboxCount & fieldGap & unreadTotal
+                if whichSearch is not "unread" then
+
+    """ + unreadLookup.replacingOccurrences(of: "\n            ", with: "\n                ") + """
+
+                end if
+            end timeout
+        end tell
+
+    """ + closing
+
+    /// Where in the inbox a moment in time falls: the position of the first email that old or older.
+    /// The inbox is in order of arrival, so this is found in a dozen looks rather than by reading it all.
+    static let positionScript = opening + """
+
+                set ageWanted to secondValue as integer
+                set rightNow to current date
+                set nearEnd to 1
+                set farEnd to inboxCount + 1
+                repeat while nearEnd < farEnd
+                    set halfWay to (nearEnd + farEnd) div 2
+                    if ((rightNow - (date received of message halfWay of theInbox)) as integer) < ageWanted then
+                        set nearEnd to halfWay + 1
+                    else
+                        set farEnd to halfWay
+                    end if
+                end repeat
+                return "ok" & fieldGap & nearEnd
+            end timeout
+        end tell
     end run
     """
 
@@ -90,76 +184,65 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
     static let readScript = """
     on run arguments
         set wantedAccount to item 1 of arguments
-        set wantedID to (item 2 of arguments) as integer
-        set gap to (ASCII character 31)
-        set rowEnd to (ASCII character 30)
+        set emailNumber to (item 2 of arguments) as integer
+        set fieldGap to (ASCII character 31)
+        set rowGap to (ASCII character 30)
         tell application "Mail"
             with timeout of 40 seconds
                 try
-                    set box to mailbox "Inbox" of account wantedAccount
+                    set theInbox to mailbox "Inbox" of account wantedAccount
                 on error
                     return "nobox"
                 end try
-                set found to (messages of box whose id is wantedID)
-                if (count of found) is 0 then return "gone"
-                set one to item 1 of found
-                set fileNames to ""
+                set theMatches to (messages of theInbox whose id is emailNumber)
+                if (count of theMatches) is 0 then return "gone"
+                set theEmail to item 1 of theMatches
+                set fileList to ""
                 try
-                    repeat with oneFile in (mail attachments of one)
-                        set fileNames to fileNames & (name of oneFile) & rowEnd
+                    repeat with thisFile in (mail attachments of theEmail)
+                        set fileList to fileList & (name of thisFile) & rowGap
                     end repeat
                 end try
-                set body to (content of one) as string
-                if (count of body) > 12000 then set body to text 1 thru 12000 of body
-                return "ok" & gap & (sender of one) & gap & (subject of one) & gap & (((current date) - (date received of one)) as integer) & gap & fileNames & gap & body
+                set emailText to (content of theEmail) as string
+                if (count of emailText) > 12000 then set emailText to text 1 thru 12000 of emailText
+                return "ok" & fieldGap & (sender of theEmail) & fieldGap & (subject of theEmail) & fieldGap & (((current date) - (date received of theEmail)) as integer) & fieldGap & fileList & fieldGap & emailText
             end timeout
         end tell
     end run
     """
 
-    /// Development aid: how long each kind of request to Mail takes on this Mac. It reports
+    /// Development aid: how long each of the real requests to Mail takes on this Mac. It reports
     /// times and counts only, never a sender, a subject or any text.
     public static func timings(run: @escaping CommandRunner = Commands.system, defaults: UserDefaults = .standard) async -> [String] {
-        func step(_ name: String, _ body: String, _ arguments: [String] = []) async -> (String, String) {
-            let text = "on run arguments\ntell application \"Mail\"\nwith timeout of 90 seconds\n\(body)\nend timeout\nend tell\nend run"
+        func time(_ name: String, _ text: String, _ arguments: [String]) async -> String {
             let began = Date()
             let result = await run(osascript, ["-e", text, "--"] + arguments, nil)
             let took = String(format: "%.1f s", Date().timeIntervalSince(began))
-            let out = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return ("\(name): \(took), \(result.status == 0 ? "ok" : "failed (\(out.suffix(90)))")", result.status == 0 ? out : "")
+            let out = result.output.trimmingCharacters(in: .newlines)
+            guard result.status == 0 else { return "\(name): \(took), failed (\(out.replacingOccurrences(of: "\n", with: " ").prefix(220)))" }
+            // What came back is described, not shown: its kind, and how many emails.
+            let kind = out.components(separatedBy: "\u{1F}").first ?? ""
+            let many = tooMany(out).map { ", \($0) matched" } ?? ""
+            return "\(name): \(took), \(kind)\(many), \(rows(from: out, now: Date()).count) emails"
         }
+        guard let account = defaults.string(forKey: accountKey) else { return ["no account has been chosen yet"] }
         var lines: [String] = []
-        let (accounts, names) = await step("accounts switched on", "set found to name of (every account whose enabled is true)\nset AppleScript's text item delimiters to (ASCII character 31)\nreturn found as text")
-        let all = names.components(separatedBy: "\u{1F}").filter { !$0.isEmpty }
-        lines.append(accounts + ", \(all.count) found")
-        guard let account = defaults.string(forKey: accountKey) ?? (all.count == 1 ? all.first : nil) else { return lines + ["no single account to test"] }
-        let box = "mailbox \"Inbox\" of account (item 1 of arguments)"
-        func time(_ name: String, _ body: String) async {
-            let (line, out) = await step(name, body, [account])
-            lines.append(out.count <= 12 && !out.isEmpty ? "\(line) -> \(out)" : line)
+        lines.append(await time("newest 10", rangeScript, [account, "1", "10"]))
+        lines.append(await time("newest 25", rangeScript, [account, "1", "25"]))
+        lines.append(await time("unread", findScript, [account, "unread", "", String(mostFound)]))
+        lines.append(await time("a broad sender", findScript, [account, "sender", "edu", String(mostFound)]))
+        lines.append(await time("a narrow subject", findScript, [account, "subject", "meeting", String(mostFound)]))
+        lines.append(await time("jump to 30 days ago", positionScript, [account, String(30 * 86_400)]))
+        lines.append(await time("10 emails from 30 days ago", rangeScript, [account, "400", "10"]))
+        // Reading one email: the newest, by its number. Only how long it took is reported.
+        let newest = await run(osascript, ["-e", rangeScript, "--", account, "1", "1"], nil)
+        if let number = rows(from: newest.output.trimmingCharacters(in: .newlines), now: Date()).first?.id {
+            let began = Date()
+            let result = await run(osascript, ["-e", readScript, "--", account, String(number)], nil)
+            let kind = result.output.components(separatedBy: "\u{1F}").first ?? ""
+            lines.append(String(format: "read one email: %.1f s, ", Date().timeIntervalSince(began))
+                + (result.status == 0 ? "\(kind), \(result.output.count) characters" : "failed (\(result.output.replacingOccurrences(of: "\n", with: " ").prefix(220)))"))
         }
-        await time("count the inbox", "return count of messages of \(box)")
-        await time("is the first email the newest", "return (date received of message 1 of \(box)) > (date received of message -1 of \(box))")
-        for property in ["id", "sender", "subject", "date received", "read status"] {
-            await time("\(property) of 15 emails", "return count of (\(property) of messages 1 thru 15 of \(box))")
-        }
-        await time("everything about 1 email at once", "set one to properties of message 1 of \(box)\nreturn 1")
-        await time("all five things about 15 emails, one request each email", """
-        set seen to 0
-        repeat with n from 1 to 15
-            set {a, b, c, d, e} to {id, sender, subject, date received, read status} of message n of \(box)
-            set seen to seen + 1
-        end repeat
-        return seen
-        """)
-        await time("Mail counts unread itself", "return count of (messages of \(box) whose read status is false)")
-        await time("Mail finds the last 7 days itself", "set d to (current date) - (7 * days)\nreturn count of (messages of \(box) whose date received > d)")
-        await time("Mail finds the last 90 days itself", "set d to (current date) - (90 * days)\nreturn count of (messages of \(box) whose date received > d)")
-        await time("Mail finds a sender itself", "return count of (messages of \(box) whose sender contains \"edu\")")
-        await time("Mail finds a subject itself", "return count of (messages of \(box) whose subject contains \"meeting\")")
-        await time("Mail finds sender and 90 days together", "set d to (current date) - (90 * days)\nreturn count of (messages of \(box) whose date received > d and sender contains \"edu\")")
-        await time("numbers of the last 7 days, found by Mail", "set d to (current date) - (7 * days)\nreturn count of (id of (messages of \(box) whose date received > d))")
-        await time("unread count Mail keeps for the inbox", "return unread count of \(box)")
         return lines
     }
 
@@ -168,7 +251,18 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
         let sender: String
         let subject: String
         let received: Date
-        let unread: Bool
+        /// Nil when Mail was not asked, because finding out would have taken too long.
+        let unread: Bool?
+    }
+
+    /// How many emails a list can show, and how many matches Mail is asked to fetch before the user is asked to narrow it.
+    static let mostListed = 25
+    static let mostFound = 40
+
+    /// How many emails matched, when Mail said there were too many to fetch.
+    static func tooMany(_ reply: String) -> Int? {
+        let parts = reply.components(separatedBy: "\u{1F}")
+        return parts.first == "many" && parts.count > 1 ? Int(parts[1]) : nil
     }
 
     private func script(_ text: String, _ arguments: [String]) async throws -> String {
@@ -187,7 +281,7 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
     /// another account on later does not quietly widen what OMNIS reads.
     private func account() async throws -> (name: String, new: Bool) {
         if let chosen = defaults.string(forKey: Self.accountKey), !chosen.isEmpty { return (chosen, false) }
-        let parts = try await script(Self.listScript, ["", "0"]).components(separatedBy: "\u{1F}")
+        let parts = try await script(Self.rangeScript, ["", "1", "0"]).components(separatedBy: "\u{1F}")
         let names = parts.first == "accounts" ? Array(parts.dropFirst()).filter { !$0.isEmpty } : []
         guard names.count == 1, let only = names.first else {
             throw ToolRefusal(names.isEmpty ? "no email account is switched on in the Mail app"
@@ -214,7 +308,7 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
             let parts = line.components(separatedBy: "\u{1F}")
             guard parts.count == 5, let id = Int(parts[0]), let age = Double(parts[3]) else { return nil }
             return Row(id: id, sender: CalendarFormatter.clean(parts[1]), subject: CalendarFormatter.clean(parts[2]),
-                       received: now.addingTimeInterval(-age), unread: parts[4] == "false")
+                       received: now.addingTimeInterval(-age), unread: parts[4] == "unknown" ? nil : parts[4] == "false")
         }
     }
 
@@ -230,43 +324,68 @@ public final class MailTools: AssistantTools, @unchecked Sendable {
         switch tool {
         case "mail_list":
             let rightNow = now()
-            // Ninety days back unless the user named a date.
             let usual = rightNow.addingTimeInterval(-Double(Self.defaultDays) * 86_400)
             var since = arguments["since"].flatMap { ToolArguments.moment($0)?.date } ?? usual
             // Further back only when the user's own words named a date, never on a model's say-so alone.
             if !access.anyDate { since = max(since, usual) }
-            let until = arguments["until"].flatMap { ToolArguments.moment($0) }.map { $0.hasTime ? $0.date : $0.date.addingTimeInterval(86_400) } ?? rightNow
-            let far = arguments["since"] != nil && since < rightNow.addingTimeInterval(-Double(Self.defaultDays) * 86_400)
-            let limit = min(max(Int(arguments["limit"] ?? "") ?? 15, 1), 25)
-            let from = (arguments["from"] ?? "").lowercased(), about = (arguments["about"] ?? "").lowercased()
+            let untilGiven = arguments["until"].flatMap { ToolArguments.moment($0) }.map { $0.hasTime ? $0.date : $0.date.addingTimeInterval(86_400) }
+            let until = min(untilGiven ?? rightNow, rightNow)
+            let limit = min(max(Int(arguments["limit"] ?? "") ?? 10, 1), Self.mostListed)
+            let from = CalendarFormatter.clean(arguments["from"] ?? ""), about = CalendarFormatter.clean(arguments["about"] ?? "")
             let unreadOnly = arguments["unread"] == "true"
             let (chosen, newlyChosen) = try await account()
-            let window = far ? 2_000 : 500
-            let reply = try await script(Self.listScript, [chosen, String(window)])
-            if let refused = refusal(for: reply, account: chosen) { throw refused }
-            let all = Self.rows(from: reply, now: rightNow).sorted { $0.received > $1.received }
-            // If the inbox holds more than was looked at, and the oldest looked at is still inside the dates asked for, say so.
-            let cutOff = all.count >= window && (all.last?.received ?? since) > since
-            var notes = cutOff ? "\n(Only the newest \(window) emails in the inbox were looked at; older ones in this stretch of time were not.)" : ""
-            if newlyChosen {
-                notes += "\n(This is the first time: OMNIS will read only the inbox of the account called \"\(CalendarFormatter.clean(chosen))\" from now on. "
-                    + "Tell the user that, and that typing /mail forget makes it choose again.)"
+            var notes = ""
+            var reply: String
+            if !from.isEmpty || !about.isEmpty {
+                // Mail does the finding. One of the two is searched for there; the other is checked here.
+                let bySender = !from.isEmpty
+                reply = try await script(Self.findScript, [chosen, bySender ? "sender" : "subject", String((bySender ? from : about).prefix(80)), String(Self.mostFound)])
+                if let many = Self.tooMany(reply) {
+                    throw ToolRefusal("\(many) emails in the inbox match that, too many to go through in the time Mail allows. "
+                        + "Ask the user for something narrower: a fuller name, or particular words from the subject")
+                }
+            } else if unreadOnly {
+                reply = try await script(Self.findScript, [chosen, "unread", "", String(Self.mostFound)])
+                if let many = Self.tooMany(reply) {
+                    // Too many unread to fetch them all: the unread among the newest emails are shown instead.
+                    reply = try await script(Self.rangeScript, [chosen, "1", String(Self.mostListed)])
+                    notes += "\n(\(many) emails are unread in all. These are the unread ones among the newest \(Self.mostListed).)"
+                }
+            } else {
+                // The newest, or the newest up to a day the user named: found by position, not by reading the inbox.
+                var first = 1
+                if untilGiven != nil, until < rightNow {
+                    let found = try await script(Self.positionScript, [chosen, String(Int(rightNow.timeIntervalSince(until)))])
+                    if let refused = refusal(for: found, account: chosen) { throw refused }
+                    first = Int(found.components(separatedBy: "\u{1F}").dropFirst().first ?? "") ?? 1
+                }
+                reply = try await script(Self.rangeScript, [chosen, String(first), String(limit)])
             }
-            let matching = all.filter { row in
-                row.received >= since && row.received <= until && (!unreadOnly || row.unread)
-                    && (from.isEmpty || row.sender.lowercased().contains(from)) && (about.isEmpty || row.subject.lowercased().contains(about))
+            if let refused = refusal(for: reply, account: chosen) { throw refused }
+            let header = (reply.components(separatedBy: "\u{1E}").first ?? "").components(separatedBy: "\u{1F}")
+            let unreadInAll = header.count > 2 ? Int(header[2]) : nil
+            let matching = Self.rows(from: reply, now: rightNow).sorted { $0.received > $1.received }.filter { row in
+                row.received >= since && row.received <= until && (!unreadOnly || row.unread == true)
+                    && (from.isEmpty || row.sender.lowercased().contains(from.lowercased()))
+                    && (about.isEmpty || row.subject.lowercased().contains(about.lowercased()))
             }
             let shown = Array(matching.prefix(limit))
             lock.withLock {
                 listed = shown.map(\.id)
                 listedAt = rightNow
             }
+            if let unreadInAll { notes += "\n(\(unreadInAll) unread in the inbox in all.)" }
+            if newlyChosen {
+                notes += "\n(This is the first time: OMNIS will read only the inbox of the account called \"\(CalendarFormatter.clean(chosen))\" from now on. "
+                    + "Tell the user that, and that typing /mail forget makes it choose again.)"
+            }
             guard !shown.isEmpty else { return .read(content: "No emails in the inbox match that." + notes, note: "Checked your inbox") }
             let lines = shown.enumerated().map { index, row in
-                "m\(index + 1) | \(row.unread ? "unread" : "read") | \(Self.when.string(from: row.received)) | from \(row.sender) | subject: \(SensitiveText.hidingCodes(inSubject: row.subject))"
+                let state = row.unread.map { $0 ? "unread" : "read" } ?? "read or unread not known"
+                return "m\(index + 1) | \(state) | \(Self.when.string(from: row.received)) | from \(row.sender) | subject: \(SensitiveText.hidingCodes(inSubject: row.subject))"
             }
-            let more = matching.count > shown.count ? "\n(\(matching.count - shown.count) more match; ask for fewer days or a sender to narrow it.)" : ""
-            return .read(content: ToolArguments.fenced("From the inbox of the user's email. This lists who wrote and the subject, not what each says; use mail_read for that.",
+            let more = matching.count > shown.count ? "\n(\(matching.count - shown.count) more match.)" : ""
+            return .read(content: ToolArguments.fenced("From the inbox of the user's email, newest first. This lists who wrote and the subject, not what each says; use mail_read for that.",
                                                        lines.joined(separator: "\n") + more) + notes,
                          note: "Read your inbox: \(shown.count == 1 ? "1 email" : "\(shown.count) emails") listed")
         case "mail_read":
