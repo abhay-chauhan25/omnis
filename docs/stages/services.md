@@ -59,6 +59,25 @@ Independent review: pass with warnings. No path reaches a change without the use
 - GitHub shows at most 15 of each kind and no notifications.
 - There is no dashboard panel for any of these yet.
 
+## Playing by name, and opening apps (2026-11-26)
+
+**Spotify: "play Bohemian Rhapsody", "play my gym playlist".** Two halves:
+
+- *Finding it* is a search of Spotify's catalogue through Spotify's web service (`SpotifyAccount`). Spotify requires every such connection to belong to an app registered by a developer, and since February 2026 the owner needs Spotify Premium. So the user registers their own app once at developer.spotify.com/dashboard, with the redirect `http://127.0.0.1:43821/callback`, and types `/spotify <client ID>` in OMNIS. The browser opens Spotify's sign-in; OMNIS waits on this Mac for it to come back, and keeps the sign-in in the Keychain. `/spotify off` forgets it.
+- *Playing it* is done by the Spotify app on this Mac, as pause and next already are.
+
+Because of that split, the sign-in asks Spotify only for permission to **read** (the user's playlists and saved music). The web service is never given the power to play, change or save anything. The words searched for go to Spotify, so `spotify_play` follows the same ask-once rule as a web search in a chat that holds personal information.
+
+What reaches the Spotify app is only ever an address Spotify itself issued (`spotify:track:` and 22 letters and digits), handed to a fixed script as an argument. A playlist is looked for among the user's own first. If the wrong song plays, Claude is given the other matches and can play one of those.
+
+This approach was chosen by the assistant from the user's request for "full access to Spotify" and is open to change. The alternative, with no developer app, is to let Claude find a Spotify link by web search; it is slower and less reliable.
+
+**Opening apps and projects (`apps_open`).** A plain "open Safari" has always been matched and opened with no model. The wording the instant match accepts is now looser ("can you open Safari for me"), and for anything looser still Claude has a tool that takes a name and opens whatever it matches in the user's saved list. It cannot open a launcher (which runs a program), anything outside the list, or anything at all in a chat that holds a file.
+
+Review findings, all fixed (2026-11-26): Spotify being busy while a sign-in was renewed threw the sign-in away (now only Spotify refusing it does, and renewals happen one at a time); any page in the browser could end a sign-in in progress by calling the callback address (now turned away, and the wait goes on); the browser was opened even if this Mac could not listen for the reply (now only once it is listening).
+
+Not verified: nothing here has been run against Spotify itself, because that needs the user's own Spotify developer app. Safari and other apps that macOS keeps outside the Applications folder are not in the saved list, so they cannot be opened by name yet.
+
 ## Still to decide: Gmail, Messages, browser
 
 See the questions put to the user on 2026-11-24.

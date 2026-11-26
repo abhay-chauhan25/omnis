@@ -17,7 +17,7 @@ public enum VoicePhrases {
 
     /// What was said, reduced to its words: no capitals, no punctuation, and no
     /// apostrophes, which a recogniser writes in more than one way ("that's", "that’s", "thats").
-    private static func plain(_ text: String) -> String {
+    static func plain(_ text: String) -> String {
         var kept = ""
         for character in text.lowercased() {
             if "'\u{2019}\u{2018}\u{02BC}`".contains(character) { continue }
@@ -91,6 +91,122 @@ public enum VoicePhrases {
         let head = String(text.prefix(limit))
         let end = head.lastIndex(where: { ".!?".contains($0) }).map { head[...$0] } ?? Substring(head)
         return String(end) + " The rest is on screen."
+    }
+}
+
+/// Turns an answer into speech while it is still being written: each time more
+/// of it arrives, the sentences that are now complete are handed on to be said.
+/// The first words are heard long before the last ones are written.
+public struct SpokenStream: Equatable, Sendable {
+    /// How many characters of the answer have been handed on.
+    private var taken = 0
+    private var said = 0
+    private var cutShort = false
+    private let limit: Int
+
+    public init(limit: Int = 1_800) {
+        self.limit = limit
+    }
+
+    /// True once something has been handed on to be said.
+    public var hasSpoken: Bool { said > 0 }
+
+    // A full stop after one of these is not the end of a sentence.
+    private static let shortForms: Set<String> = ["mr", "mrs", "ms", "dr", "vs", "st", "e.g", "i.e", "eg", "ie", "no", "approx"]
+
+    /// How far the answer can be read aloud: just past the last sentence that has ended.
+    static func boundary(in text: [Character], from start: Int) -> Int {
+        var best = start
+        var inCode = false
+        var index = 0
+        while index < text.count {
+            // Code is never read in pieces: it is passed over whole, once it has closed.
+            if text[index] == "`", index + 2 < text.count, text[index + 1] == "`", text[index + 2] == "`" {
+                inCode.toggle()
+                index += 3
+                continue
+            }
+            defer { index += 1 }
+            guard !inCode, index >= start else { continue }
+            if text[index] == "\n" {
+                best = index + 1
+            } else if ".!?".contains(text[index]), index + 1 < text.count, text[index + 1].isWhitespace {
+                if text[index] == "." {
+                    var back = index
+                    while back > 0, !text[back - 1].isWhitespace { back -= 1 }
+                    let word = String(text[back..<index]).lowercased()
+                    // "Dr. Jones", "J. Smith", and the "1." of a numbered line.
+                    let startsLine = back == 0 || text[back - 1] == "\n"
+                    if shortForms.contains(word) || (word.count == 1 && !word.allSatisfy(\.isNumber))
+                        || (startsLine && !word.isEmpty && word.allSatisfy(\.isNumber)) { continue }
+                }
+                best = index + 1
+            }
+        }
+        return best
+    }
+
+    /// Takes the answer as it stands and returns what can now be said, or
+    /// nothing. With `final`, everything left is returned.
+    public mutating func take(_ answer: String, final: Bool) -> String {
+        let text = Array(answer)
+        // The answer was replaced by a shorter one: nothing more of it is read.
+        guard taken <= text.count else { return "" }
+        let end = final ? text.count : Self.boundary(in: text, from: taken)
+        guard end > taken else { return "" }
+        let piece = String(text[taken..<end])
+        taken = end
+        guard !cutShort else { return "" }
+        var words = VoicePhrases.spoken(piece.trimmingCharacters(in: .whitespacesAndNewlines), limit: Int.max).replacingOccurrences(of: "*", with: "").replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard words.contains(where: { $0.isLetter || $0.isNumber }) else { return "" }
+        if said + words.count > limit {
+            // A long answer is read up to the last full sentence that fits; the rest is on screen.
+            cutShort = true
+            let head = String(words.prefix(max(0, limit - said)))
+            let whole = head.lastIndex(where: { ".!?".contains($0) }).map { String(head[...$0]) } ?? ""
+            words = (whole.isEmpty ? "" : whole + " ") + "The rest is on screen."
+        }
+        said += words.count
+        return words
+    }
+}
+
+/// Telling the user's voice from OMNIS's own, heard back through the microphone.
+public enum VoiceEcho {
+    // Said over OMNIS, any of these is enough to stop it.
+    private static let halting: Set<String> = ["stop", "wait", "omnis", "pause", "quiet", "enough", "hold"]
+
+    /// True when what was heard while OMNIS was talking is someone else speaking,
+    /// rather than its own words coming back. Its own words are known, so
+    /// the latest few words heard, if most of them are not its own, are taken as the user.
+    public static func isInterruption(heard: String, speaking: String) -> Bool {
+        let own = Set(VoicePhrases.plain(speaking).split(separator: " "))
+        // Only the latest words count: what came back earlier in a long answer says nothing about now.
+        let recent = VoicePhrases.plain(heard).split(separator: " ").suffix(5)
+        let foreign = recent.filter { !own.contains($0) }
+        guard !foreign.isEmpty else { return false }
+        if recent.suffix(3).contains(where: { halting.contains(String($0)) && !own.contains($0) }) { return true }
+        // One stray word is a mishearing; most of the last few is a person.
+        return foreign.count >= max(2, (recent.count * 3 + 4) / 5)
+    }
+}
+
+public extension VoiceEcho {
+    /// How many words at the start of what was heard are OMNIS's own voice
+    /// coming back, at the moment the user talked over it. Everything before
+    /// the last few words is, and so are those of the last few that are its own.
+    static func ownWords(atStartOf heard: String, speaking: String) -> Int {
+        let own = Set(VoicePhrases.plain(speaking).split(separator: " "))
+        let words = heard.split(whereSeparator: \.isWhitespace)
+        var count = max(0, words.count - 5)
+        while count < words.count, VoicePhrases.plain(String(words[count])).split(separator: " ").allSatisfy({ own.contains($0) }) { count += 1 }
+        return count
+    }
+
+    /// What was heard, without that many words at its start.
+    static func dropping(_ count: Int, from heard: String) -> String {
+        heard.split(whereSeparator: \.isWhitespace).dropFirst(count).joined(separator: " ")
     }
 }
 
@@ -179,7 +295,7 @@ public struct VoicePersona: Codable, Equatable, Sendable {
     public func instruction() -> String {
         var lines = ["[This message was spoken aloud to you, and your reply will be read aloud. Reply the way a person speaks: "
             + "two or three short sentences unless more is asked for, no lists, headings, symbols or web addresses, and numbers "
-            + "and times as they are said. Do not ask \"anything else?\"; that is asked for you."]
+            + "and times as they are said. Lead with the answer itself. Do not end by asking whether there is anything else."]
         let manner = Self.presets.first { $0.id == preset }?.manner ?? ""
         let own = String(custom.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxCustomCharacters))
             .replacingOccurrences(of: "[", with: "(").replacingOccurrences(of: "]", with: ")")
@@ -235,7 +351,7 @@ public struct VoiceFlow: Equatable, Sendable {
         case listening
         case thinking
         case speaking
-        /// Asked "anything else?" and listening for the reply.
+        /// Has answered, and is listening for whatever comes next.
         case followUp
         /// Asked a yes-or-no question and listening for the reply.
         case confirming
@@ -255,6 +371,8 @@ public struct VoiceFlow: Equatable, Sendable {
         case endChat
         /// A spoken answer that was being read is cut short.
         case hush
+        /// The answer still being written is no longer wanted.
+        case stopAnswer
     }
 
     public private(set) var state: State = .off
@@ -262,6 +380,19 @@ public struct VoiceFlow: Equatable, Sendable {
     private var question: Question?
     private var retried = false
     private var endAfterSpeaking = false
+    /// The answer is being read while it is still being written: more is on its way.
+    private var moreComing = false
+    private var spokeSome = false
+    /// True while the voice has something left to say.
+    private var voiceBusy = false
+
+    /// True while an answer is awaited or still arriving.
+    public var awaitsAnswer: Bool { state == .thinking || (state == .speaking && moreComing) }
+    /// True when the user may talk over what is being said. A yes-or-no question
+    /// is always heard out, so that nothing said over it is taken for an answer.
+    public var canBeInterrupted: Bool {
+        state == .speaking && !endAfterSpeaking && (moreComing || afterSpeaking == .followUp)
+    }
 
     public static let replySeconds = 8.0
     public init() {}
@@ -320,7 +451,7 @@ public struct VoiceFlow: Equatable, Sendable {
                     state = .thinking
                     return [.settleAction(true)]
                 }
-                return [.settleAction(false)] + say("Okay, I have left it. Anything else?", then: .followUp)
+                return [.settleAction(false)] + say("Okay, I have left it.", then: .followUp)
             }
         }
     }
@@ -341,24 +472,41 @@ public struct VoiceFlow: Equatable, Sendable {
         }
     }
 
-    /// The answer has arrived, or has paused on a question for the user.
+    /// Part of the answer has been written and can be said while the rest arrives.
+    public mutating func streamed(_ words: String) -> [Effect] {
+        guard awaitsAnswer, !words.isEmpty else { return [] }
+        state = .speaking
+        moreComing = true
+        spokeSome = true
+        voiceBusy = true
+        afterSpeaking = .followUp
+        return [.speak(words)]
+    }
+
+    /// The answer has arrived, or has paused on a question for the user. `text`
+    /// is whatever of it has not been said yet.
     public mutating func answered(_ text: String, pending: VoicePending?) -> [Effect] {
-        guard state == .thinking else { return [] }
+        guard awaitsAnswer else { return [] }
         let answer = VoicePhrases.spoken(text)
+        let hadSpoken = spokeSome
+        moreComing = false
+        spokeSome = false
         switch pending {
         case .searchQuestion:
             question = .search
             retried = false
-            return say("This chat holds personal information. Shall I search the web? Yes or no?", then: .confirming)
+            return say([answer, "This chat holds personal information. Shall I search the web? Yes or no?"].filter { !$0.isEmpty }.joined(separator: " "),
+                       then: .confirming)
         case .confirmable(let summary):
             question = .action
             retried = false
             // The question ends on words that are not themselves an answer, in case OMNIS hears the end of its own voice.
             return say([answer, summary, "Shall I do that? Yes or no?"].filter { !$0.isEmpty }.joined(separator: " "), then: .confirming)
         case .onScreen:
-            return say([answer, "It is on screen for you to confirm. Anything else?"].filter { !$0.isEmpty }.joined(separator: " "), then: .followUp)
+            return say([answer, "It is on screen for you to confirm."].filter { !$0.isEmpty }.joined(separator: " "), then: .followUp)
         case nil:
-            return say([answer.isEmpty ? "I have nothing to say to that." : answer, "Anything else?"].joined(separator: " "), then: .followUp)
+            // Nothing more is asked: OMNIS simply listens for whatever comes next.
+            return conclude(answer.isEmpty && !hadSpoken ? "I have nothing to say to that." : answer, then: .followUp)
         }
     }
 
@@ -366,18 +514,25 @@ public struct VoiceFlow: Equatable, Sendable {
     public mutating func acted(success: Bool, detail: String = "") -> [Effect] {
         guard state == .thinking else { return [] }
         let why = VoicePhrases.spoken(detail, limit: 200)
-        return say(success ? "Done. Anything else?" : "That did not work. \(why) Anything else?".replacingOccurrences(of: "  ", with: " "),
-                   then: .followUp)
+        return say(success ? "Done." : "That did not work. \(why)".trimmingCharacters(in: .whitespaces), then: .followUp)
     }
 
     /// The answer could not be given.
     public mutating func failed(_ why: String) -> [Effect] {
-        guard state == .thinking else { return [] }
-        return say("Sorry, that did not work. \(VoicePhrases.spoken(why, limit: 200)) Anything else?", then: .followUp)
+        guard awaitsAnswer else { return [] }
+        moreComing = false
+        spokeSome = false
+        return say("Sorry, that did not work. \(VoicePhrases.spoken(why, limit: 200))".trimmingCharacters(in: .whitespaces), then: .followUp)
     }
 
     public mutating func finishedSpeaking() -> [Effect] {
         guard state == .speaking else { return [] }
+        voiceBusy = false
+        // Everything written so far has been said; the rest is still being written.
+        if moreComing {
+            state = .thinking
+            return []
+        }
         if endAfterSpeaking {
             endAfterSpeaking = false
             state = .waiting
@@ -390,21 +545,52 @@ public struct VoiceFlow: Equatable, Sendable {
     /// The user ended the conversation with a button, whatever was going on.
     public mutating func end() -> [Effect] {
         guard state != .off, state != .waiting else { return [] }
-        let wasSpeaking = state == .speaking
+        let wasSpeaking = state == .speaking, wasWaiting = awaitsAnswer
         self = VoiceFlow()
         state = .waiting
-        return (wasSpeaking ? [.hush] : []) + [.endChat]
+        return (wasSpeaking ? [.hush] : []) + (wasWaiting ? [.stopAnswer] : []) + [.endChat]
     }
 
-    /// The user cut the reading short with a key.
+    /// The user cut the reading short with a key or a button.
     public mutating func interrupt() -> [Effect] {
         guard state == .speaking else { return [] }
+        if moreComing { return takeOver() }
         return [.hush] + finishedSpeaking()
+    }
+
+    /// The user started talking over OMNIS: it stops, drops the rest of what
+    /// it was saying, and listens.
+    public mutating func bargeIn() -> [Effect] {
+        guard canBeInterrupted else { return [] }
+        return takeOver()
+    }
+
+    private mutating func takeOver() -> [Effect] {
+        let unfinished = moreComing
+        moreComing = false
+        spokeSome = false
+        voiceBusy = false
+        state = .followUp
+        return [.hush] + (unfinished ? [.stopAnswer] : []) + [.listen(seconds: Self.replySeconds)]
+    }
+
+    /// Says the words, if there are any, and then listens.
+    private mutating func conclude(_ words: String, then next: State) -> [Effect] {
+        guard words.isEmpty else { return say(words, then: next) }
+        if voiceBusy {
+            // The last sentence is still being said.
+            state = .speaking
+            afterSpeaking = next
+            return []
+        }
+        state = next
+        return [.listen(seconds: Self.replySeconds)]
     }
 
     private mutating func say(_ words: String, then next: State) -> [Effect] {
         state = .speaking
         afterSpeaking = next
+        voiceBusy = true
         return [.speak(words)]
     }
 
@@ -417,6 +603,7 @@ public struct VoiceFlow: Equatable, Sendable {
         }
         endAfterSpeaking = true
         state = .speaking
+        voiceBusy = true
         return [.speak(words)]
     }
 
@@ -430,7 +617,7 @@ public struct VoiceFlow: Equatable, Sendable {
             state = .thinking
             return [.settleSearch(false)]
         case .action:
-            return say("I have left it on screen for you. Anything else?", then: .followUp)
+            return say("I have left it on screen for you.", then: .followUp)
         }
     }
 }

@@ -23,6 +23,22 @@ final class VoiceModel: ObservableObject {
         didSet { if let data = try? JSONEncoder().encode(persona) { UserDefaults.standard.set(data, forKey: Self.personaKey) } }
     }
     @Published private(set) var voiceName = VoiceEngine.voiceDescription()
+    /// Whether talking over OMNIS stops it. While this is on, the Mac's echo
+    /// cancelling is used during a conversation so OMNIS hears less of itself.
+    @Published var talkOver: Bool {
+        didSet {
+            UserDefaults.standard.set(talkOver, forKey: Self.talkOverKey)
+            if !talkOver { engine.allowsInterruption = false; engine.setEchoCancelling(false) }
+        }
+    }
+    /// How fast OMNIS talks: 1 is the voice's usual pace.
+    @Published var speed: Double {
+        didSet {
+            UserDefaults.standard.set(speed, forKey: Self.speedKey)
+            engine.speed = speed
+        }
+    }
+    static let speeds: [(title: String, value: Double)] = [("Usual", 1.0), ("A little faster", 1.08), ("Faster", 1.16)]
 
     private let chat: ChatModel
     private let audit: AuditLog
@@ -44,10 +60,18 @@ final class VoiceModel: ObservableObject {
     private var watchdog: Task<Void, Never>?
     private var lastListen = VoiceFlow.replySeconds
     private var wasThinking = false
+    /// How much of the answer being awaited has been said so far.
+    private var stream = SpokenStream()
+    /// When the question was put, for measuring how long the first words take.
+    private var askedAt: Date?
+    /// Development aid: where to write what is heard and done. Nothing is written unless OMNIS was started with it.
+    private let traceFile: FileHandle?
     /// The longest an answer is waited for before the conversation gives up on it.
     static let answerSeconds = 240.0
     private static let personaKey = "OMNISVoicePersona"
     private static let switchKey = "OMNISVoiceOn"
+    private static let talkOverKey = "OMNISVoiceTalkOver"
+    private static let speedKey = "OMNISVoiceSpeed"
 
     var isActive: Bool { state != .off }
     /// True from the wake phrase until the conversation ends.
@@ -66,7 +90,16 @@ final class VoiceModel: ObservableObject {
     /// Brings the chat window forward when something in it needs the user's eyes or a click.
     private let showChat: () -> Void
 
-    init(chat: ChatModel, audit: AuditLog, autoStart: Bool = true, showChat: @escaping () -> Void = {}) {
+    init(chat: ChatModel, audit: AuditLog, autoStart: Bool = true, trace: URL? = nil, showChat: @escaping () -> Void = {}) {
+        if let trace {
+            FileManager.default.createFile(atPath: trace.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            traceFile = FileHandle(forWritingAtPath: trace.path)
+        } else {
+            traceFile = nil
+        }
+        talkOver = UserDefaults.standard.object(forKey: Self.talkOverKey) as? Bool ?? true
+        let savedSpeed = UserDefaults.standard.double(forKey: Self.speedKey)
+        speed = Self.speeds.contains { $0.value == savedSpeed } ? savedSpeed : 1.0
         self.chat = chat
         self.showChat = showChat
         self.audit = audit
@@ -75,6 +108,7 @@ final class VoiceModel: ObservableObject {
         } else {
             persona = VoicePersona()
         }
+        engine.speed = speed
         engine.onUtterance = { [weak self] words in self?.heard(words) }
         engine.onPartial = { [weak self] words in
             guard let self, self.inConversation else { return }
@@ -96,12 +130,23 @@ final class VoiceModel: ObservableObject {
             self.run(self.flow.interrupt())
             self.engine.stop()
             Task {
-                do { try await self.engine.start() } catch is CancellationError {} catch {
+                do {
+                    try await self.engine.start()
+                    // Listening starts again without echo cancelling: it is put back if a conversation is going on.
+                    if self.talkOver, self.inConversation { self.engine.setEchoCancelling(true) }
+                    self.engine.allowsInterruption = self.talkOver && self.engine.echoCancelling && self.flow.canBeInterrupted
+                } catch is CancellationError {} catch {
                     self.problem = error.localizedDescription
                     self.isOn = false
                 }
             }
         }
+        engine.onBargeIn = { [weak self] in
+            guard let self else { return }
+            self.audit.record(action: "voice", outcome: "talked over")
+            self.run(self.flow.bargeIn())
+        }
+        engine.trace = { [weak self] line in self?.trace(line) }
         engine.onSpeechFinished = { [weak self] in
             guard let self else { return }
             self.run(self.flow.finishedSpeaking())
@@ -194,6 +239,11 @@ final class VoiceModel: ObservableObject {
         }
     }
 
+    private func trace(_ line: String) {
+        guard let traceFile else { return }
+        traceFile.write(Data(String(format: "%.2f  %@\n", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 10_000), line).utf8))
+    }
+
     /// Stops listening as OMNIS quits, without forgetting that the switch was on.
     func stopForQuit() {
         replyTimer?.cancel()
@@ -218,6 +268,7 @@ final class VoiceModel: ObservableObject {
     private func heard(_ words: String) {
         replyTimer?.cancel()
         hearing = ""
+        trace("heard (\(flow.state)): \(words)")
         // A typed question is being answered: voice waits its turn.
         if flow.state == .waiting, chat.isAnswering { return }
         run(flow.heard(words))
@@ -243,9 +294,19 @@ final class VoiceModel: ObservableObject {
                     chat.startFreshForVoice()
                 }
                 engine.chime()
+                // Claude is started now, so that it is ready by the time the question has been said.
+                chat.warmForVoice()
             case .ask(let text):
                 ask(text)
             case .speak(let words):
+                trace("says: \(words)")
+                if let asked = askedAt {
+                    // How long the first words took, and nothing about what they were.
+                    askedAt = nil
+                    let waited = Date().timeIntervalSince(asked)
+                    trace(String(format: "first words after %.1f s", waited))
+                    audit.record(action: "voice_timing", outcome: "ok", detail: String(format: "first words after %.1f s", waited))
+                }
                 if let rehearsal {
                     // A rehearsal makes no sound: what would be said is reported instead.
                     rehearsal.report("OMNIS SAYS: \(words)")
@@ -259,6 +320,19 @@ final class VoiceModel: ObservableObject {
                 }
             case .hush:
                 engine.hush()
+            case .stopAnswer:
+                // Only an answer voice asked for is stopped, never one typed for in the window.
+                if awaited != nil {
+                    awaited = nil
+                    chat.stop()
+                    // Stopping ends Claude's session; it is started again while the user talks.
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        // Not if the conversation was ended meanwhile.
+                        guard let self, self.inConversation else { return }
+                        self.chat.warmForVoice()
+                    }
+                }
             case .listen(let seconds):
                 if rehearsal != nil { rehearseNext() } else { listen(for: seconds) }
             case .settleSearch(let allowed):
@@ -270,15 +344,21 @@ final class VoiceModel: ObservableObject {
             case .endChat:
                 awaited = nil
                 freshNext = true
+                if rehearsal == nil, isOn { engine.closingChime() }
                 rehearsal?.report("(conversation ended)")
                 if rehearsal != nil { rehearseNext() }
             }
         }
+        if state != flow.state { trace("now \(flow.state)") }
         state = flow.state
         if state == .waiting || state == .off { hearing = "" }
-        let entering = state == .thinking && !wasThinking
-        wasThinking = state == .thinking
-        if state != .thinking { watchdog?.cancel() }
+        // Only with echo cancelling on: without it OMNIS would hear itself and take that for the user.
+        engine.allowsInterruption = talkOver && engine.echoCancelling && flow.canBeInterrupted
+        // Echo cancelling is on from the first answer until the conversation ends, and off the rest of the time.
+        if state == .waiting || state == .off { engine.setEchoCancelling(false) } else if state == .thinking, talkOver { engine.setEchoCancelling(true) }
+        let entering = flow.awaitsAnswer && !wasThinking
+        wasThinking = flow.awaitsAnswer
+        if !flow.awaitsAnswer { watchdog?.cancel() }
         if state == .thinking {
             // The answer may already be there, or the chat may have been cleared from the window.
             Task { @MainActor [weak self] in
@@ -292,7 +372,7 @@ final class VoiceModel: ObservableObject {
             // And nothing is waited for without end.
             watchdog = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.answerSeconds * 1_000_000_000))
-                guard !Task.isCancelled, let self, self.flow.state == .thinking else { return }
+                guard !Task.isCancelled, let self, self.flow.awaitsAnswer else { return }
                 self.awaited = nil
                 self.actingAction = nil
                 self.actingEvent = nil
@@ -311,20 +391,28 @@ final class VoiceModel: ObservableObject {
             run(flow.failed("I am still answering the last question."))
             return
         }
-        let before = chat.conversation.messages.last?.id
-        chat.askSpoken(text, style: persona.instruction())
-        if let answer = chat.conversation.messages.last, answer.id != before, answer.role == .assistant {
+        stream = SpokenStream()
+        askedAt = Date()
+        switch chat.askSpoken(text, style: persona.instruction()) {
+        case .asked:
             // Usually still being written. If it failed at once, `chatChanged` says so.
-            awaited = answer.id
-        } else {
-            // Opening an app or changing a setting needs no answer from a model, and reports for itself on screen.
+            awaited = chat.conversation.messages.last.flatMap { $0.role == .assistant ? $0.id : nil }
+            if awaited == nil { run(flow.failed("The question could not be asked.")) }
+        case .opened(let name):
+            // Opened without asking a model. It reports for itself on screen as well.
+            awaited = nil
+            run(flow.answered("Opening \(name).", pending: nil))
+        case .command:
             awaited = nil
             run(flow.answered("Okay.", pending: nil))
+        case .nothing:
+            awaited = nil
+            run(flow.failed("I am still answering the last question."))
         }
     }
 
     private func chatChanged(_ conversation: Conversation) {
-        guard flow.state == .thinking else { return }
+        guard flow.awaitsAnswer else { return }
         // Something confirmed aloud is being carried out: say how it went, once it has gone.
         if actingAction != nil || actingEvent != nil {
             let state = actingAction.flatMap { conversation.action($0)?.state } ?? actingEvent.flatMap { id in
@@ -357,7 +445,15 @@ final class VoiceModel: ObservableObject {
             if answer.searchAsk?.state == .waiting, !askedSearch {
                 askedSearch = true
                 showChat()
-                run(flow.answered("", pending: .searchQuestion))
+                // Whole sentences only: the rest of the answer follows once the question is settled.
+                run(flow.answered(stream.take(answer.text, final: false), pending: .searchQuestion))
+                return
+            }
+            // What has been written so far is said while the rest arrives. A question
+            // waiting on the user is asked first, and nothing is said over it.
+            if answer.searchAsk?.state != .waiting {
+                let ready = stream.take(answer.text, final: false)
+                if !ready.isEmpty { run(flow.streamed(ready)) }
             }
             return
         }
@@ -369,7 +465,7 @@ final class VoiceModel: ObservableObject {
             let waiting = pending(in: answer)
             // A preview is always put in front of the user, whether or not a spoken yes can confirm it.
             if waiting != nil { showChat() }
-            run(flow.answered(answer.text, pending: waiting))
+            run(flow.answered(stream.take(answer.text, final: true), pending: waiting))
         }
     }
 

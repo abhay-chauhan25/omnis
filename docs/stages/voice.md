@@ -72,6 +72,47 @@ Also added, so there is always a way out whatever is heard: an End button beside
 
 If it happens again, the words as OMNIS heard them are in the chat window as the user's own message; that text is what is needed to pin it down.
 
+## Talking, not taking turns (2026-11-26)
+
+The user asked for voice to feel like a conversation: fast answers, and no waiting to be asked. They approved all of these.
+
+| Change | How |
+|---|---|
+| The first words come about a second after you stop | An answer is said sentence by sentence while it is still being written (`SpokenStream`), not after it is finished. In rehearsal the first sentence came 0.7 to 1.4 s after the question |
+| A quick model for talk | A spoken question is answered by Haiku at low effort. "Think about", "think through", "deep dive" or "decide" still gets Opus at high effort. A model or effort picked by hand is used as picked |
+| Claude is ready before you finish | Claude Code is started on the wake sound, not on the question |
+| A shorter wait for the end of what you say | A pause of 0.8 s (was 1.1), then up to 0.5 s (was 0.9) for the recogniser's final wording |
+| No more "Anything else?" | After an answer OMNIS just listens for eight seconds. Say the next thing, or "that's all", or nothing. A soft sound marks the end |
+| Talk over it | Start talking while OMNIS is answering and it stops, drops the rest of that answer, and listens. A yes-or-no question cannot be talked over, so nothing said over it is ever taken for a yes |
+| Opening things | "Open Spotify for me" and the like are matched without a model and answered "Opening Spotify". Looser wording goes to Claude, which has a tool for it (`docs/stages/services.md`) |
+| Pace | Three speaking speeds in the voice settings |
+
+### How talking over works
+
+While OMNIS talks, the recogniser is still running. What it hears is compared with what OMNIS is saying (`VoiceEcho`): if most of the last few words are not its own, or one of them is "stop", "wait" or "OMNIS", that is the user. Its own voice coming back through the microphone is made of its own words, so it is ignored.
+
+To hear less of itself in the first place, OMNIS turns on the Mac's echo cancelling from the first answer until the conversation ends. It is off the rest of the time, because macOS turns other sound down a little while it is on. The switch "Let me talk over OMNIS" in the voice settings turns both off, which is exactly how voice behaved before.
+
+Stopping an answer part-way ends Claude's session, as the Stop button always has. It is started again at once, with the conversation so far, while the user is still talking.
+
+### Review findings (2026-11-26)
+
+An independent review read the change before it was committed. All of these were fixed.
+
+| Finding | Fix |
+|---|---|
+| Talking over OMNIS stayed allowed when echo cancelling had failed or been reset by new headphones, so it could cut itself off | Allowed only while echo cancelling is actually on; it is put back after the microphone changes |
+| What was sent on after talking over OMNIS began with OMNIS's own words | Its own words at the start are left out |
+| By voice, a launcher (which runs a program) could be started, a bare name was enough, and the first of two near-equal names was opened | By voice the words must ask ("open ..."), launchers are never started, and two that fit about equally go to Claude to ask which |
+| A late word about a sentence that had been cut off could be taken for a new one, ending speech early | Cut-off sentences are kept a while so they cannot be confused |
+| Turning echo cancelling on and off quickly could be mistaken for new headphones | Each change is counted |
+| The web-search question could be asked after half a sentence | Only whole sentences are said before it |
+| Opening apps was allowed unless refused | Refused unless allowed, and allowed only in a chat with no file |
+
+### Finding faults
+
+`OMNIS --voice-trace <file>` writes what voice hears, says and does to a file, with times. It holds spoken words, so it is written only when OMNIS is started that way, and the file should be deleted afterwards. How long the first words took is also in the Activity log (`voice_timing`), as a number and nothing else.
+
 ## Tests
 
 - Swift 296, Python 120, all passing. New: the wake phrase and its near misses; endings and yes or no as whole utterances only; answers tidied for speech; the personality text; which previews a spoken yes may confirm; a whole conversation from wake to "that's all"; silence; unclear answers; the search question; switching off; and the recogniser's real pattern of growing and settled results.
@@ -86,3 +127,6 @@ If it happens again, the words as OMNIS heard them are in the chat window as the
 - A spoken yes cannot tell your voice from anyone else's.
 - Away from the dashboard the conversation is shown in the notch panel (`notch.md`), which has not been seen on screen.
 - Off the grid, voice works but the personality is not applied.
+- **Not run with a microphone (2026-11-26):** speaking in sentences through the real voice, talking over OMNIS, and echo cancelling. The rules are tested and the conversation was rehearsed against real Claude without sound. Whether echo cancelling works with this Mac's speakers, whether the recogniser copes with it, and how much other sound is turned down, are all unknown until the user tries. If OMNIS cuts itself off, or goes deaf after its first answer, turn off "Let me talk over OMNIS" and say so.
+- The shorter pause may cut in on someone who stops to think mid-sentence. The two numbers are at the top of `VoiceEngine`.
+- Talking over OMNIS while it is between sentences and still thinking is not heard.

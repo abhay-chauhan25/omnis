@@ -294,18 +294,82 @@ public final class GitHubTools: AssistantTools, Sendable {
 
 /// Playback in the Spotify app on this Mac. These are harmless and easily
 /// undone, so they are carried out at once with no preview.
+///
+/// Playing something by name has two halves. Finding it is a search of
+/// Spotify's catalogue through its web service, which the user connects once
+/// and which may only read. Playing it is done by the Spotify app here.
 public final class SpotifyTools: AssistantTools, Sendable {
     public let service = "spotify"
-    public let toolNames: Set<String> = ["spotify_now_playing", "spotify_control", "spotify_search"]
+    public let toolNames: Set<String> = ["spotify_now_playing", "spotify_control", "spotify_search", "spotify_play"]
     /// What is playing is not personal information.
     public let holdsPersonalData = false
-    public let outwardTools: Set<String> = ["spotify_search"]
+    public let outwardTools: Set<String> = ["spotify_search", "spotify_play"]
     private let runner: CommandRunner
+    private let catalogue: (any SpotifyCatalogue)?
+    /// The matches from the last search, so "the second one" can be played without searching again.
+    private let lastMatches = Matches()
+
+    private final class Matches: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [SpotifyItem] = []
+        func set(_ fresh: [SpotifyItem]) { lock.withLock { items = fresh } }
+        func item(_ id: String) -> SpotifyItem? {
+            guard id.hasPrefix("s"), let number = Int(id.dropFirst()), number >= 1 else { return nil }
+            return lock.withLock { number <= items.count ? items[number - 1] : nil }
+        }
+    }
     private static let osascript = URL(fileURLWithPath: "/usr/bin/osascript")
     private static let opener = URL(fileURLWithPath: "/usr/bin/open")
 
-    public init(run: @escaping CommandRunner = Commands.system) {
+    public init(catalogue: (any SpotifyCatalogue)? = nil, run: @escaping CommandRunner = Commands.system) {
+        self.catalogue = catalogue
         self.runner = run
+    }
+
+    /// Fixed text. What to play is handed over beside it, never written into it.
+    static let playScript = """
+    on run arguments
+        tell application "Spotify" to play track (item 1 of arguments)
+    end run
+    """
+
+    static let connectHelp = "Picking a song by name needs Spotify's catalogue, which is not connected. Tell the user: to connect it, type /spotify in "
+        + "OMNIS for the steps. Until then spotify_search can show search results in the Spotify app for them to choose from."
+
+    /// A playlist of the user's own with this name, if there is one.
+    static func ownPlaylist(named query: String, in playlists: [SpotifyItem]) -> SpotifyItem? {
+        let wanted = TextNormalizer.normalize(query).replacingOccurrences(of: " playlist", with: "")
+        guard !wanted.isEmpty else { return nil }
+        let named = playlists.map { ($0, TextNormalizer.normalize($0.name)) }
+        return named.first { $0.1 == wanted }?.0 ?? named.first { $0.1.hasPrefix(wanted) }?.0 ?? named.first { $0.1.contains(wanted) }?.0
+    }
+
+    private func play(_ item: SpotifyItem) async throws {
+        // Only an address Spotify itself would issue is ever handed to the app.
+        guard let uri = item.uri else { throw ToolRefusal("Spotify gave something that cannot be played") }
+        let result = await runner(Self.osascript, ["-e", Self.playScript, uri], nil)
+        guard result.status == 0 else {
+            throw ToolRefusal(result.output.contains("-1743") ? "OMNIS has not been allowed to control Spotify. You can allow it in System Settings, under Privacy & Security, Automation"
+                              : "the Spotify app did not start playing it")
+        }
+    }
+
+    private func find(_ arguments: [String: String]) async throws -> (SpotifyItem, [SpotifyItem]) {
+        if let pick = arguments["pick"], !pick.isEmpty {
+            guard let chosen = lastMatches.item(pick.lowercased()) else { throw ToolRefusal("there is no match \(pick.prefix(8)); search again") }
+            return (chosen, [])
+        }
+        guard let catalogue, catalogue.isConnected else { throw ToolRefusal(Self.connectHelp) }
+        let query = CalendarFormatter.clean(arguments["query"] ?? "")
+        guard !query.isEmpty, query.count <= 200 else { throw ToolRefusal("say what to play") }
+        let kind = SpotifyItem.Kind(rawValue: (arguments["kind"] ?? "track").lowercased()) ?? .track
+        // A playlist is looked for among the user's own first: "my gym playlist" means theirs.
+        if kind == .playlist, let own = Self.ownPlaylist(named: query, in: (try? await catalogue.playlists()) ?? []) {
+            return (own, [])
+        }
+        let found = try await catalogue.search(query, kind: kind)
+        guard let first = found.first else { throw ToolRefusal("Spotify found nothing for \"\(query)\"") }
+        return (first, Array(found.dropFirst()))
     }
 
     /// Every script is fixed text. Nothing from a model is ever put into one.
@@ -387,6 +451,13 @@ public final class SpotifyTools: AssistantTools, Sendable {
             try? await Task.sleep(nanoseconds: 400_000_000)
             let now = (try? await describe()) ?? ""
             return .done(content: "Done. \(now)", note: "Controlled Spotify")
+        case "spotify_play":
+            let (item, others) = try await find(arguments)
+            try await play(item)
+            if !others.isEmpty || arguments["pick"] == nil { lastMatches.set([item] + others) }
+            let rest = others.enumerated().map { "s\($0.offset + 2): \($0.element.spoken)" }.joined(separator: "; ")
+            return .done(content: "Now playing \(item.spoken)." + (rest.isEmpty ? "" : " If that is the wrong one, the other matches were \(rest)."),
+                         note: "Played from Spotify")
         case "spotify_search":
             let query = CalendarFormatter.clean(arguments["query"] ?? "")
             let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")

@@ -65,7 +65,15 @@ SERVICE_TOOLS = [
     _tool("github_overview", "Show the user's open pull requests, pull requests waiting for their review, and issues assigned to them.", {}),
     _tool("spotify_now_playing", "Say what Spotify is playing.", {}),
     _tool("spotify_control", "Control Spotify playback at once.", {"action": "One of: play, pause, toggle, next, previous."}),
-    _tool("spotify_search", "Open Spotify showing search results for something.", {"query": "What to search for."}),
+    _tool("spotify_search", "Open Spotify showing search results for something, for the user to choose from. "
+          "Only when spotify_play cannot be used.", {"query": "What to search for."}),
+    _tool("spotify_play", "Find a song, album, artist or playlist on Spotify and start playing it at once.",
+          {"query": "What to play: the title, with the artist if the user gave one. For a playlist, its name.",
+           "kind": "One of: track, album, artist, playlist. Leave out for a song.",
+           "pick": "Instead of query: one of the other matches from the last spotify_play, like s2."}, []),
+    _tool("apps_open", "Open one of the user's saved apps or projects on their Mac, at once. Use it whenever the user wants an app or "
+          "project opened, started, shown or brought up, however they word it. Try it before saying something cannot be opened.",
+          {"name": "The app's or project's name, as the user said it."}),
     _tool("messages_send", "Prepare a text message from the user to one person. The user sees it and must click Send; nothing is sent by you.",
           {"to": "The person's name as it is in the user's contacts.", "text": "The words of the message, exactly as the user wants them.",
            "contact": "Only after messages_send listed several matches and the user chose one: that match's id, like c2."}, ["text"]),

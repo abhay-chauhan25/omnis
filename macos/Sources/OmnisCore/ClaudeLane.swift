@@ -51,13 +51,19 @@ public enum ClaudeRouter {
     /// With both on Auto: Sonnet at medium effort, and Opus at high effort
     /// when the message says "deep dive", "think about", "think through" or "decide". A model or an
     /// effort the user picked is always used as picked.
-    public static func choose(text: String, model: ModelChoice = .auto, effort: EffortChoice = .auto) -> Choice {
+    ///
+    /// A spoken message is answered by the quickest model at low effort, because
+    /// talk needs a fast reply; the same phrases still ask for more.
+    public static func choose(text: String, model: ModelChoice = .auto, effort: EffortChoice = .auto, spoken: Bool = false) -> Choice {
         let deeper = asksForDepth(text)
         let chosen: ClaudeModel
         let reason: String
         if let fixed = ClaudeModel(rawValue: model.rawValue) {
             chosen = fixed
             reason = "you chose \(fixed.title)"
+        } else if spoken, !deeper {
+            chosen = .haiku
+            reason = "the quick model, for talking"
         } else {
             chosen = deeper ? .opus : .sonnet
             reason = deeper ? "you asked for more thought" : "the usual model"
@@ -65,6 +71,8 @@ public enum ClaudeRouter {
         let level: String
         if effort != .auto {
             level = effort.rawValue
+        } else if spoken, !deeper, chosen != .opus {
+            level = "low"
         } else {
             level = deeper || chosen == .opus ? "high" : "medium"
         }
@@ -166,16 +174,24 @@ public enum SlashCommand: Equatable, Sendable {
     case model(ModelChoice)
     case effort(EffortChoice)
     case local(Bool)
+    /// Connect Spotify's catalogue, with the user's own client ID.
+    case spotifyConnect(String)
+    case spotifyOff
+    case spotifyHelp
     /// It looked like a command but was not one OMNIS knows. The text says what is possible.
     case unknown(String)
 
-    public static let help = "Commands: /model auto, haiku, sonnet or opus \u{00B7} /effort auto, low, medium or high \u{00B7} /local on or off"
+    public static let help = "Commands: /model auto, haiku, sonnet or opus \u{00B7} /effort auto, low, medium or high \u{00B7} /local on or off \u{00B7} /spotify"
 
     /// Nil for ordinary text, including text that merely starts with a slash such as a file path.
     public static func parse(_ text: String) -> SlashCommand? {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             .split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard let first = words.first, first.hasPrefix("/"), words.count <= 2 else { return nil }
+        if first == "/spotify" {
+            if words.count == 1 { return .spotifyHelp }
+            return words[1] == "off" ? .spotifyOff : SpotifyAuth.isClientID(words[1]) ? .spotifyConnect(words[1]) : .spotifyHelp
+        }
         let value = words.count == 2 ? words[1] : ""
         switch first {
         case "/model":
@@ -368,8 +384,14 @@ public enum ClaudePrompt {
 
         Other services, each through its own tools: reminders (list, add, mark as done, delete), GitHub \
         (github_overview shows pull requests and issues waiting for the user; reading only), and Spotify (what \
-        is playing, play, pause, next, previous, and opening a search). Adding or changing a reminder shows a \
-        preview to confirm, like the calendar. Spotify controls happen at once.
+        is playing, play, pause, next, previous, and playing something by name). Adding or changing a reminder \
+        shows a preview to confirm, like the calendar. Spotify controls happen at once. To play a named song, \
+        album, artist or playlist use spotify_play: it finds the best match and starts it. Say what is now \
+        playing in a few words. If the user says it is the wrong one, use its pick with one of the other matches.
+
+        Opening things: apps_open opens one of the user's saved apps or projects by name, at once. Use it when \
+        the user asks you to open, launch, start, show or bring up an app or a project, however they word it, \
+        and try it before saying you cannot. It tells you if the name is not in their list.
 
         Messages: messages_send prepares a text message to one person in the user's contacts, named by \
         name. It only shows a preview with a Send button, so say it is ready to check, never that it was \

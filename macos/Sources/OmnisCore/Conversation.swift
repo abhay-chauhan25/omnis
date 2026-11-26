@@ -235,7 +235,7 @@ public struct Conversation: Equatable, Sendable {
         let asksSend = PersonalIntent.asksToSend(text) && !hasFile
         let sends = asksSend || (serviceSendNext && !hasFile)
         serviceSendNext = asksSend
-        return ToolAccess(deletes: deletes, sends: sends)
+        return ToolAccess(deletes: deletes, sends: sends, opens: !hasFile)
     }
 
     /// Adds a proposed change to an answer. The same change twice is shown once.

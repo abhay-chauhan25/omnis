@@ -65,9 +65,13 @@ public struct ToolAccess: Equatable, Sendable {
     /// True when the user's own message asked for something to be sent.
     public var sends: Bool
 
-    public init(deletes: Bool = false, sends: Bool = false) {
+    /// True when an app or project may be opened. Never in a chat that holds a file, whose text could be what asks.
+    public var opens: Bool
+
+    public init(deletes: Bool = false, sends: Bool = false, opens: Bool = false) {
         self.deletes = deletes
         self.sends = sends
+        self.opens = opens
     }
 }
 

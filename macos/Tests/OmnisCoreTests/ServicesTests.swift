@@ -155,6 +155,168 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         }
     }
 
+    @Test func claudeCanOpenOnlyWhatIsInTheUsersListAndNeverALauncher() async throws {
+        let performer = RecordingPerformer()
+        let tools = AppsTools(registry: { sampleRegistry() }, performer: performer)
+        guard case .done(let said, let note) = try await tools.run(tool: "apps_open", arguments: ["name": "safari"], access: ToolAccess(opens: true)) else {
+            Issue.record("not done"); return
+        }
+        #expect(said == "Opened Safari." && note == "Opened Safari")
+        #expect(performer.plans == [.openApplication(URL(fileURLWithPath: "/Applications/Safari.app"))])
+        // A project opens in the editor.
+        _ = try await tools.run(tool: "apps_open", arguments: ["name": "omnis"], access: ToolAccess(opens: true))
+        #expect(performer.plans.count == 2)
+        // Not in the list, a path, or a launcher (which runs a program): refused, and nothing is opened.
+        for name in ["Terminal", "/bin/sh", "../../etc", "Ghidra", ""] {
+            await #expect(throws: ToolRefusal.self, "\(name)") { try await tools.run(tool: "apps_open", arguments: ["name": name], access: ToolAccess(opens: true)) }
+        }
+        // Never from a chat that holds a file.
+        await #expect(throws: ToolRefusal.self) { try await tools.run(tool: "apps_open", arguments: ["name": "safari"], access: ToolAccess()) }
+        #expect(performer.plans.count == 2)
+    }
+
+    @Test func whatIsSaidAloudToOpenSomethingIsStillAPlainLaunch() {
+        let registry = sampleRegistry()
+        for said in ["Open Safari.", "Can you open Safari for me?", "Okay, open Safari please", "I want to open Safari real quick",
+                     "Could you launch Safari right now", "Go ahead and open Safari, thank you"] {
+            let suggestion = LaunchSuggestion.suggest(for: said, registry: registry)
+            #expect(suggestion.preselect && suggestion.entries.first?.name == "Safari", "\(said)")
+            #expect(LaunchSuggestion.spoken(said, registry: registry)?.name == "Safari", "\(said)")
+        }
+        // A question that happens to contain a name is still a question.
+        for said in ["what is Safari", "open Safari and tell me the news", "is Xcode open"] {
+            #expect(!LaunchSuggestion.suggest(for: said, registry: registry).preselect, "\(said)")
+            #expect(LaunchSuggestion.spoken(said, registry: registry) == nil, "\(said)")
+        }
+        // By voice the words must ask for it, a launcher is never started, and two that fit equally are not guessed between.
+        #expect(LaunchSuggestion.spoken("Safari", registry: registry) == nil)
+        #expect(LaunchSuggestion.spoken("open Ghidra", registry: registry) == nil)
+        #expect(LaunchSuggestion.suggest(for: "open Ghidra", registry: registry).preselect)
+        #expect(LaunchSuggestion.spoken("open voy", registry: sampleRegistry(aliases: [:])) == nil)
+        #expect(LaunchSuggestion.spoken("open voyager", registry: registry)?.name == "VoyagerAI")
+    }
+
+    private struct Catalogue: SpotifyCatalogue {
+        var isConnected = true
+        var found: [SpotifyItem] = []
+        var mine: [SpotifyItem] = []
+        func search(_ query: String, kind: SpotifyItem.Kind) async throws -> [SpotifyItem] { found.filter { $0.kind == kind } }
+        func playlists() async throws -> [SpotifyItem] { mine }
+    }
+
+    @Test func aNamedSongIsFoundAndPlayedAndOnlySpotifysOwnAddressesReachTheApp() async throws {
+        let calls = Collected<[String]>()
+        let run: CommandRunner = { program, arguments, _ in
+            calls.add([program.lastPathComponent] + arguments)
+            return CommandResult(status: 0, output: "")
+        }
+        let one = SpotifyItem(kind: .track, id: "4uLU6hMCjMI75M1A2tKUQC", name: "Never Gonna Give You Up", by: "Rick Astley")
+        let two = SpotifyItem(kind: .track, id: "7GhIk7Il098yCjg4BQjzvb", name: "Never Gonna Give You Up (Live)", by: "Rick Astley")
+        let gym = SpotifyItem(kind: .playlist, id: "37i9dQZF1DX76Wlfdnj7AP", name: "Gym Mix", by: "me")
+        let tools = SpotifyTools(catalogue: Catalogue(found: [one, two, SpotifyItem(kind: .playlist, id: "37i9dQZF1DXcBWIGoYBM5M", name: "Gym Hits", by: "Spotify")],
+                                                      mine: [gym]), run: run)
+        guard case .done(let said, _) = try await tools.run(tool: "spotify_play", arguments: ["query": "never gonna give you up"], access: ToolAccess()) else {
+            Issue.record("not done"); return
+        }
+        #expect(said.hasPrefix("Now playing Never Gonna Give You Up by Rick Astley.") && said.contains("s2: Never Gonna Give You Up (Live)"))
+        // The script is fixed text; what to play is handed over beside it.
+        #expect(calls.values.last == ["osascript", "-e", SpotifyTools.playScript, "spotify:track:4uLU6hMCjMI75M1A2tKUQC"])
+        #expect(!SpotifyTools.playScript.contains("spotify:"))
+        // "The other one" is played from the last matches without searching again.
+        _ = try await tools.run(tool: "spotify_play", arguments: ["pick": "s2"], access: ToolAccess())
+        #expect(calls.values.last?.last == "spotify:track:7GhIk7Il098yCjg4BQjzvb")
+        await #expect(throws: ToolRefusal.self) { try await tools.run(tool: "spotify_play", arguments: ["pick": "s9"], access: ToolAccess()) }
+        // A playlist of the user's own comes before anyone else's of a similar name.
+        _ = try await tools.run(tool: "spotify_play", arguments: ["query": "my gym playlist".replacingOccurrences(of: "my ", with: ""), "kind": "playlist"], access: ToolAccess())
+        #expect(calls.values.last?.last == "spotify:playlist:37i9dQZF1DX76Wlfdnj7AP")
+        // The words searched for go to Spotify, so the tool follows the same rule as a web search.
+        #expect(tools.outwardTools.contains("spotify_play"))
+
+        // An identifier that is not what Spotify issues never reaches the app.
+        #expect(SpotifyItem(kind: .track, id: "x\" & (do shell script \"y\")", name: "a", by: "b").uri == nil)
+        #expect(SpotifyAccount.item(["id": "short", "name": "a"], kind: .track) == nil)
+        let before = calls.values.count
+        let empty = SpotifyTools(catalogue: Catalogue(found: []), run: run)
+        await #expect(throws: ToolRefusal.self) { try await empty.run(tool: "spotify_play", arguments: ["query": "nothing"], access: ToolAccess()) }
+        // Not connected: the user is told how, and nothing is run.
+        let off = SpotifyTools(catalogue: Catalogue(isConnected: false), run: run)
+        do {
+            _ = try await off.run(tool: "spotify_play", arguments: ["query": "anything"], access: ToolAccess())
+            Issue.record("should have been refused")
+        } catch { #expect(error.localizedDescription.contains("/spotify")) }
+        #expect(calls.values.count == before)
+    }
+
+    private final class MemoryStore: SecretStore, @unchecked Sendable {
+        private let lock = NSLock()
+        private var kept: [String: Data] = [:]
+        func read(service: String, account: String) -> Data? { lock.withLock { kept[service + account] } }
+        func write(_ data: Data, service: String, account: String) { lock.withLock { kept[service + account] = data } }
+        func delete(service: String, account: String) { lock.withLock { kept[service + account] = nil } }
+    }
+
+    @Test func theSpotifySignInAsksOnlyToReadAndRefusesAReplyItDidNotStart() throws {
+        let url = SpotifyAuth.authorizeURL(clientID: String(repeating: "a", count: 32), state: "st", verifier: "ver")
+        let items = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(url.host == "accounts.spotify.com" && items["redirect_uri"] == "http://127.0.0.1:43821/callback")
+        // Reading only: nothing that could play, change or save.
+        #expect(items["scope"] == "playlist-read-private playlist-read-collaborative user-library-read")
+        #expect(items["code_challenge_method"] == "S256" && items["code_challenge"] == SpotifyAuth.challenge(for: "ver") && items["code_challenge"] != "ver")
+        // RFC 7636's own example.
+        #expect(SpotifyAuth.challenge(for: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        #expect(try SpotifyAuth.code(fromRequest: "GET /callback?code=abc&state=st HTTP/1.1", state: "st") == "abc")
+        for line in ["GET /callback?code=abc&state=other HTTP/1.1", "GET /callback?code=abc HTTP/1.1", "GET /other?code=abc&state=st HTTP/1.1",
+                     "POST /callback?code=abc&state=st HTTP/1.1", "GET /callback?error=access_denied&state=st HTTP/1.1", ""] {
+            #expect(throws: ToolRefusal.self, "\(line)") { try SpotifyAuth.code(fromRequest: line, state: "st") }
+        }
+        #expect(SpotifyAuth.isClientID("0123456789abcdef0123456789abcdef") && !SpotifyAuth.isClientID("not-an-id") && !SpotifyAuth.isClientID(""))
+        #expect(SlashCommand.parse("/spotify 0123456789abcdef0123456789abcdef") == .spotifyConnect("0123456789abcdef0123456789abcdef"))
+        #expect(SlashCommand.parse("/spotify") == .spotifyHelp && SlashCommand.parse("/spotify off") == .spotifyOff)
+        // Something else knocking on the door during a sign-in is told apart from Spotify's reply.
+        #expect(SpotifyAuth.carries(state: "st", request: "GET /callback?code=abc&state=st HTTP/1.1"))
+        #expect(!SpotifyAuth.carries(state: "st", request: "GET /callback HTTP/1.1") && !SpotifyAuth.carries(state: "st", request: "GET /callback?state=x HTTP/1.1"))
+    }
+
+    @Test func spotifyIsSearchedWithTheSignInAndASignInThatHasRunOutIsRenewed() async throws {
+        let store = MemoryStore()
+        let defaults = UserDefaults(suiteName: "omnis-test-\(UUID().uuidString)")!
+        defaults.set(String(repeating: "b", count: 32), forKey: "OMNISSpotifyClientID")
+        let old = #"{"access":"stale","refresh":"keep-me","expires":0}"#
+        store.write(Data(old.utf8), service: "local.omnis.app.spotify", account: "tokens")
+        let seen = Collected<String>()
+        let account = SpotifyAccount(fetch: { request in
+            let url = request.url!
+            seen.add("\(request.httpMethod ?? "") \(url.host ?? "")\(url.path) \(request.value(forHTTPHeaderField: "Authorization") ?? "") "
+                + (request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? url.query ?? ""))
+            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if url.host == "accounts.spotify.com" { return (Data(#"{"access_token":"fresh","expires_in":3600}"#.utf8), ok) }
+            let body = #"{"tracks":{"items":[{"id":"4uLU6hMCjMI75M1A2tKUQC","name":"Song","artists":[{"name":"A"},{"name":"B"}]},{"id":"bad id","name":"x"}]}}"#
+            return (Data(body.utf8), ok)
+        }, store: store, defaults: defaults)
+        #expect(account.isConnected)
+        let found = try await account.search("a song", kind: .track)
+        #expect(found == [SpotifyItem(kind: .track, id: "4uLU6hMCjMI75M1A2tKUQC", name: "Song", by: "A and B")])
+        #expect(seen.values.count == 2)
+        #expect(seen.values[0].hasPrefix("POST accounts.spotify.com/api/token") && seen.values[0].contains("grant_type=refresh_token")
+            && seen.values[0].contains("refresh_token=keep-me"))
+        #expect(seen.values[1].hasPrefix("GET api.spotify.com/v1/search Bearer fresh") && seen.values[1].contains("type=track"))
+        // The renewed sign-in is kept, with the long-lived half Spotify did not send again.
+        let kept = String(data: store.read(service: "local.omnis.app.spotify", account: "tokens") ?? Data(), encoding: .utf8) ?? ""
+        #expect(kept.contains("fresh") && kept.contains("keep-me"))
+        // Spotify being busy does not throw the sign-in away; Spotify refusing it does.
+        for (status, body, stays) in [(503, "{}", true), (400, #"{"error":"invalid_grant"}"#, false)] {
+            let kept = MemoryStore()
+            kept.write(Data(old.utf8), service: "local.omnis.app.spotify", account: "tokens")
+            let shaky = SpotifyAccount(fetch: { request in
+                (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+            }, store: kept, defaults: defaults)
+            await #expect(throws: ToolRefusal.self) { try await shaky.search("x", kind: .track) }
+            #expect(shaky.isConnected == stays, "\(status)")
+        }
+        account.disconnect()
+        #expect(!account.isConnected && store.read(service: "local.omnis.app.spotify", account: "tokens") == nil)
+    }
+
     @Test func aProposedChangeFromAServiceRunsOnceAndReachesLaterTurns() {
         var chat = Conversation()
         let answer = chat.begin(question: "remind me to call the bank")
@@ -179,14 +341,15 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
     @Test func deletingThroughAServiceNeedsTheUsersOwnWordsWhateverIsDeleted() {
         var chat = Conversation()
         // A fresh chat, nothing about the calendar: saying delete is enough.
-        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess(deletes: true))
-        #expect(chat.serviceAccess(for: "yes, that one") == ToolAccess(deletes: true))       // answering a question about it
-        #expect(chat.serviceAccess(for: "thanks") == ToolAccess())
+        #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess(deletes: true, opens: true))
+        #expect(chat.serviceAccess(for: "yes, that one") == ToolAccess(deletes: true, opens: true))       // answering a question about it
+        #expect(chat.serviceAccess(for: "thanks") == ToolAccess(opens: true))
         for text in ["what reminders do I have", "mark the milk one as done", "update me on Friday", "change the wording"] {
-            #expect(chat.serviceAccess(for: text) == ToolAccess(), "\(text)")
+            #expect(chat.serviceAccess(for: text) == ToolAccess(opens: true), "\(text)")
         }
         // Never in a chat that holds a file.
         _ = chat.begin(question: "summarise", attachments: [Attachment(kind: .text, name: "a.txt", text: "x")])
+        // Nor is anything opened from one.
         #expect(chat.serviceAccess(for: "delete the milk reminder") == ToolAccess())
         chat.clear()
         #expect(chat.serviceAccess(for: "remove that reminder").deletes)

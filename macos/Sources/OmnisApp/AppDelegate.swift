@@ -74,11 +74,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A message is only ever prepared; the user's click on the preview sends it.
         services.append(MessagesTools(contacts: SystemContacts(), sender: MessagesAppSender()))
         if let gh = Commands.find("gh") { services.append(GitHubTools(gh: gh)) }
-        if FileManager.default.fileExists(atPath: "/Applications/Spotify.app") { services.append(SpotifyTools()) }
+        // Spotify plays here; finding a song by name uses its catalogue, once the user has connected it.
+        let spotify = FileManager.default.fileExists(atPath: "/Applications/Spotify.app") ? SpotifyAccount() : nil
+        if let spotify { services.append(SpotifyTools(catalogue: spotify)) }
+        // Opening a saved app or project when asked in looser words than the instant launcher takes.
+        services.append(AppsTools(registry: {
+            (try? ConfigStore.loadOrCreate(at: OmnisPaths.registryFile)).flatMap { try? Registry.load(config: $0) }
+        }, performer: SystemLaunchPerformer()))
         claude = AppEnvironment.claudeConfig().map { ClaudeService(config: $0, tools: tools, projects: planner, services: services) }
         // Changing the calendar goes through the chat model, on the user's click.
         let model = ChatModel(backend: backend, audit: audit, calendarWriter: calendar, claude: claude,
-                              projectSetup: projectSetup, services: services)
+                              projectSetup: projectSetup, services: services, spotify: spotify)
         chat = ChatWindowController(model: model)
         // The dashboard is the main window. A question typed there is answered in the chat window.
         let dashboardModel = DashboardModel(chat: model, calendar: calendar, claude: claude, audit: audit,
@@ -96,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Something that needs the user's eyes during a spoken conversation is shown in
         // the notch panel when there is one, and in the chat window otherwise.
-        voice = VoiceModel(chat: model, audit: audit, showChat: { [weak self] in
+        voice = VoiceModel(chat: model, audit: audit, trace: AppEnvironment.voiceTrace, showChat: { [weak self] in
             guard let self else { return }
             if let notch = self.notch, notch.isAvailable, !self.dashboard.isVisible { self.notchModel.reveal() } else { self.chat.show() }
         })

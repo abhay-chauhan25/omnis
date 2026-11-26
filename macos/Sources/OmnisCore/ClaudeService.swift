@@ -65,7 +65,7 @@ public struct ClaudeConfig: Sendable {
     }
 
     /// The services whose tools OMNIS's own tool list may contain.
-    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "photos", "mail", "messages", "browser"]
+    public static let serviceToolPrefixes = ["calendar", "reminders", "github", "spotify", "photos", "mail", "messages", "browser", "apps"]
 
     public init(executable: URL, python: URL, backendDirectory: URL, workingDirectory: URL,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -347,6 +347,16 @@ public final class ClaudeService: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(1.5)
         while child.isRunning, Date() < deadline { usleep(20_000) }
         if child.isRunning { kill(child.processIdentifier, SIGKILL) }
+    }
+
+    /// Starts Claude Code now if it is not running, so the next question does
+    /// not wait for it to start. Nothing is asked and nothing is sent.
+    public func warm(model: ClaudeModel, effort: String) {
+        queue.async {
+            guard self.active == nil, self.process == nil else { return }
+            guard (try? self.start(for: ClaudeRequest(text: "", model: model, effort: effort))) != nil else { return }
+            self.scheduleIdleClose()
+        }
     }
 
     /// Ends the session. The next question starts a fresh one that knows nothing of this chat.

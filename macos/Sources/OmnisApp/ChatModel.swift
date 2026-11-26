@@ -42,6 +42,7 @@ final class ChatModel: ObservableObject {
     private let claude: ClaudeService?
     private let projectSetup: ProjectSetup?
     private let services: [any AssistantTools]
+    private let spotify: SpotifyAccount?
     let limits = UsageLimits()
     /// When the window was last hidden, to end a chat left alone for a long time.
     private var hiddenAt: Date?
@@ -50,12 +51,12 @@ final class ChatModel: ObservableObject {
     var openProjectMode: ((RegistryEntry, _ resume: Bool) -> Void)?
 
     /// Handles "continue VoyagerAI in project mode" and the like. True if it did.
-    private func openedProjectMode(for text: String) -> Bool {
-        guard let openProjectMode, let request = ProjectModeRequest.parse(text, registry: registry) else { return false }
+    private func openedProjectMode(for text: String) -> String? {
+        guard let openProjectMode, let request = ProjectModeRequest.parse(text, registry: registry) else { return nil }
         openProjectMode(request.project, request.resume)
         audit.record(action: "project_mode", target: request.project.name, outcome: "ok", detail: request.resume ? "resume" : "open")
         show(notice: "Opened \(request.project.name) in project mode", seconds: 3)
-        return true
+        return request.project.name
     }
 
     /// Opens the project a finished set-up created, in project mode.
@@ -73,7 +74,9 @@ final class ChatModel: ObservableObject {
     private var noticeTask: Task<Void, Never>?
 
     init(backend: BackendService?, audit: AuditLog, calendarWriter: (any CalendarWriting)? = nil,
-         claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil, services: [any AssistantTools] = []) {
+         claude: ClaudeService? = nil, projectSetup: ProjectSetup? = nil, services: [any AssistantTools] = [],
+         spotify: SpotifyAccount? = nil) {
+        self.spotify = spotify
         self.backend = backend
         self.services = services
         self.projectSetup = projectSetup
@@ -166,33 +169,60 @@ final class ChatModel: ObservableObject {
     var registryEntries: [RegistryEntry] { registry.entries }
     var currentRegistry: Registry { registry }
 
+    /// What became of something asked from outside this window.
+    enum Handled: Equatable {
+        /// Something was opened, with no model involved.
+        case opened(String)
+        /// A typed command changed a setting.
+        case command
+        /// It was put to a model; the answer is the last message in the chat.
+        case asked
+        case nothing
+    }
+
     /// A question typed on the dashboard. It is handled like one typed here:
     /// a clear request to open something is launched without asking a model,
     /// a typed command changes a setting, and anything else is asked. What is
     /// being typed in this window, and files waiting here, are left alone.
-    func askFromDashboard(_ text: String) {
+    @discardableResult
+    func askFromDashboard(_ text: String) -> Handled {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isAnswering else { return }
-        if openedProjectMode(for: trimmed) { return }
+        guard !trimmed.isEmpty, !isAnswering else { return .nothing }
+        if let name = openedProjectMode(for: trimmed) { return .opened("\(name) in project mode") }
+        // By voice the rule is stricter: see `LaunchSuggestion.spoken`.
         let suggestion = LaunchSuggestion.suggest(for: trimmed, registry: registry)
-        if suggestion.preselect, let entry = suggestion.entries.first {
+        let entry = spokenStyle != nil ? LaunchSuggestion.spoken(trimmed, registry: registry)
+            : suggestion.preselect ? suggestion.entries.first : nil
+        if let entry {
             launch(entry, clearInput: false)
-        } else if let command = SlashCommand.parse(trimmed) {
+            return .opened(entry.name)
+        } else if spokenStyle == nil, let command = SlashCommand.parse(trimmed) {
             apply(command)
-        } else {
-            ask(trimmed, attachments: [], onThisMac: false)
+            return .command
         }
+        ask(trimmed, attachments: [], onThisMac: false)
+        return .asked
     }
 
     /// A message that was spoken. It is answered like a typed one, with a note
-    /// to Claude on how to word a reply that will be read aloud. Opening apps
-    /// and typed commands work by voice too.
-    func askSpoken(_ text: String, style: String) {
+    /// to Claude on how to word a reply that will be read aloud, and by the
+    /// quick model unless more thought is asked for. Opening apps and typed
+    /// commands work by voice too.
+    func askSpoken(_ text: String, style: String) -> Handled {
         spokenStyle = style
-        askFromDashboard(text)
-        spokenStyle = nil
+        defer { spokenStyle = nil }
+        // The list of apps and projects is normally read when a window opens. Voice may be used before any has.
+        if registry.entries.isEmpty { reloadRegistry() }
+        return askFromDashboard(text)
     }
     private var spokenStyle: String?
+
+    /// Gets Claude ready before the first spoken question, so the answer is not kept waiting on it.
+    func warmForVoice() {
+        guard !usesLocal, !isAnswering else { return }
+        let choice = ClaudeRouter.choose(text: "", model: modelChoice, effort: effortChoice, spoken: true)
+        claude?.warm(model: choice.model, effort: choice.effort)
+    }
 
     /// Called when the window is hidden. The conversation is kept for now.
     func windowHidden() {
@@ -378,7 +408,7 @@ final class ChatModel: ObservableObject {
         guard !text.isEmpty || !attachments.isEmpty, !isAnswering else { return }
 
         // "Continue VoyagerAI in project mode" opens it there, with no model involved.
-        if attachments.isEmpty, openedProjectMode(for: text) {
+        if attachments.isEmpty, openedProjectMode(for: text) != nil {
             input = ""
             return
         }
@@ -405,6 +435,33 @@ final class ChatModel: ObservableObject {
             offGrid = on
             if !on { chatLocal = false }
             show(notice: on ? "Off the grid: questions are answered on this Mac." : "Back to Claude.", seconds: 4)
+        case .spotifyHelp:
+            show(notice: spotify?.isConnected == true ? "Spotify is connected. /spotify off disconnects it."
+                 : "To connect Spotify: make an app at developer.spotify.com/dashboard with the redirect \(SpotifyAuth.redirect), then type /spotify and its client ID.",
+                 seconds: 25)
+        case .spotifyOff:
+            spotify?.disconnect()
+            audit.record(action: "spotify_connect", outcome: "disconnected")
+            show(notice: "Spotify is disconnected from OMNIS.", seconds: 4)
+        case .spotifyConnect(let clientID):
+            guard let spotify else {
+                show(notice: "The Spotify app is not installed on this Mac.", seconds: 5)
+                return
+            }
+            show(notice: "Finish signing in to Spotify in your browser\u{2026}", seconds: 180)
+            let audit = self.audit
+            Task { [weak self] in
+                do {
+                    try await spotify.connect(clientID: clientID) { url in
+                        Task { @MainActor in NSWorkspace.shared.open(url) }
+                    }
+                    audit.record(action: "spotify_connect", outcome: "ok")
+                    self?.show(notice: "Spotify is connected. Ask for a song or a playlist.", seconds: 6)
+                } catch {
+                    audit.record(action: "spotify_connect", outcome: "error", detail: error.localizedDescription)
+                    self?.show(notice: "Spotify was not connected: \(error.localizedDescription).", seconds: 10)
+                }
+            }
         case .unknown(let help):
             show(notice: help, seconds: 8)
         }
@@ -467,7 +524,7 @@ final class ChatModel: ObservableObject {
                 return
             }
             let choice = ClaudeRouter.choose(text: options.text,
-                                             model: modelChoice, effort: effortChoice)
+                                             model: modelChoice, effort: effortChoice, spoken: spokenStyle != nil)
             var request = ClaudeRequest(
                 text: options.text, history: history, attachments: attachments, model: choice.model, effort: choice.effort,
                 reason: choice.reason, web: webEnabled && options.web,

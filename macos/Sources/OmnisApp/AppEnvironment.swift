@@ -99,6 +99,15 @@ enum AppEnvironment {
         return arguments[index + 1].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
+    /// Development aid: `--voice-trace <file>` writes what voice hears, says and does to that
+    /// file, with timings, for finding faults. It holds spoken words, so it is only ever
+    /// written when OMNIS is started with this, and the file should be deleted afterwards.
+    static var voiceTrace: URL? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--voice-trace"), index + 1 < arguments.count else { return nil }
+        return URL(fileURLWithPath: arguments[index + 1])
+    }
+
     /// Development aid: `--render-notch <folder>` draws the notch panel to pictures in
     /// that folder and exits, with no window shown. It is how the look is checked.
     static var renderNotch: URL? {

@@ -35,8 +35,12 @@ public enum QueryParser {
     static let verbs: Set<String> = ["open", "launch", "start", "run"]
     static let articles: Set<String> = ["the", "my"]
     /// Words people put around a request that say nothing about the target.
-    static let politeLead: Set<String> = ["please", "can", "could", "would", "you", "hey", "omnis", "just"]
-    static let politeTail: Set<String> = ["please", "now", "thanks"]
+    static let politeLead: Set<String> = ["please", "can", "could", "would", "will", "you", "hey", "omnis", "just", "okay", "ok", "i", "want",
+                                          "need", "to", "wanna", "like", "lets", "let", "us", "go", "ahead", "and", "now", "quickly"]
+    static let politeTail: Set<String> = ["please", "now", "thanks", "quickly", "again"]
+    /// Said after the name, mostly aloud: "open Spotify for me", "open Notes real quick".
+    static let tailPhrases: [[String]] = [["for", "me"], ["for", "me", "please"], ["real", "quick"], ["right", "now"], ["thank", "you"], ["if", "you", "can"],
+                                          ["would", "you"], ["will", "you"], ["can", "you"]]
     static let appWords: Set<String> = ["app", "application"]
     static let projectWords: Set<String> = ["project", "repo", "folder"]
     static let editorPhrases: [[String]] = [
@@ -66,8 +70,17 @@ public enum QueryParser {
            tokens[..<verbAt].allSatisfy({ politeLead.contains($0) }) {
             tokens.removeFirst(verbAt)
         }
-        while tokens.count > 2, let last = tokens.last, politeTail.contains(last) {
-            tokens.removeLast()
+        var trimmed = true
+        while trimmed {
+            trimmed = false
+            for phrase in tailPhrases where tokens.count > phrase.count + 1 && Array(tokens.suffix(phrase.count)) == phrase {
+                tokens.removeLast(phrase.count)
+                trimmed = true
+            }
+            while tokens.count > 2, let last = tokens.last, politeTail.contains(last) {
+                tokens.removeLast()
+                trimmed = true
+            }
         }
         if tokens.count > 1, let first = tokens.first, verbs.contains(first) {
             tokens.removeFirst()
@@ -179,6 +192,24 @@ public struct LaunchSuggestion: Equatable, Sendable {
     public let preselect: Bool
 
     public static let none = LaunchSuggestion(entries: [], preselect: false)
+
+    /// What a spoken request should open at once, if anything. Stricter than
+    /// typing, because nobody is looking at a list of suggestions: the words
+    /// must ask for it ("open ..."), one entry must fit better than any other,
+    /// and a launcher, which runs a program, is never started by voice alone.
+    public static func spoken(_ said: String, registry: Registry) -> RegistryEntry? {
+        let trimmed = said.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 80 else { return nil }
+        let words = TextNormalizer.normalize(trimmed).split(separator: " ").map(String.init)
+        guard let verbAt = words.firstIndex(where: { QueryParser.verbs.contains($0) }), verbAt < words.count - 1,
+              words[..<verbAt].allSatisfy({ QueryParser.politeLead.contains($0) }) else { return nil }
+        let listed = Registry(entries: registry.entries.filter { $0.kind != .launcher }, aliases: registry.aliases, editor: registry.editor)
+        let matches = Matcher.rank(query: trimmed, registry: listed, limit: 3).filter { $0.score > Matcher.substring }
+        guard let top = matches.first else { return nil }
+        // Two that fit about as well ("voy" for VoyagerAI and Voyagers): not guessed between.
+        if matches.count > 1, top.score - matches[1].score <= Matcher.maxLengthPenalty, top.score < Matcher.exact { return nil }
+        return top.entry
+    }
 
     public static func suggest(for input: String, registry: Registry, limit: Int = 4) -> LaunchSuggestion {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -30,6 +30,14 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     /// How loud the room or the voice is, from 0 to 1.
     var onLevel: ((Double) -> Void)?
     var onSpeechFinished: (() -> Void)?
+    /// The user started talking while OMNIS was. Its voice has already been stopped.
+    var onBargeIn: (() -> Void)?
+    /// Whether talking over OMNIS stops it. Off while it asks a yes-or-no question.
+    var allowsInterruption = false
+    /// How fast OMNIS talks: 1 is the voice's usual pace.
+    var speed = 1.0
+    /// Development aid: told what is heard and done, for a log that is only written when asked for.
+    var trace: ((String) -> Void)?
     var onProblem: ((String) -> Void)?
 
     private let audio = AVAudioEngine()
@@ -42,6 +50,21 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     private var soundTime = 0.0
     private let synthesizer = AVSpeechSynthesizer()
     private var speaking = false
+    /// Everything OMNIS has said since it last started talking, to tell its own voice from the user's.
+    private var saying = ""
+    /// The sentences handed to the voice and not yet finished.
+    private var queued: Set<ObjectIdentifier> = []
+    /// Sentences that were cut off are kept a while, so a late word about one of them cannot be taken for a new one.
+    private var retired: [AVSpeechUtterance] = []
+    private var live: [AVSpeechUtterance] = []
+    /// After being talked over: how many words at the start of what was heard were OMNIS's own.
+    private var ownWords = 0
+    private var reconfigurations = 0
+    private var voice: AVSpeechSynthesisVoice?
+    private var wanted: AVAudioFormat?
+    private(set) var echoCancelling = false
+    /// Set while OMNIS itself changes how the microphone is used, so that is not taken for new headphones.
+    private var reconfiguring = false
     private(set) var isRunning = false
     /// Goes up each time listening is started or stopped, so that work left
     /// over from an earlier start can tell it is no longer wanted.
@@ -62,7 +85,9 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         var now: Double { lock.withLock { seconds } }
     }
     /// A pause this long means the speaker has finished.
-    static let pauseSeconds = 1.1
+    static let pauseSeconds = 0.8
+    /// How much longer the recogniser is given to settle on its final wording.
+    static let settleSeconds = 0.5
 
     override init() {
         super.init()
@@ -120,19 +145,70 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         guard let wanted = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { throw VoiceProblem.notSupported }
         try stillWanted()
 
-        let input = audio.inputNode
-        let native = input.outputFormat(forBus: 0)
-        guard native.sampleRate > 0, let converter = AVAudioConverter(from: native, to: wanted) else {
-            throw VoiceProblem.couldNotStart("no microphone was found")
-        }
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         feed = continuation
         self.analyzer = analyzer
+        self.wanted = wanted
+        voice = Self.bestVoice()
         buffer = UtteranceBuffer()
         soundTime = 0
         fed.reset()
-        let fed = self.fed
+        echoCancelling = false
+        try installTap()
+        do {
+            audio.prepare()
+            try audio.start()
+            try await analyzer.start(inputSequence: stream)
+        } catch {
+            // Only this start's own things are undone: a newer start may already be using the microphone.
+            if mine == session { teardown() } else { continuation.finish() }
+            throw VoiceProblem.couldNotStart(error.localizedDescription)
+        }
+        // Switched off, or started afresh, while this one was starting. `stop` has already let go of
+        // the microphone; what is left belongs to this start alone.
+        guard mine == session else {
+            continuation.finish()
+            await analyzer.cancelAndFinishNow()
+            throw CancellationError()
+        }
+        isRunning = true
+        deviceWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRunning, mine == self.session, !self.reconfiguring else { return }
+                self.onDeviceChange?()
+            }
+        }
+        resultsTask = Task { [weak self] in
+            do {
+                for try await result in transcriber.results {
+                    let start = result.range.start.seconds, end = result.range.end.seconds
+                    let text = String(result.text.characters), final = result.isFinal
+                    await MainActor.run {
+                        guard let self, mine == self.session else { return }
+                        self.took(text, from: start, to: end, final: final)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    // Only a failure of the listening that is still wanted is worth reporting.
+                    guard let self, mine == self.session, self.isRunning else { return }
+                    self.onProblem?("Listening stopped: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 
+    /// Puts the microphone's sound through to the recogniser, in the form it wants.
+    private func installTap() throws {
+        guard let wanted, let continuation = feed else { throw VoiceProblem.couldNotStart("listening was not set up") }
+        let input = audio.inputNode
+        let native = input.outputFormat(forBus: 0)
+        guard native.sampleRate > 0, native.channelCount > 0, let converter = AVAudioConverter(from: native, to: wanted) else {
+            throw VoiceProblem.couldNotStart("no microphone was found")
+        }
+        // Some microphones give several channels at once; the first is the voice.
+        if native.channelCount > 1 { converter.channelMap = Array(repeating: 0, count: Int(wanted.channelCount)) }
+        let fed = self.fed
         input.installTap(onBus: 0, bufferSize: 4096, format: native) { [weak self] buffer, _ in
             // Loudness, for the picture on screen.
             var level = 0.0
@@ -163,46 +239,51 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
                 self.onLevel?(level)
             }
         }
-        do {
+    }
+
+    /// Turns the Mac's echo cancelling on or off. With it on, the microphone
+    /// hears much less of what the speakers are playing, so OMNIS can keep
+    /// listening while it talks. It is on only during a conversation, because
+    /// macOS turns other sound down a little while it is.
+    func setEchoCancelling(_ on: Bool) {
+        guard isRunning, on != echoCancelling else { return }
+        reconfiguring = true
+        reconfigurations += 1
+        let change = reconfigurations
+        let mine = session
+        audio.inputNode.removeTap(onBus: 0)
+        audio.stop()
+        func begin(_ wantsCancelling: Bool) throws {
+            try audio.inputNode.setVoiceProcessingEnabled(wantsCancelling)
+            if wantsCancelling {
+                audio.inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+            }
+            try installTap()
             audio.prepare()
             try audio.start()
-            try await analyzer.start(inputSequence: stream)
+        }
+        do {
+            try begin(on)
+            echoCancelling = on
+            trace?("echo cancelling \(on ? "on" : "off"), microphone \(audio.inputNode.outputFormat(forBus: 0).channelCount) channel(s)")
         } catch {
-            // Only this start's own things are undone: a newer start may already be using the microphone.
-            if mine == session { teardown() } else { continuation.finish() }
-            throw VoiceProblem.couldNotStart(error.localizedDescription)
-        }
-        // Switched off, or started afresh, while this one was starting. `stop` has already let go of
-        // the microphone; what is left belongs to this start alone.
-        guard mine == session else {
-            continuation.finish()
-            await analyzer.cancelAndFinishNow()
-            throw CancellationError()
-        }
-        isRunning = true
-        deviceWatch = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.isRunning, mine == self.session else { return }
-                self.onDeviceChange?()
+            trace?("echo cancelling could not be turned \(on ? "on" : "off"): \(error.localizedDescription)")
+            // Back to plain listening, which is what worked before.
+            audio.inputNode.removeTap(onBus: 0)
+            audio.stop()
+            echoCancelling = false
+            do { try begin(false) } catch {
+                reconfiguring = false
+                onProblem?("Listening stopped: \(error.localizedDescription)")
+                return
             }
         }
-        resultsTask = Task { [weak self] in
-            do {
-                for try await result in transcriber.results {
-                    let start = result.range.start.seconds, end = result.range.end.seconds
-                    let text = String(result.text.characters), final = result.isFinal
-                    await MainActor.run {
-                        guard let self, mine == self.session else { return }
-                        self.took(text, from: start, to: end, final: final)
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    // Only a failure of the listening that is still wanted is worth reporting.
-                    guard let self, mine == self.session, self.isRunning else { return }
-                    self.onProblem?("Listening stopped: \(error.localizedDescription)")
-                }
-            }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            // A later change is still settling: that one clears the flag.
+            guard let self, mine == self.session, change == self.reconfigurations else { return }
+            self.reconfiguring = false
         }
     }
 
@@ -223,6 +304,9 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         resultsTask = nil
         audio.inputNode.removeTap(onBus: 0)
         audio.stop()
+        if echoCancelling { try? audio.inputNode.setVoiceProcessingEnabled(false) }
+        echoCancelling = false
+        reconfiguring = false
         feed?.finish()
         feed = nil
         let old = analyzer
@@ -233,6 +317,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
     /// Forgets anything heard so far, so the next utterance starts clean.
     func cut() {
+        ownWords = 0
         pauseTask?.cancel()
         buffer.cut(upTo: soundTime)
     }
@@ -240,10 +325,23 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     private func took(_ text: String, from start: Double, to end: Double, final: Bool) {
         guard isRunning, start.isFinite, end.isFinite else { return }
         soundTime = max(soundTime, end)
-        // OMNIS does not listen to itself.
-        guard !speaking else { return }
-        buffer.take(text, start: start, end: end, final: final)
-        let current = buffer.current
+        if speaking {
+            // OMNIS does not listen to itself. But someone talking over it is heard, where that is allowed.
+            guard allowsInterruption else { return }
+            buffer.take(text, start: start, end: end, final: final)
+            guard VoiceEcho.isInterruption(heard: buffer.current, speaking: saying) else {
+                trace?("own voice heard: \(buffer.current.suffix(60))")
+                return
+            }
+            trace?("talked over: \(buffer.current.suffix(60))")
+            // Its own voice stops at once. What was heard is kept, less its own words: it is the start of what the user is saying.
+            ownWords = VoiceEcho.ownWords(atStartOf: buffer.current, speaking: saying)
+            silence()
+            onBargeIn?()
+        } else {
+            buffer.take(text, start: start, end: end, final: final)
+        }
+        let current = VoiceEcho.dropping(ownWords, from: buffer.current)
         guard !current.isEmpty else { return }
         onPartial?(current)
         pauseTask?.cancel()
@@ -252,10 +350,10 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
             guard !Task.isCancelled, let self, self.isRunning, !self.speaking else { return }
             // The settled wording is the accurate one, so it is waited for a little longer.
             if !self.buffer.isSettled {
-                try? await Task.sleep(nanoseconds: 900_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(Self.settleSeconds * 1_000_000_000))
                 guard !Task.isCancelled, self.isRunning, !self.speaking else { return }
             }
-            let said = self.buffer.current
+            let said = VoiceEcho.dropping(self.ownWords, from: self.buffer.current)
             self.cut()
             if !said.isEmpty { self.onUtterance?(said) }
         }
@@ -263,17 +361,27 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
 
     // MARK: Speaking
 
+    /// Says the words. Called again while still talking, the new words follow on.
     func speak(_ words: String) {
         let utterance = AVSpeechUtterance(string: words)
-        utterance.voice = Self.bestVoice()
-        speaking = true
-        cut()
+        utterance.voice = voice ?? Self.bestVoice()
+        utterance.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * Float(speed))
+        if !speaking {
+            speaking = true
+            saying = ""
+            cut()
+        }
+        saying += " " + words
+        queued.insert(ObjectIdentifier(utterance))
+        live.append(utterance)
         synthesizer.speak(utterance)
         // If the voice never reports that it finished, the conversation must not wait for ever.
         speakTimeout?.cancel()
+        let longest = 20 + Double(saying.count) / 8
         speakTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64((20 + Double(words.count) / 8) * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(longest * 1_000_000_000))
             guard !Task.isCancelled, let self, self.speaking else { return }
+            self.retire()
             self.synthesizer.stopSpeaking(at: .immediate)
             self.finishedSpeaking()
         }
@@ -283,23 +391,38 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
         guard speaking else { return }
         speakTimeout?.cancel()
         speaking = false
+        retire()
         // From here only speech that begins after this moment is believed.
         // The end of OMNIS's own voice may still be on its way through the recogniser.
         pauseTask?.cancel()
+        ownWords = 0
         buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
         onLevel?(0)
         onSpeechFinished?()
     }
 
+    /// Stops the voice and forgets what was waiting to be said. Nothing heard is thrown away.
+    private func retire() {
+        queued.removeAll()
+        retired = Array((retired + live).suffix(60))
+        live.removeAll()
+    }
+
+    private func silence() {
+        speakTimeout?.cancel()
+        speaking = false
+        retire()
+        synthesizer.stopSpeaking(at: .immediate)
+        onLevel?(0)
+    }
+
     /// Stops speaking at once. Nothing is reported as finished.
     func hush() {
         guard speaking else { return }
-        speakTimeout?.cancel()
-        speaking = false
-        synthesizer.stopSpeaking(at: .immediate)
+        silence()
         pauseTask?.cancel()
+        ownWords = 0
         buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
-        onLevel?(0)
     }
 
     func chime() {
@@ -314,15 +437,28 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
         Task { @MainActor [weak self] in
-            // A moment for the room to go quiet.
+            // One that was cut off earlier is not counted.
+            guard let self, self.queued.remove(id) != nil, self.queued.isEmpty else { return }
+            // A moment for the room to go quiet. If more is handed over meanwhile, it carries on talking.
             try? await Task.sleep(nanoseconds: 250_000_000)
-            self?.finishedSpeaking()
+            guard self.queued.isEmpty else { return }
+            self.finishedSpeaking()
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
         // Cut off by the system rather than by OMNIS: treated as finished, so nothing waits on it.
-        Task { @MainActor [weak self] in self?.finishedSpeaking() }
+        Task { @MainActor [weak self] in
+            guard let self, self.queued.remove(id) != nil, self.queued.isEmpty else { return }
+            self.finishedSpeaking()
+        }
+    }
+
+    /// A soft sound for the end of a conversation, so it is clear OMNIS has stopped listening.
+    func closingChime() {
+        NSSound(named: "Bottle")?.play()
     }
 }

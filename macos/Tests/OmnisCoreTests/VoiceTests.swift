@@ -146,7 +146,7 @@ import Testing
         #expect(flow.heard("did you see the game last night") == [] && flow.state == .waiting)
         #expect(flow.heard("Hey Omnis, what's on tomorrow?") == [.chime, .ask("what's on tomorrow?")])
         #expect(flow.heard("ignored while thinking") == [] && flow.state == .thinking)
-        #expect(flow.answered("You have the **dentist** at 10.", pending: nil) == [.speak("You have the dentist at 10. Anything else?")])
+        #expect(flow.answered("You have the **dentist** at 10.", pending: nil) == [.speak("You have the dentist at 10.")])
         #expect(flow.heard("yes") == [] && flow.state == .speaking)                 // its own voice, or someone else's, is not a reply
         #expect(flow.finishedSpeaking() == [.listen(seconds: 8)] && flow.state == .followUp)
         // A follow-up needs no wake phrase, and the chat goes on.
@@ -178,7 +178,7 @@ import Testing
         // Not a clear yes: asked once more, then left on screen, never sent.
         #expect(flow.heard("yes but say ten minutes") == [.speak("Sorry, was that a yes or a no?")])
         _ = flow.finishedSpeaking()
-        #expect(flow.heard("umm") == [.speak("I have left it on screen for you. Anything else?")])
+        #expect(flow.heard("umm") == [.speak("I have left it on screen for you.")])
         _ = flow.finishedSpeaking()
         #expect(flow.state == .followUp)
 
@@ -187,7 +187,7 @@ import Testing
         _ = flow.finishedSpeaking()
         // A clear yes carries it out, and "Done" is said only once it has been.
         #expect(flow.heard("Yes, send it") == [.settleAction(true)] && flow.state == .thinking)
-        #expect(flow.acted(success: true) == [.speak("Done. Anything else?")])
+        #expect(flow.acted(success: true) == [.speak("Done.")])
     }
 
     @Test func yesNoAndSilenceEachSettleAPreviewTheRightWay() {
@@ -200,15 +200,15 @@ import Testing
         }
         var yes = asked()
         #expect(yes.heard("Go ahead") == [.settleAction(true)])
-        #expect(yes.acted(success: false, detail: "Messages could not send it") == [.speak("That did not work. Messages could not send it Anything else?")])
+        #expect(yes.acted(success: false, detail: "Messages could not send it") == [.speak("That did not work. Messages could not send it")])
         var no = asked()
-        #expect(no.heard("No") == [.settleAction(false), .speak("Okay, I have left it. Anything else?")])
+        #expect(no.heard("No") == [.settleAction(false), .speak("Okay, I have left it.")])
         var quiet = asked()
-        #expect(quiet.silence() == [.speak("I have left it on screen for you. Anything else?")])
+        #expect(quiet.silence() == [.speak("I have left it on screen for you.")])
         // Something that needs a click is never asked about aloud.
         var click = on()
         _ = click.heard("hey omnis delete my dentist appointment")
-        #expect(click.answered("I have prepared that.", pending: .onScreen) == [.speak("I have prepared that. It is on screen for you to confirm. Anything else?")])
+        #expect(click.answered("I have prepared that.", pending: .onScreen) == [.speak("I have prepared that. It is on screen for you to confirm.")])
         _ = click.finishedSpeaking()
         #expect(click.heard("yes") == [.ask("yes")])                               // a "yes" here is just the next thing said
     }
@@ -219,7 +219,7 @@ import Testing
         #expect(flow.answered("", pending: .searchQuestion) == [.speak("This chat holds personal information. Shall I search the web? Yes or no?")])
         _ = flow.finishedSpeaking()
         #expect(flow.heard("yeah") == [.settleSearch(true)] && flow.state == .thinking)
-        #expect(flow.answered("It opens at nine.", pending: nil) == [.speak("It opens at nine. Anything else?")])
+        #expect(flow.answered("It opens at nine.", pending: nil) == [.speak("It opens at nine.")])
 
         var unsure = on()
         _ = unsure.heard("hey omnis look it up")
@@ -235,7 +235,7 @@ import Testing
         #expect(speaking.end() == [.hush, .endChat] && speaking.state == .waiting)
         var thinking = on()
         _ = thinking.heard("hey omnis hello")
-        #expect(thinking.end() == [.endChat] && thinking.state == .waiting)
+        #expect(thinking.end() == [.stopAnswer, .endChat] && thinking.state == .waiting)
         // Nothing to end while only waiting for the phrase, and it listens for the phrase again afterwards.
         #expect(thinking.end() == [])
         #expect(thinking.heard("hey omnis again") == [.chime, .ask("again")])
@@ -252,7 +252,7 @@ import Testing
         #expect(flow.heard("hey omnis") == [] && flow.finishedSpeaking() == [] && flow.silence() == [])
         var failing = on()
         _ = failing.heard("hey omnis hello")
-        #expect(failing.failed("Claude's usage limit has been reached.") == [.speak("Sorry, that did not work. Claude's usage limit has been reached. Anything else?")])
+        #expect(failing.failed("Claude's usage limit has been reached.") == [.speak("Sorry, that did not work. Claude's usage limit has been reached.")])
     }
 }
 
@@ -307,5 +307,127 @@ import Testing
         let plain = NotchGeometry(screen: NotchGeometry.Rect(x: 100, y: 50, width: 400, height: 300), notchWidth: 0, notchHeight: 0)
         #expect(plain.resting == NotchGeometry.Rect(x: 196, y: 326, width: 208, height: 24))
         #expect(plain.open(width: 460, height: 600).width == 384 && plain.open(width: 460, height: 600).height == 260)
+    }
+}
+
+@Suite struct StreamedSpeechTests {
+    @Test func sentencesAreHandedOnAsTheyAreFinishedAndNeverTwice() {
+        var stream = SpokenStream()
+        #expect(stream.take("It is", final: false) == "")
+        #expect(stream.take("It is nine o'clock. You have", final: false) == "It is nine o'clock.")
+        #expect(stream.take("It is nine o'clock. You have the **dentist** at 10. Then", final: false) == "You have the dentist at 10.")
+        #expect(stream.take("It is nine o'clock. You have the **dentist** at 10. Then lunch", final: true) == "Then lunch")
+        #expect(stream.take("It is nine o'clock. You have the **dentist** at 10. Then lunch", final: true) == "")
+        #expect(stream.hasSpoken)
+    }
+
+    @Test func aFullStopThatDoesNotEndASentenceIsNotASplit() {
+        var stream = SpokenStream()
+        #expect(stream.take("Dr. Jones costs $3.50 e.g. on Mondays, and J. Smith too", final: false) == "")
+        // A line is said once it has ended; the number of a numbered line is not a sentence of its own.
+        var list = SpokenStream()
+        #expect(list.take("Two steps:\n1. Open it", final: false) == "Two steps:")
+        #expect(list.take("Two steps:\n1. Open it\n2. Close it", final: true) == "Open it. Close it")
+        var code = SpokenStream()
+        // Code is passed over whole, never read out in pieces.
+        #expect(code.take("Here it is. ```let a = 1. let b = 2. ", final: false) == "Here it is.")
+        #expect(code.take("Here it is. ```let a = 1. let b = 2. ``` That is all. ", final: false) == "(there is some code on screen) That is all.")
+    }
+
+    @Test func aLongAnswerStopsBeingReadAndSaysWhereTheRestIs() {
+        var stream = SpokenStream(limit: 60)
+        #expect(stream.take("The first sentence is short. ", final: false) == "The first sentence is short.")
+        let next = stream.take("The first sentence is short. The second fits too. But this third one runs on well past the limit. ", final: false)
+        #expect(next == "The second fits too. The rest is on screen.")
+        #expect(stream.take("The first sentence is short. The second fits too. But this third one runs on well past the limit. More.", final: true) == "")
+    }
+
+    @Test func anAnswerIsSpokenWhileItIsStillBeingWritten() {
+        var flow = VoiceFlow()
+        _ = flow.switchOn()
+        _ = flow.heard("hey omnis what's the weather")
+        #expect(flow.streamed("It is sunny.") == [.speak("It is sunny.")])
+        #expect(flow.state == .speaking && flow.awaitsAnswer && flow.canBeInterrupted)
+        // Everything written so far has been said: it waits for more rather than listening.
+        #expect(flow.finishedSpeaking() == [] && flow.state == .thinking)
+        #expect(flow.streamed("Twenty degrees.") == [.speak("Twenty degrees.")])
+        // The answer ends with nothing left to say: the last sentence is heard out, then it listens. Nothing is asked.
+        #expect(flow.answered("", pending: nil) == [] && flow.state == .speaking && !flow.awaitsAnswer)
+        #expect(flow.finishedSpeaking() == [.listen(seconds: VoiceFlow.replySeconds)] && flow.state == .followUp)
+        // Silence then ends the conversation without a word.
+        #expect(flow.silence() == [.endChat] && flow.state == .waiting)
+    }
+
+    @Test func theEndOfAnAnswerThatWasAlreadyHeardOutGoesStraightToListening() {
+        var flow = VoiceFlow()
+        _ = flow.switchOn()
+        _ = flow.heard("hey omnis hello")
+        _ = flow.streamed("Hello.")
+        _ = flow.finishedSpeaking()
+        #expect(flow.answered("", pending: nil) == [.listen(seconds: VoiceFlow.replySeconds)] && flow.state == .followUp)
+        // An answer with nothing in it at all still says so.
+        var empty = VoiceFlow()
+        _ = empty.switchOn()
+        _ = empty.heard("hey omnis hello")
+        #expect(empty.answered("", pending: nil) == [.speak("I have nothing to say to that.")])
+    }
+
+    @Test func talkingOverAnAnswerStopsItAndListensButAQuestionIsHeardOut() {
+        var flow = VoiceFlow()
+        _ = flow.switchOn()
+        _ = flow.heard("hey omnis tell me about Rome")
+        _ = flow.streamed("Rome is old.")
+        // The rest of the answer is no longer wanted.
+        #expect(flow.bargeIn() == [.hush, .stopAnswer, .listen(seconds: VoiceFlow.replySeconds)] && flow.state == .followUp)
+        #expect(flow.streamed("It was founded") == [] && flow.answered("late", pending: nil) == [])
+        #expect(flow.heard("actually what about Paris") == [.ask("actually what about Paris")])
+        // A finished answer being read out is simply cut short.
+        _ = flow.answered("Paris is in France.", pending: nil)
+        #expect(flow.bargeIn() == [.hush, .listen(seconds: VoiceFlow.replySeconds)])
+
+        // A yes-or-no question cannot be talked over, so nothing said over it is taken for an answer.
+        var asking = VoiceFlow()
+        _ = asking.switchOn()
+        _ = asking.heard("hey omnis text Sam")
+        _ = asking.answered("Ready.", pending: .confirmable(summary: "A message to Sam, saying: hi."))
+        #expect(!asking.canBeInterrupted && asking.bargeIn() == [] && asking.state == .speaking)
+        var leaving = VoiceFlow()
+        _ = leaving.switchOn()
+        _ = leaving.heard("hey omnis hello")
+        _ = leaving.answered("Hi.", pending: nil)
+        _ = leaving.finishedSpeaking()
+        _ = leaving.heard("that's all")
+        #expect(!leaving.canBeInterrupted)
+    }
+
+    @Test func itsOwnVoiceComingBackIsNotTakenForTheUser() {
+        let saying = "You have the dentist at ten and then lunch with Sam at noon."
+        for echo in ["you have the dentist", "dentist at ten and then lunch", "at noon", "You have the dentist at 10", ""] {
+            #expect(!VoiceEcho.isInterruption(heard: echo, speaking: saying), "\(echo)")
+        }
+        for said in ["stop", "okay stop", "wait", "hey omnis", "actually what about tomorrow", "the dentist no cancel that please"] {
+            #expect(VoiceEcho.isInterruption(heard: said, speaking: saying), "\(said)")
+        }
+    }
+
+    @Test func whatIsKeptAfterTalkingOverLeavesOutItsOwnWords() {
+        let saying = "You have the dentist at ten and then lunch with Sam at noon."
+        let heard = "you have the dentist at ten and then stop what about tomorrow"
+        let own = VoiceEcho.ownWords(atStartOf: heard, speaking: saying)
+        #expect(VoiceEcho.dropping(own, from: heard) == "stop what about tomorrow")
+        // The same number of words is left out as more is heard.
+        #expect(VoiceEcho.dropping(own, from: heard + " afternoon") == "stop what about tomorrow afternoon")
+        #expect(VoiceEcho.ownWords(atStartOf: "wait", speaking: saying) == 0 && VoiceEcho.dropping(0, from: "wait") == "wait")
+    }
+
+    @Test func aSpokenQuestionGetsTheQuickModelUnlessMoreIsAskedFor() {
+        let quick = ClaudeRouter.choose(text: "what time is it", spoken: true)
+        #expect(quick.model == .haiku && quick.effort == "low")
+        let deep = ClaudeRouter.choose(text: "think through whether I should move", spoken: true)
+        #expect(deep.model == .opus && deep.effort == "high")
+        // What the user picked is used as picked, spoken or not.
+        #expect(ClaudeRouter.choose(text: "hello", model: .sonnet, spoken: true).model == .sonnet)
+        #expect(ClaudeRouter.choose(text: "hello", effort: .high, spoken: true).effort == "high")
+        #expect(ClaudeRouter.choose(text: "hello").model == .sonnet)
     }
 }
