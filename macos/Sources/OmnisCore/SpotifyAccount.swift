@@ -32,6 +32,10 @@ public protocol SpotifyCatalogue: Sendable {
     func search(_ query: String, kind: SpotifyItem.Kind) async throws -> [SpotifyItem]
     /// The user's own playlists.
     func playlists() async throws -> [SpotifyItem]
+    /// Adds a song to what plays next. The one thing here that is not reading.
+    func queue(_ item: SpotifyItem) async throws
+    /// The address of the user's Liked Songs as one list, and the newest liked song as a fallback.
+    func liked() async throws -> (list: String?, newest: SpotifyItem?)
 }
 
 /// The sign-in to Spotify's web service, kept in the Keychain.
@@ -44,13 +48,15 @@ struct SpotifyTokens: Codable, Equatable {
 /// The steps of signing in to Spotify, with nothing in them that touches the network.
 ///
 /// OMNIS has no secret of its own to keep: it proves it is the program that
-/// began the sign-in by a one-time code only it knows (PKCE). It asks only to
-/// read: the user's playlists and saved music. Playing is done by the Spotify
-/// app on this Mac, so the web service is never given the power to control it.
+/// began the sign-in by a one-time code only it knows (PKCE). It asks to read
+/// the user's playlists and saved music, and to control playback, which is
+/// needed for one thing: adding a song to what plays next. It cannot change,
+/// save or delete anything in the user's library. Playing, pausing, volume
+/// and the rest are done by the Spotify app on this Mac.
 public enum SpotifyAuth {
     public static let port: UInt16 = 43_821
     public static let redirect = "http://127.0.0.1:43821/callback"
-    public static let scopes = "playlist-read-private playlist-read-collaborative user-library-read"
+    public static let scopes = "playlist-read-private playlist-read-collaborative user-library-read user-modify-playback-state"
 
     /// A Spotify client ID is 32 hexadecimal characters.
     public static func isClientID(_ text: String) -> Bool {
@@ -204,6 +210,9 @@ public final class SpotifyAccount: SpotifyCatalogue, @unchecked Sendable {
         self.defaults = defaults
     }
 
+    /// The client ID given when Spotify was last connected, for connecting again without typing it.
+    public var savedClientID: String? { clientID }
+
     private var clientID: String? {
         defaults.string(forKey: Self.clientKey).flatMap { SpotifyAuth.isClientID($0) ? $0 : nil }
     }
@@ -311,14 +320,38 @@ public final class SpotifyAccount: SpotifyCatalogue, @unchecked Sendable {
 
     public static let notConnected = "Spotify's catalogue is not connected to OMNIS"
 
-    private func get(_ path: String, _ query: [String: String]) async throws -> [String: Any] {
+    private func request(_ method: String, _ path: String, _ query: [String: String]) async throws -> (Int, Data) {
         var parts = URLComponents(string: "https://api.spotify.com/v1/\(path)")!
         parts.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: parts.url!)
+        request.httpMethod = method
         request.setValue("Bearer \(try await access())", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 12
         let (data, response) = try await fetch(request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+    }
+
+    public func queue(_ item: SpotifyItem) async throws {
+        guard item.kind == .track, let uri = item.uri else { throw ToolRefusal("only a song can be added to what plays next") }
+        let (status, data) = try await request("POST", "me/player/queue", ["uri": uri])
+        guard !(200..<300).contains(status) else { return }
+        let reason = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any])?["reason"] as? String
+        throw ToolRefusal(status == 404 || reason == "NO_ACTIVE_DEVICE" ? "Spotify has nothing playing to queue after. Play something first"
+                          : status == 401 || status == 403 ? "Spotify has not given OMNIS permission to queue songs. Tell the user to type /spotify reconnect in OMNIS, once"
+                          : status == 429 ? "Spotify is asking OMNIS to slow down; try again in a minute" : "Spotify did not add it")
+    }
+
+    public func liked() async throws -> (list: String?, newest: SpotifyItem?) {
+        // The list's address is made from the account's name, which only Spotify supplies.
+        let name = (try? await get("me", [:]))?["id"] as? String ?? ""
+        let safe = !name.isEmpty && name.count <= 64 && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }
+        let saved = try await get("me/tracks", ["limit": "1"])
+        let newest = ((saved["items"] as? [[String: Any]]) ?? []).first.flatMap { Self.item($0["track"], kind: .track) }
+        return (safe ? "spotify:user:\(name):collection" : nil, newest)
+    }
+
+    private func get(_ path: String, _ query: [String: String]) async throws -> [String: Any] {
+        let (status, data) = try await request("GET", path, query)
         guard status == 200, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ToolRefusal(status == 429 ? "Spotify is asking OMNIS to slow down; try again in a minute"
                               : status == 401 || status == 403 ? "Spotify refused the request. It may need connecting again, and it needs a Premium account"

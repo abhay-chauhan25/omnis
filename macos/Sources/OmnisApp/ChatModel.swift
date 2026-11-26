@@ -436,13 +436,19 @@ final class ChatModel: ObservableObject {
             if !on { chatLocal = false }
             show(notice: on ? "Off the grid: questions are answered on this Mac." : "Back to Claude.", seconds: 4)
         case .spotifyHelp:
-            show(notice: spotify?.isConnected == true ? "Spotify is connected. /spotify off disconnects it."
+            show(notice: spotify?.isConnected == true ? "Spotify is connected. /spotify reconnect signs in again; /spotify off disconnects it."
                  : "To connect Spotify: make an app at developer.spotify.com/dashboard with the redirect \(SpotifyAuth.redirect), then type /spotify and its client ID.",
                  seconds: 25)
         case .spotifyOff:
             spotify?.disconnect()
             audit.record(action: "spotify_connect", outcome: "disconnected")
             show(notice: "Spotify is disconnected from OMNIS.", seconds: 4)
+        case .spotifyReconnect:
+            guard let saved = spotify?.savedClientID else {
+                show(notice: "Spotify has not been connected yet. Type /spotify for the steps.", seconds: 6)
+                return
+            }
+            apply(.spotifyConnect(saved))
         case .spotifyConnect(let clientID):
             guard let spotify else {
                 show(notice: "The Spotify app is not installed on this Mac.", seconds: 5)

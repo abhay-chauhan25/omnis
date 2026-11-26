@@ -144,7 +144,7 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         #expect(calls.values.last == ["open", "spotify:search:daft%20punk%22%3B%20open%20%2Fetc"])
         _ = try await tools.run(tool: "spotify_search", arguments: ["query": "café"], access: ToolAccess())
         #expect(calls.values.last == ["open", "spotify:search:caf%C3%A9"])
-        #expect(SpotifyTools.scripts.values.allSatisfy { $0.hasPrefix("tell application \"Spotify\" to ") })
+        #expect(SpotifyTools.scripts.values.allSatisfy { $0.hasPrefix("tell application \"Spotify\"") })
 
         let blocked = SpotifyTools { _, _, _ in CommandResult(status: 1, output: "execution error: Not authorised to send Apple events to Spotify. (-1743)") }
         do {
@@ -200,8 +200,13 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         var isConnected = true
         var found: [SpotifyItem] = []
         var mine: [SpotifyItem] = []
+        var likedList: String?
+        var newestLiked: SpotifyItem?
+        let queued = Collected<String>()
         func search(_ query: String, kind: SpotifyItem.Kind) async throws -> [SpotifyItem] { found.filter { $0.kind == kind } }
         func playlists() async throws -> [SpotifyItem] { mine }
+        func queue(_ item: SpotifyItem) async throws { queued.add(item.id) }
+        func liked() async throws -> (list: String?, newest: SpotifyItem?) { (likedList, newestLiked) }
     }
 
     @Test func aNamedSongIsFoundAndPlayedAndOnlySpotifysOwnAddressesReachTheApp() async throws {
@@ -247,6 +252,63 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         #expect(calls.values.count == before)
     }
 
+    @Test func queueShuffleVolumeAndLikedSongs() async throws {
+        let calls = Collected<[String]>()
+        let playing = Collected<Bool>()
+        let run: CommandRunner = { program, arguments, _ in
+            calls.add([program.lastPathComponent] + arguments)
+            if arguments.last?.contains("player state") == true {
+                return CommandResult(status: 0, output: playing.values.last == true ? "playing\u{1F}Song\u{1F}Band\n" : "paused\u{1F}Song\u{1F}Band\n")
+            }
+            if arguments.last?.contains("shuffling as string") == true { return CommandResult(status: 0, output: "40 true false\n") }
+            return CommandResult(status: 0, output: "")
+        }
+        let song = SpotifyItem(kind: .track, id: "4uLU6hMCjMI75M1A2tKUQC", name: "Song", by: "Band")
+        let album = SpotifyItem(kind: .album, id: "7GhIk7Il098yCjg4BQjzvb", name: "Album", by: "Band")
+        var catalogue = Catalogue(found: [song, album])
+        let tools = SpotifyTools(catalogue: catalogue, run: run)
+
+        // A song is added to play next through Spotify; nothing is played or run here for it.
+        let before = calls.values.count
+        guard case .done(let queued, _) = try await tools.run(tool: "spotify_queue", arguments: ["query": "song"], access: ToolAccess()) else {
+            Issue.record("not done"); return
+        }
+        #expect(queued == "Added Song by Band to play next." && catalogue.queued.values == ["4uLU6hMCjMI75M1A2tKUQC"] && calls.values.count == before)
+        #expect(tools.outwardTools.contains("spotify_queue"))
+
+        // Shuffle and repeat are fixed scripts, and the reply says how things now stand.
+        guard case .done(let shuffled, _) = try await tools.run(tool: "spotify_control", arguments: ["action": "shuffle_on"], access: ToolAccess()) else {
+            Issue.record("not done"); return
+        }
+        #expect(shuffled == "Done. Volume 40 out of 100, shuffle on, repeat off.")
+        #expect(calls.values.contains(["osascript", "-e", "tell application \"Spotify\" to set shuffling to true"]))
+        // The volume is a whole number from 0 to 100, handed over beside a fixed script.
+        _ = try await tools.run(tool: "spotify_control", arguments: ["action": "volume", "level": "30"], access: ToolAccess())
+        #expect(calls.values.contains(["osascript", "-e", SpotifyTools.volumeScript, "30"]))
+        for level in ["101", "-1", "30) & (do shell script \"x\"", "loud", ""] {
+            await #expect(throws: ToolRefusal.self, "\(level)") {
+                try await tools.run(tool: "spotify_control", arguments: ["action": "volume", "level": level], access: ToolAccess())
+            }
+        }
+        _ = try await tools.run(tool: "spotify_control", arguments: ["action": "volume_down"], access: ToolAccess())
+        #expect(calls.values.contains { $0.count == 3 && $0[2].contains("sound volume - 15") })
+
+        // Liked Songs play as one list when the app takes it, and otherwise the newest liked song plays and that is said.
+        catalogue.likedList = "spotify:user:someone:collection"
+        catalogue.newestLiked = song
+        let likes = SpotifyTools(catalogue: catalogue, run: run)
+        playing.add(true)
+        guard case .done(let list, _) = try await likes.run(tool: "spotify_play", arguments: ["kind": "liked"], access: ToolAccess()) else {
+            Issue.record("not done"); return
+        }
+        #expect(list == "Playing the user's Liked Songs." && calls.values.contains(["osascript", "-e", SpotifyTools.playScript, "spotify:user:someone:collection"]))
+        playing.add(false)
+        guard case .done(let one, _) = try await likes.run(tool: "spotify_play", arguments: ["kind": "liked"], access: ToolAccess()) else {
+            Issue.record("not done"); return
+        }
+        #expect(one.contains("newest liked song is playing: Song by Band"))
+    }
+
     private final class MemoryStore: SecretStore, @unchecked Sendable {
         private let lock = NSLock()
         private var kept: [String: Data] = [:]
@@ -259,8 +321,9 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
         let url = SpotifyAuth.authorizeURL(clientID: String(repeating: "a", count: 32), state: "st", verifier: "ver")
         let items = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         #expect(url.host == "accounts.spotify.com" && items["redirect_uri"] == "http://127.0.0.1:43821/callback")
-        // Reading only: nothing that could play, change or save.
-        #expect(items["scope"] == "playlist-read-private playlist-read-collaborative user-library-read")
+        // Reading, and controlling playback so a song can be queued. Nothing that could change or save the library.
+        #expect(items["scope"] == "playlist-read-private playlist-read-collaborative user-library-read user-modify-playback-state")
+        #expect(SlashCommand.parse("/spotify reconnect") == .spotifyReconnect)
         #expect(items["code_challenge_method"] == "S256" && items["code_challenge"] == SpotifyAuth.challenge(for: "ver") && items["code_challenge"] != "ver")
         // RFC 7636's own example.
         #expect(SpotifyAuth.challenge(for: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
@@ -336,6 +399,10 @@ final class StubReminders: ReminderStoring, @unchecked Sendable {
             await #expect(throws: ToolRefusal.self) { try await shaky.search("x", kind: .track) }
             #expect(shaky.isConnected == stays, "\(status)")
         }
+        // A song is queued with a POST carrying only Spotify's own address for it; anything else is refused before a request is made.
+        try await account.queue(found[0])
+        #expect(seen.values.last?.hasPrefix("POST api.spotify.com/v1/me/player/queue Bearer fresh uri=spotify:track:4uLU6hMCjMI75M1A2tKUQC") == true)
+        await #expect(throws: ToolRefusal.self) { try await account.queue(SpotifyItem(kind: .album, id: "4uLU6hMCjMI75M1A2tKUQC", name: "a", by: "")) }
         account.disconnect()
         #expect(!account.isConnected && store.read(service: "local.omnis.app.spotify", account: "tokens") == nil)
     }

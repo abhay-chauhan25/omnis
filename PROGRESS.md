@@ -65,7 +65,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Tests
 
-- Python: 120. Swift: 316. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
+- Python: 120. Swift: 317. Eight more live tests use the real model, real search, a real picture and a made-up calendar when asked for.
 - Independent review after each piece; findings and what was done about them are listed in the stage documents.
 
 ## Open items

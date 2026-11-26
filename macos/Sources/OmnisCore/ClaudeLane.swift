@@ -177,6 +177,8 @@ public enum SlashCommand: Equatable, Sendable {
     /// Connect Spotify's catalogue, with the user's own client ID.
     case spotifyConnect(String)
     case spotifyOff
+    /// Sign in again with the client ID already given, to pick up a new permission.
+    case spotifyReconnect
     case spotifyHelp
     /// It looked like a command but was not one OMNIS knows. The text says what is possible.
     case unknown(String)
@@ -190,6 +192,7 @@ public enum SlashCommand: Equatable, Sendable {
         guard let first = words.first, first.hasPrefix("/"), words.count <= 2 else { return nil }
         if first == "/spotify" {
             if words.count == 1 { return .spotifyHelp }
+            if words[1] == "reconnect" { return .spotifyReconnect }
             return words[1] == "off" ? .spotifyOff : SpotifyAuth.isClientID(words[1]) ? .spotifyConnect(words[1]) : .spotifyHelp
         }
         let value = words.count == 2 ? words[1] : ""
@@ -387,7 +390,11 @@ public enum ClaudePrompt {
         is playing, play, pause, next, previous, and playing something by name). Adding or changing a reminder \
         shows a preview to confirm, like the calendar. Spotify controls happen at once. To play a named song, \
         album, artist or playlist use spotify_play: it finds the best match and starts it. Say what is now \
-        playing in a few words. If the user says it is the wrong one, use its pick with one of the other matches.
+        playing in a few words. If the user says it is the wrong one, use its pick with one of the other matches. \
+        spotify_play with kind "liked" plays the user's Liked Songs. spotify_queue adds one song to play next \
+        without interrupting what is playing. spotify_control also turns shuffle and repeat on or off and \
+        changes the volume: volume_up and volume_down for louder and quieter, or action "volume" with a level \
+        from 0 to 100.
 
         Opening things: apps_open opens one of the user's saved apps or projects by name, at once. Use it when \
         the user asks you to open, launch, start, show or bring up an app or a project, however they word it, \

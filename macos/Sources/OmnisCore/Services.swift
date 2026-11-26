@@ -300,10 +300,10 @@ public final class GitHubTools: AssistantTools, Sendable {
 /// and which may only read. Playing it is done by the Spotify app here.
 public final class SpotifyTools: AssistantTools, Sendable {
     public let service = "spotify"
-    public let toolNames: Set<String> = ["spotify_now_playing", "spotify_control", "spotify_search", "spotify_play"]
+    public let toolNames: Set<String> = ["spotify_now_playing", "spotify_control", "spotify_search", "spotify_play", "spotify_queue"]
     /// What is playing is not personal information.
     public let holdsPersonalData = false
-    public let outwardTools: Set<String> = ["spotify_search", "spotify_play"]
+    public let outwardTools: Set<String> = ["spotify_search", "spotify_play", "spotify_queue"]
     private let runner: CommandRunner
     private let catalogue: (any SpotifyCatalogue)?
     /// The matches from the last search, so "the second one" can be played without searching again.
@@ -347,6 +347,10 @@ public final class SpotifyTools: AssistantTools, Sendable {
     private func play(_ item: SpotifyItem) async throws {
         // Only an address Spotify itself would issue is ever handed to the app.
         guard let uri = item.uri else { throw ToolRefusal("Spotify gave something that cannot be played") }
+        try await play(address: uri)
+    }
+
+    private func play(address uri: String) async throws {
         let result = await runner(Self.osascript, ["-e", Self.playScript, uri], nil)
         guard result.status == 0 else {
             throw ToolRefusal(result.output.contains("-1743") ? "OMNIS has not been allowed to control Spotify. You can allow it in System Settings, under Privacy & Security, Automation"
@@ -379,7 +383,44 @@ public final class SpotifyTools: AssistantTools, Sendable {
         "toggle": "tell application \"Spotify\" to playpause",
         "next": "tell application \"Spotify\" to next track",
         "previous": "tell application \"Spotify\" to previous track",
+        "shuffle_on": "tell application \"Spotify\" to set shuffling to true",
+        "shuffle_off": "tell application \"Spotify\" to set shuffling to false",
+        "repeat_on": "tell application \"Spotify\" to set repeating to true",
+        "repeat_off": "tell application \"Spotify\" to set repeating to false",
+        "volume_up": """
+        tell application "Spotify"
+            if sound volume < 85 then
+                set sound volume to (sound volume + 15)
+            else
+                set sound volume to 100
+            end if
+        end tell
+        """,
+        "volume_down": """
+        tell application "Spotify"
+            if sound volume > 15 then
+                set sound volume to (sound volume - 15)
+            else
+                set sound volume to 0
+            end if
+        end tell
+        """,
     ]
+    /// Fixed text. The level is handed over beside it as a whole number from 0 to 100.
+    static let volumeScript = """
+    on run arguments
+        tell application "Spotify" to set sound volume to ((item 1 of arguments) as integer)
+    end run
+    """
+    static let settings = """
+    tell application "Spotify" to return (sound volume as string) & " " & (shuffling as string) & " " & (repeating as string)
+    """
+
+    /// The volume, shuffle and repeat as they now are, in words.
+    private func settingsLine() async -> String {
+        guard let parts = (try? await script(Self.settings))?.split(separator: " "), parts.count == 3 else { return "" }
+        return "Volume \(parts[0]) out of 100, shuffle \(parts[1] == "true" ? "on" : "off"), repeat \(parts[2] == "true" ? "on" : "off")."
+    }
     static let nowPlaying = """
     if application "Spotify" is running then
         tell application "Spotify"
@@ -444,13 +485,44 @@ public final class SpotifyTools: AssistantTools, Sendable {
         case "spotify_now_playing":
             return .read(content: try await describe(), note: "Checked Spotify")
         case "spotify_control":
-            let action = (arguments["action"] ?? "").lowercased()
-            guard let text = Self.scripts[action] else { throw ToolRefusal("the action must be play, pause, toggle, next or previous") }
+            let action = (arguments["action"] ?? "").lowercased().replacingOccurrences(of: " ", with: "_")
+            if action == "volume" {
+                // A whole number from 0 to 100 and nothing else.
+                guard let level = Int(arguments["level"] ?? ""), (0...100).contains(level) else { throw ToolRefusal("the volume level must be a number from 0 to 100") }
+                let result = await runner(Self.osascript, ["-e", Self.volumeScript, String(level)], nil)
+                guard result.status == 0 else { throw ToolRefusal("Spotify did not respond") }
+                return .done(content: "Done. \(await settingsLine())", note: "Controlled Spotify")
+            }
+            guard let text = Self.scripts[action] else {
+                throw ToolRefusal("the action must be play, pause, toggle, next, previous, shuffle_on, shuffle_off, repeat_on, repeat_off, volume_up, volume_down or volume")
+            }
             _ = try await script(text)
+            if action.hasPrefix("shuffle") || action.hasPrefix("repeat") || action.hasPrefix("volume") {
+                return .done(content: "Done. \(await settingsLine())", note: "Controlled Spotify")
+            }
             // Give the app a moment to move on before saying what is playing.
             try? await Task.sleep(nanoseconds: 400_000_000)
             let now = (try? await describe()) ?? ""
             return .done(content: "Done. \(now)", note: "Controlled Spotify")
+        case "spotify_queue":
+            let (item, others) = try await find(arguments)
+            guard item.kind == .track else { throw ToolRefusal("only a song can be added to what plays next") }
+            guard let catalogue else { throw ToolRefusal(Self.connectHelp) }
+            try await catalogue.queue(item)
+            if !others.isEmpty || arguments["pick"] == nil { lastMatches.set([item] + others) }
+            return .done(content: "Added \(item.spoken) to play next.", note: "Queued in Spotify")
+        case "spotify_play" where (arguments["kind"] ?? "").lowercased() == "liked":
+            guard let catalogue, catalogue.isConnected else { throw ToolRefusal(Self.connectHelp) }
+            let liked = try await catalogue.liked()
+            if let list = liked.list {
+                try? await play(address: list)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                // The Spotify app does not say whether it took the list, so what is playing is looked at.
+                if (try? await track())?.playing == true { return .done(content: "Playing the user's Liked Songs.", note: "Played from Spotify") }
+            }
+            guard let newest = liked.newest else { throw ToolRefusal("there are no liked songs to play") }
+            try await play(newest)
+            return .done(content: "The Liked Songs list would not start as a list, so the newest liked song is playing: \(newest.spoken).", note: "Played from Spotify")
         case "spotify_play":
             let (item, others) = try await find(arguments)
             try await play(item)
