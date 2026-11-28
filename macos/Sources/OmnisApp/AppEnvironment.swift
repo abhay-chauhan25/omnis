@@ -28,6 +28,38 @@ enum AppEnvironment {
         )
     }
 
+    /// OMNIS's own voice and its second listener for the wake phrase. They are set up once by
+    /// `backend/scripts/setup-speech.sh`. Returns nil if that has not been done; the Mac's own
+    /// voice is used then, and the wake phrase is heard by Apple's recogniser alone.
+    static func speechConfig() -> SpeechHelperConfig? {
+        let environment = ProcessInfo.processInfo.environment
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard let directory = environment["OMNIS_BACKEND_DIR"] ?? info["OMNISBackendDirectory"] as? String,
+              directory.hasPrefix("/") else { return nil }
+        let home = environment["OMNIS_SPEECH_HOME"].flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil }
+            ?? OmnisPaths.speechFolder
+        let python = home.appendingPathComponent("venv/bin/python")
+        let models = home.appendingPathComponent("models", isDirectory: true)
+        let fileManager = FileManager.default
+        let needed = ["kokoro-v1.0.onnx", "voices-v1.0.bin", "whisper-base.en/model.bin"]
+        guard fileManager.isExecutableFile(atPath: python.path),
+              fileManager.fileExists(atPath: directory + "/omnis_speech/__main__.py"),
+              needed.allSatisfy({ fileManager.fileExists(atPath: models.appendingPathComponent($0).path) }) else { return nil }
+        return SpeechHelperConfig(python: python, backendDirectory: URL(fileURLWithPath: directory, isDirectory: true), models: models)
+    }
+
+    /// Development aid: `--check-speech` runs OMNIS's own voices through the real helper and player with
+    /// the sound turned off, and prints how long each step took. Followed by sound files, it also prints
+    /// whether the second listener hears the wake phrase in each. Nothing is recorded and nothing is heard.
+    static var checkSpeech: [URL]? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--check-speech") else { return nil }
+        return arguments[(index + 1)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
+    }
+
+    /// Development aid: `OMNIS_FORCE_OFFLINE=1` makes OMNIS behave as if there were no internet connection.
+    static var forceOffline: Bool { ProcessInfo.processInfo.environment["OMNIS_FORCE_OFFLINE"] == "1" }
+
     /// Claude is used through Claude Code, signed in with the user's own Claude
     /// plan. Returns nil if Claude Code or the tool list cannot be found; the
     /// app then answers on this Mac only.

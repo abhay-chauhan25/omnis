@@ -19,9 +19,11 @@ enum VoiceProblem: Error, LocalizedError {
     }
 }
 
-/// The microphone, the speech recogniser and the speaking voice. All three
-/// are Apple's own and run on this Mac: no sound leaves it. What is heard is
-/// handed on as text and kept nowhere here.
+/// The microphone, the speech recogniser and the speaking voice. All of it
+/// runs on this Mac: no sound leaves it. The recogniser is Apple's own. The
+/// voice is OMNIS's own (made by the speech helper) or one of Apple's. What is
+/// heard is handed on as text; the last few seconds of sound are held in
+/// memory, for a second check on the wake phrase, and kept nowhere else.
 @MainActor
 final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesizerDelegate {
     /// The speaker stopped. The words since the last utterance.
@@ -37,9 +39,28 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
     var allowsInterruption = false
     /// How fast OMNIS talks: 1 is the voice's usual pace.
     var speed = 1.0
-    /// True to talk in the voice chosen as the Mac's System Voice. That is the only way an
-    /// app can use a Siri voice: Apple does not let apps pick one by name.
-    var usesSystemVoice = false
+    /// Which voice OMNIS talks in.
+    var choice: VoiceChoice = .system {
+        didSet { if choice != oldValue { ownVoiceFailed = false } }
+    }
+    /// OMNIS's own voice and its second listener. Nil when they have not been set up.
+    var helper: SpeechHelper?
+    /// Set when the helper could not speak, so the Mac's voice is used until listening is next started.
+    private var ownVoiceFailed = false
+    private var usesOwnVoice: Bool { choice.helperVoice != nil && helper != nil && !ownVoiceFailed }
+    /// The Mac's System Voice: when chosen, and when OMNIS's own voice cannot be used.
+    private var usesSystemVoice: Bool { choice == .system || (choice.helperVoice != nil && !usesOwnVoice) }
+    private let player = OwnVoicePlayer()
+    /// Goes up each time OMNIS's own voice is cut off, so sound still on its way is not played.
+    private var ownWave = 0
+    /// Requests to the helper that have not finished, and stretches of sound not yet heard.
+    private var ownPending = 0
+    private var ownPlaying = 0
+    /// The last few seconds heard, in memory only, for the second check on the wake phrase.
+    private let recent = RecentSound()
+    /// When what is now being heard began, and how long the last utterance was.
+    private var utteranceBegan: Double?
+    private var utteranceSeconds = 0.0
     /// Speaks in the Mac's System Voice, whatever that is set to.
     private lazy var systemVoice: NSSpeechSynthesizer = {
         let made = NSSpeechSynthesizer()
@@ -110,6 +131,26 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
     override init() {
         super.init()
         synthesizer.delegate = self
+        player.onInterrupted = { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    // Headphones in or out mid-sentence: what was queued is gone, so the turn ends rather than hangs.
+                    guard let self, self.speaking, self.ownPending > 0 || self.ownPlaying > 0 else { return }
+                    self.trace?("the speakers changed while talking")
+                    self.stopOwnVoice()
+                    self.player.shutDown()
+                    self.finishedSpeaking()
+                }
+            }
+        }
+        player.onLevel = { [weak self] level in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.speaking, self.ownPlaying > 0 else { return }
+                    self.onLevel?(level)
+                }
+            }
+        }
     }
 
     /// The best English female voice installed, preferring the higher-quality downloads.
@@ -124,8 +165,13 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         }
     }
 
-    static func voiceDescription(system: Bool = false) -> String {
-        if system { return "The Mac's System Voice" }
+    static func voiceDescription(_ choice: VoiceChoice, ownVoice: Bool) -> String {
+        switch choice {
+        case .adam, .heart:
+            return ownVoice ? "\(choice.title), made on this Mac" : "\(choice.title) is not set up, so the Mac's System Voice is used"
+        case .system: return "The Mac's System Voice"
+        case .apple: break
+        }
         guard let voice = bestVoice() else { return "No English voice is installed" }
         switch voice.quality {
         case .premium: return "\(voice.name) (premium)"
@@ -173,6 +219,16 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         soundTime = 0
         fed.reset()
         echoCancelling = false
+        ownVoiceFailed = false
+        if let helper {
+            // The second listener is loaded now, so the first check does not wait on it.
+            do {
+                try helper.start()
+                helper.warm("listener")
+            } catch {
+                trace?("the speech helper could not be started: \(error.localizedDescription)")
+            }
+        }
         do {
             try startAudio(cancelling: false)
             try await analyzer.start(inputSequence: stream)
@@ -229,13 +285,15 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         private let wanted: AVAudioFormat
         private let feed: AsyncStream<AnalyzerInput>.Continuation
         private let fed: FedClock
+        private let recent: RecentSound?
         private var converter: AVAudioConverter?
         private var from: AVAudioFormat?
 
-        init(wanted: AVAudioFormat, feed: AsyncStream<AnalyzerInput>.Continuation, fed: FedClock) {
+        init(wanted: AVAudioFormat, feed: AsyncStream<AnalyzerInput>.Continuation, fed: FedClock, recent: RecentSound?) {
             self.wanted = wanted
             self.feed = feed
             self.fed = fed
+            self.recent = recent
         }
 
         /// Called on the audio thread, by one tap at a time. Returns how loud the sound was.
@@ -247,6 +305,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
                 var sum: Float = 0
                 for index in 0..<Int(buffer.frameLength) { sum += samples[index] * samples[index] }
                 level = min(1, Double((sum / Float(buffer.frameLength)).squareRoot()) * 6)
+                recent?.append(UnsafeBufferPointer(start: samples, count: Int(buffer.frameLength)), rate: native.sampleRate)
             }
             if converter == nil || from != native {
                 converter = AVAudioConverter(from: native, to: wanted)
@@ -304,7 +363,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         // A new engine, so nothing is remembered of a microphone that has since changed.
         let fresh = AVAudioEngine()
         audio = fresh
-        let feeder = Feeder(wanted: wanted, feed: continuation, fed: fed)
+        let feeder = Feeder(wanted: wanted, feed: continuation, fed: fed, recent: helper == nil ? nil : recent)
         try guarded {
             let input = fresh.inputNode
             if cancelling {
@@ -365,6 +424,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         isRunning = false
         teardown()
         hush()
+        player.shutDown()
+        helper?.stop()
     }
 
     private func teardown() {
@@ -382,6 +443,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         analyzer = nil
         Task { await old?.cancelAndFinishNow() }
         buffer = UtteranceBuffer()
+        recent.clear()
+        utteranceBegan = nil
     }
 
     /// Forgets anything heard so far, so the next utterance starts clean.
@@ -390,6 +453,25 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         ownUntil = nil
         pauseTask?.cancel()
         buffer.cut(upTo: soundTime)
+        utteranceBegan = nil
+    }
+
+    /// The sound of the utterance just reported, for a second listen. Empty if there is no second listener.
+    func lastUtteranceSound() -> [Int16] {
+        guard helper != nil, isRunning else { return [] }
+        return recent.last(seconds: min(12, max(2.5, utteranceSeconds + 0.6)))
+    }
+
+    /// What the second listener makes of that sound, or nil if it could not be asked.
+    func secondOpinion(on sound: [Int16]) async -> String? {
+        guard let helper, !sound.isEmpty else { return nil }
+        return try? await helper.hear(sound)
+    }
+
+    /// Loads OMNIS's own voice, so its first words are not kept waiting.
+    func warmVoice() {
+        guard usesOwnVoice, let helper else { return }
+        if (try? helper.start()) != nil { helper.warm("voice") }
     }
 
     private func took(_ words: [(text: String, at: Double?)], from start: Double, to end: Double, final: Bool) {
@@ -421,6 +503,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
             }
             onBargeIn?()
         } else {
+            if utteranceBegan == nil { utteranceBegan = start }
             buffer.take(text, start: start, end: end, final: final)
         }
         let current = VoiceEcho.dropping(ownWords, from: buffer.current)
@@ -436,6 +519,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
                 guard !Task.isCancelled, self.isRunning, !self.speaking else { return }
             }
             let said = VoiceEcho.dropping(self.ownWords, from: self.buffer.current)
+            self.utteranceSeconds = self.utteranceBegan.map { self.fed.now - $0 } ?? 0
             self.cut()
             if !said.isEmpty { self.onUtterance?(said) }
         }
@@ -451,7 +535,9 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
             cut()
         }
         saying += " " + words
-        if usesSystemVoice {
+        if usesOwnVoice, let name = choice.helperVoice {
+            sayInOwnVoice(words, voice: name)
+        } else if usesSystemVoice {
             systemQueue.append(words)
             sayNextInSystemVoice()
         } else {
@@ -471,8 +557,101 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
             self.retire()
             self.synthesizer.stopSpeaking(at: .immediate)
             self.stopSystemVoice()
+            self.stopOwnVoice()
             self.finishedSpeaking()
         }
+    }
+
+    // OMNIS's own voice: the helper makes the sound a sentence at a time, and it is played as it arrives.
+
+    /// How one request to the helper is going.
+    private final class OwnRequest {
+        /// Sentences of it that have been queued to play.
+        var queued = 0
+        /// Set once it has been given up on, so nothing more of it is played.
+        var abandoned = false
+    }
+
+    private func sayInOwnVoice(_ words: String, voice: String) {
+        guard let helper else { return }
+        do { try helper.start() } catch {
+            ownVoiceFell(words, why: error.localizedDescription)
+            return
+        }
+        ownPending += 1
+        let wave = ownWave
+        let request = OwnRequest()
+        helper.say(words, voice: voice, speed: speed) { [weak self] result in
+            // In the order they arrive: the sentences must be heard in the order they were written.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.ownVoice(result, words: words, wave: wave, request: request) }
+            }
+        }
+    }
+
+    private func ownVoice(_ result: Result<SpokenSound?, SpeechHelperError>, words: String, wave: Int, request: OwnRequest) {
+        guard wave == ownWave, speaking else { return }
+        switch result {
+        case .success(.some) where request.abandoned:
+            break
+        case .success(let sound?):
+            let queued = player.schedule(sound) { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self, wave == self.ownWave else { return }
+                        self.ownPlaying = max(0, self.ownPlaying - 1)
+                        self.ownVoiceMayBeDone()
+                    }
+                }
+            }
+            if queued {
+                ownPlaying += 1
+                request.queued += 1
+            } else {
+                // The sound was made but cannot be played. Nothing more of this request is tried.
+                request.abandoned = true
+                ownVoiceFell(request.queued == 0 ? words : nil, why: "a sentence could not be played")
+            }
+        case .success(nil):
+            ownPending = max(0, ownPending - 1)
+            ownVoiceMayBeDone()
+        case .failure(let problem):
+            ownPending = max(0, ownPending - 1)
+            ownVoiceFell(request.queued == 0 && !request.abandoned ? words : nil, why: problem.localizedDescription)
+            ownVoiceMayBeDone()
+        }
+    }
+
+    /// OMNIS's own voice failed. From here the Mac's voice is used. `words` are said in it now, so
+    /// the answer is not lost; they are nil when part of them has been heard already, since saying
+    /// them again would repeat it over what is still playing.
+    private func ownVoiceFell(_ words: String?, why: String) {
+        trace?("own voice failed (\(why)); the Mac's voice is used")
+        ownVoiceFailed = true
+        guard let words else { return }
+        systemQueue.append(words)
+        sayNextInSystemVoice()
+    }
+
+    private func ownVoiceMayBeDone() {
+        guard ownPending == 0, ownPlaying == 0, !systemBusy, systemQueue.isEmpty else { return }
+        let wave = ownWave
+        Task { @MainActor [weak self] in
+            // A moment for the room to go quiet. If more is handed over meanwhile, it carries on talking.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, wave == self.ownWave, self.ownPending == 0, self.ownPlaying == 0,
+                  !self.systemBusy, self.systemQueue.isEmpty else { return }
+            self.finishedSpeaking()
+        }
+    }
+
+    private func stopOwnVoice() {
+        guard ownPending > 0 || ownPlaying > 0 else { return }
+        ownWave += 1
+        ownPending = 0
+        ownPlaying = 0
+        helper?.cancel()
+        player.stop()
     }
 
     /// The System Voice says one sentence at a time, so the rest wait their turn here.
@@ -497,7 +676,8 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         Task { @MainActor [weak self] in
             // A moment for the room to go quiet. If more is handed over meanwhile, it carries on talking.
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, !self.systemBusy, self.systemQueue.isEmpty, self.usesSystemVoice else { return }
+            guard let self, !self.systemBusy, self.systemQueue.isEmpty, self.usesSystemVoice,
+                  self.ownPending == 0, self.ownPlaying == 0 else { return }
             self.finishedSpeaking()
         }
     }
@@ -544,6 +724,11 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         ownUntil = nil
         buffer.cut(upTo: fed.now + 0.3, afterOwnVoice: true)
         onLevel?(0)
+        // Heard with voice switched off, from the settings: nothing is left running afterwards.
+        if !isRunning, !starting {
+            player.shutDown()
+            helper?.stop()
+        }
         onSpeechFinished?()
     }
 
@@ -560,6 +745,7 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         retire()
         synthesizer.stopSpeaking(at: .immediate)
         stopSystemVoice()
+        stopOwnVoice()
         onLevel?(0)
     }
 

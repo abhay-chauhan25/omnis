@@ -6,6 +6,19 @@ import SwiftUI
 struct VoiceSettingsView: View {
     @ObservedObject var voice: VoiceModel
 
+    private var voiceHelp: String {
+        switch voice.voiceChoice {
+        case .adam, .heart:
+            return voice.hasOwnVoice
+                ? "OMNIS's own voice. The sound is made on this Mac and nothing is sent anywhere."
+                : "OMNIS's own voices are not set up on this Mac yet. Run backend/scripts/setup-speech.sh in the OMNIS folder, then open OMNIS again. Until then the Mac's System Voice is used."
+        case .system:
+            return "Whatever is chosen in System Settings, Accessibility, Spoken Content, System Voice. Apple gives apps only some of the voices listed there."
+        case .apple:
+            return "The best English female voice of Apple's that is installed. Better ones are a free download: System Settings, Accessibility, Spoken Content, System Voice, Manage Voices."
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Toggle(isOn: $voice.isOn) {
@@ -50,9 +63,8 @@ struct VoiceSettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 6) {
                 Text("Speaking voice").font(.system(size: 13, weight: .semibold))
-                Picker("Voice", selection: $voice.usesSystemVoice) {
-                    Text("The Mac's System Voice (Siri)").tag(true)
-                    Text("Best other voice installed").tag(false)
+                Picker("Voice", selection: $voice.voiceChoice) {
+                    ForEach(VoiceChoice.allCases) { choice in Text(choice.title).tag(choice) }
                 }
                 .labelsHidden().accessibilityLabel("Which voice OMNIS talks in")
                 HStack {
@@ -64,14 +76,13 @@ struct VoiceSettingsView: View {
                     ForEach(VoiceModel.speeds, id: \.value) { pace in Text(pace.title).tag(pace.value) }
                 }
                 .pickerStyle(.segmented).labelsHidden().accessibilityLabel("How fast OMNIS talks")
-                Text(voice.usesSystemVoice
-                     ? "Apple lets an app use a Siri voice only as the Mac's System Voice. To choose one: System Settings, Accessibility, Spoken Content, System Voice, and pick Siri (Voice 1). OMNIS then talks in it."
-                     : "OMNIS uses the best English female voice installed. Better ones are a free download: System Settings, Accessibility, Spoken Content, System Voice, Manage Voices. Look for one marked Premium, such as Ava or Zoe.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(voiceHelp).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if voice.voiceChoice.helperVoice == nil {
                 Button("Open Accessibility Settings") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess") { NSWorkspace.shared.open(url) }
                 }
                 .controlSize(.small)
+                }
             }
         }
         .padding(16)

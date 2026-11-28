@@ -4,7 +4,7 @@ import Foundation
 public enum VoicePhrases {
     // "Omnis" is not a word a recogniser knows, so near misses count: it is often heard as "Omnes".
     private static let wake = try! NSRegularExpression(
-        pattern: #"\b(?:(?:hey|hay|hi|okay|ok|kay|k|yo)[\s,.!]*(?:omn[iea]s|omni's|omni|omnus|omniss|omness|amnis|omnious)|(?:hey|hay|yo)[\s,.!]+(?:omi|omie|omy|omee))\b[\s,.!?:;\-]*"#,
+        pattern: #"\b(?:(?:hey|hay|hi|okay|ok|kay|k|yo)[\s,.!]*(?:omn[iea][sz]|omni's|omni|omnus|omniss|omness|amnis|omnious)|(?:hey|hay|yo)[\s,.!]+(?:omi|omie|omy|omee))\b[\s,.!?:;\-]*"#,
         options: [.caseInsensitive])
 
     /// What was said after "Hey OMNIS", or nil if the phrase is not there.
@@ -13,6 +13,23 @@ public enum VoicePhrases {
         let whole = NSRange(heard.startIndex..., in: heard)
         guard let match = wake.firstMatch(in: heard, range: whole), let range = Range(match.range, in: heard) else { return nil }
         return String(heard[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // How a wake phrase tends to begin when the recogniser has misheard it: "You owe me", "Hey, all me".
+    private static let openers: Set<String> = ["hey", "hay", "hi", "yo", "okay", "ok", "kay"]
+    // "You" begins far too much ordinary talk to be listened to twice by itself. It counts only with one of these after it.
+    private static let weakOpeners: Set<String> = ["you", "youll", "your", "youre"]
+    private static let afterWeak: Set<String> = ["owe", "oh", "o", "all", "me", "ami", "army", "homie", "home", "ohm"]
+
+    /// True if what was heard could be a misheard wake phrase, and so is worth a second listen.
+    /// It is deliberately loose: it only decides whether to check, never whether to wake.
+    public static func mightBeWake(_ heard: String) -> Bool {
+        let first = plain(heard).split(separator: " ").prefix(4).map(String.init)
+        guard !first.isEmpty else { return false }
+        if openers.contains(first[0]) { return true }
+        if weakOpeners.contains(first[0]), first.dropFirst().prefix(2).contains(where: afterWeak.contains) { return true }
+        // "Kaomi", "Omniz", "Naomi": the name itself, or most of it, near the start.
+        return first.contains { $0.contains("omi") || $0.contains("omn") || $0.contains("omy") || $0.contains("ome") }
     }
 
     /// What was said, reduced to its words: no capitals, no punctuation, and no
@@ -278,6 +295,37 @@ public struct UtteranceBuffer: Equatable, Sendable {
     }
 }
 
+/// Which voice OMNIS talks in.
+public enum VoiceChoice: String, CaseIterable, Sendable, Identifiable {
+    /// OMNIS's own voices, made on this Mac by the speech helper.
+    case adam
+    case heart
+    /// Whatever the Mac's System Voice is set to.
+    case system
+    /// The best English voice of Apple's that is installed.
+    case apple
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .adam: return "Adam"
+        case .heart: return "Heart"
+        case .system: return "The Mac's System Voice"
+        case .apple: return "Best Apple voice installed"
+        }
+    }
+
+    /// The helper's name for the voice, or nil for one of Apple's.
+    public var helperVoice: String? {
+        switch self {
+        case .adam: return "am_adam"
+        case .heart: return "af_heart"
+        case .system, .apple: return nil
+        }
+    }
+}
+
 /// How OMNIS talks when it is spoken to: a preset, the user's own words, or both.
 public struct VoicePersona: Codable, Equatable, Sendable {
     public struct Preset: Equatable, Sendable, Identifiable {
@@ -288,7 +336,10 @@ public struct VoicePersona: Codable, Equatable, Sendable {
 
     public static let presets: [Preset] = [
         Preset(id: "calm", title: "Calm and brief", manner: "Calm, clear and economical. Say what matters and stop."),
-        Preset(id: "warm", title: "Warm and chatty", manner: "Warm, friendly and a little chatty, like a good friend who is glad to help."),
+        Preset(id: "warm", title: "Warm and chatty", manner: "Warm, friendly and a little chatty, like a good friend who is glad to help. "
+            + "Use contractions and everyday words. A short, natural reaction before the answer is welcome when it fits. Most replies "
+            + "simply end with the answer; ask a follow-up question only when the answer truly leaves something for the user to "
+            + "decide. Never gush, and never add a remark just to fill the air."),
         Preset(id: "witty", title: "Dry and witty", manner: "Dry, quick and lightly witty. One wry remark at most, never at the user's expense."),
         Preset(id: "upbeat", title: "Upbeat and encouraging", manner: "Upbeat and encouraging, with energy but no gushing."),
         Preset(id: "plain", title: "No particular manner", manner: ""),
@@ -299,7 +350,7 @@ public struct VoicePersona: Codable, Equatable, Sendable {
     /// The user's own description, added to the preset.
     public var custom: String
 
-    public init(preset: String = "calm", custom: String = "") {
+    public init(preset: String = "warm", custom: String = "") {
         self.preset = preset
         self.custom = custom
     }

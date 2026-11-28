@@ -414,7 +414,36 @@ final class ChatModel: ObservableObject {
 
     var editorName: String { registry.editor.name }
     /// True when questions are answered by the model on this Mac, not by Claude.
-    var usesLocal: Bool { offGrid || chatLocal || claude == nil }
+    var usesLocal: Bool { offGrid || chatLocal || claude == nil || (isOffline && answersOffline) }
+    /// True while this Mac has no internet connection. Claude cannot be reached then.
+    @Published private(set) var isOffline = false
+    /// True when there is a model on this Mac to answer while the internet is away.
+    var answersOffline: Bool { backend != nil }
+    /// True when the model on this Mac is standing in for Claude only because the internet is away.
+    var standsInForClaude: Bool { isOffline && answersOffline && claude != nil && !offGrid && !chatLocal }
+    /// How answering on this Mac is named where there is room for a few words.
+    var localLabel: String { isOffline && !offGrid ? "Offline \u{00B7} This Mac" : "This Mac" }
+    var localHelp: String {
+        isOffline && !offGrid
+            ? "There is no internet connection, so questions are being answered by the model on this Mac. OMNIS goes back to Claude when the connection returns."
+            : "Questions are being answered by the model on this Mac. Nothing is sent to Claude."
+    }
+
+    /// Told when the internet connection goes or comes back.
+    func connectionChanged(offline: Bool) {
+        guard offline != isOffline else { return }
+        isOffline = offline
+        audit.record(action: "connection", outcome: offline ? "offline" : "online")
+        guard claude != nil, !offGrid else { return }
+        if offline {
+            show(notice: answersOffline
+                 ? "No internet connection. OMNIS is answering on this Mac until it is back. Web search, mail and Spotify need the internet."
+                 : "No internet connection, and no model is set up on this Mac, so questions cannot be answered until it is back.",
+                 seconds: 12)
+        } else {
+            show(notice: "Back online. Questions go to Claude again.", seconds: 5)
+        }
+    }
     /// True when this chat cannot search the web: only on this Mac, where a
     /// file or the calendar in a chat keeps its contents out of searches.
     var webBlockedByFile: Bool { usesLocal && (conversation.hasPersonalData || !pendingAttachments.isEmpty) }
@@ -796,6 +825,7 @@ final class ChatModel: ObservableObject {
         let local = onThisMac || usesLocal || options.route == "local"
         if local, options.route == "claude" {
             show(notice: claude == nil ? "Claude Code was not found, so this is answered on this Mac."
+                 : standsInForClaude ? "There is no internet connection, so this is answered on this Mac."
                  : "This is being answered on this Mac. Type /local off to use Claude.", seconds: 6)
         }
         if !attachments.isEmpty {
@@ -825,9 +855,12 @@ final class ChatModel: ObservableObject {
             // On this Mac, a chat that holds a file or the calendar does not
             // search the web, so none of it can end up in a search.
             let personal = conversation.hasPersonalData || PersonalIntent.mentionsCalendar(options.text)
-            let web = webEnabled && options.web && !conversation.hasPersonalData
+            // With no connection there is nothing to search.
+            let web = webEnabled && options.web && !conversation.hasPersonalData && !isOffline
             conversation.keepLocal()
-            stream = backend.ask(options.text, route: "local", web: web, history: withMemory(history), attachments: attachments,
+            // A spoken question carries the same note on how to word a spoken reply as Claude is given.
+            let asked = spokenStyle.map { options.text + "\n\n" + $0 } ?? options.text
+            stream = backend.ask(asked, route: "local", web: web, history: withMemory(history), attachments: attachments,
                                  personal: personal, calendar: true, calendarWrite: offer.changes, deletes: offer.deletes)
         } else {
             guard let claude else { return }

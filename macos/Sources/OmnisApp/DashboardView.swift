@@ -124,7 +124,7 @@ struct DashboardView: View {
             }
             Spacer()
             voiceControl
-            chip(chat.usesLocal ? "This Mac" : "Claude \u{00B7} \(chat.modelChoice.title)", color: Ink.text)
+            chip(chat.usesLocal ? chat.localLabel : "Claude \u{00B7} \(chat.modelChoice.title)", color: Ink.text)
             if let usage = chat.usageLabel { chip(usage, color: chat.usageIsHigh ? .orange : Ink.text) }
             VStack(alignment: .trailing, spacing: 1) {
                 Text(model.clock).font(.mono(20, weight: .medium))

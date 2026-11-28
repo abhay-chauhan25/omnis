@@ -105,9 +105,10 @@ struct ChatView: View {
                 }
                 Spacer()
                 if model.usesLocal {
-                    Label("On this Mac", systemImage: "lock.fill")
+                    Label(model.isOffline && !model.offGrid ? "Offline \u{00B7} on this Mac" : "On this Mac",
+                          systemImage: model.isOffline && !model.offGrid ? "wifi.slash" : "lock.fill")
                         .font(.system(size: 11, weight: .medium))
-                        .help("Questions are being answered by the model on this Mac. Nothing is sent to Claude.")
+                        .help(model.localHelp)
                         .accessibilityLabel("Answering on this Mac")
                 } else if let usage = model.usageLabel {
                     // How much of your Claude plan is used: the current five hours, and this week.
@@ -162,8 +163,9 @@ struct ChatView: View {
                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.text).lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
             if model.usesLocal {
-                HeaderChip(symbol: "lock.fill", text: "On this Mac", colour: Ink.data)
-                    .help("Questions are being answered by the model on this Mac. Nothing is sent to Claude.")
+                HeaderChip(symbol: model.isOffline && !model.offGrid ? "wifi.slash" : "lock.fill",
+                           text: model.isOffline && !model.offGrid ? "Offline \u{00B7} on this Mac" : "On this Mac", colour: Ink.data)
+                    .help(model.localHelp)
             }
             Spacer(minLength: 12)
             if model.keepsChats {

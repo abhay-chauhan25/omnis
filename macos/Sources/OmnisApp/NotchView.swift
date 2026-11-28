@@ -38,7 +38,7 @@ struct NotchView: View {
                         }
                         .accessibilityHidden(true)
                         Spacer(minLength: notchWidth + 24)
-                        Text(chat.usesLocal ? "This Mac" : "Claude \u{00B7} \(chat.modelChoice.title)").font(.mono(10)).foregroundStyle(Ink.muted)
+                        Text(chat.usesLocal ? chat.localLabel : "Claude \u{00B7} \(chat.modelChoice.title)").font(.mono(10)).foregroundStyle(Ink.muted)
                     }
                     .padding(.horizontal, 6)
                     .frame(height: notchHeight)

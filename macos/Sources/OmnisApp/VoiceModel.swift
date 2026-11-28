@@ -23,14 +23,16 @@ final class VoiceModel: ObservableObject {
         didSet { if let data = try? JSONEncoder().encode(persona) { UserDefaults.standard.set(data, forKey: Self.personaKey) } }
     }
     @Published private(set) var voiceName = ""
-    /// True to talk in the Mac's System Voice, which is how a Siri voice is used.
-    @Published var usesSystemVoice: Bool {
+    /// Which voice OMNIS talks in.
+    @Published var voiceChoice: VoiceChoice {
         didSet {
-            UserDefaults.standard.set(usesSystemVoice, forKey: Self.systemVoiceKey)
-            engine.usesSystemVoice = usesSystemVoice
-            voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
+            UserDefaults.standard.set(voiceChoice.rawValue, forKey: Self.voiceChoiceKey)
+            engine.choice = voiceChoice
+            voiceName = VoiceEngine.voiceDescription(voiceChoice, ownVoice: hasOwnVoice)
         }
     }
+    /// True when OMNIS's own voice and second listener have been set up on this Mac.
+    let hasOwnVoice: Bool
     /// Whether talking over OMNIS stops it. While this is on, the Mac's echo
     /// cancelling is used during a conversation so OMNIS hears less of itself.
     @Published var talkOver: Bool {
@@ -44,8 +46,6 @@ final class VoiceModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(speed, forKey: Self.speedKey)
             engine.speed = speed
-        engine.usesSystemVoice = usesSystemVoice
-        voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
         }
     }
     static let speeds: [(title: String, value: Double)] = [("Usual", 1.0), ("A little faster", 1.08), ("Faster", 1.16)]
@@ -55,6 +55,7 @@ final class VoiceModel: ObservableObject {
     private let engine = VoiceEngine()
     private var flow = VoiceFlow()
     private var watching: AnyCancellable?
+    private var connection: AnyCancellable?
     private var replyTimer: Task<Void, Never>?
     /// The answer being waited for, and whether its search question has been asked aloud.
     private var awaited: UUID?
@@ -81,7 +82,12 @@ final class VoiceModel: ObservableObject {
     private static let personaKey = "OMNISVoicePersona"
     private static let switchKey = "OMNISVoiceOn"
     private static let talkOverKey = "OMNISVoiceTalkOver"
-    private static let systemVoiceKey = "OMNISVoiceSystem"
+    private static let voiceChoiceKey = "OMNISVoiceChoice"
+    /// Goes up with each second listen, so an answer to an earlier one is not acted on.
+    private var wakeCheck = 0
+    /// Said before the next spoken answer, once: that OMNIS is answering without the internet.
+    private var preface: String?
+    private var saidOffline = false
     private static let speedKey = "OMNISVoiceSpeed"
 
     var isActive: Bool { state != .off }
@@ -101,7 +107,8 @@ final class VoiceModel: ObservableObject {
     /// Brings the chat window forward when something in it needs the user's eyes or a click.
     private let showChat: () -> Void
 
-    init(chat: ChatModel, audit: AuditLog, autoStart: Bool = true, trace: URL? = nil, showChat: @escaping () -> Void = {}) {
+    init(chat: ChatModel, audit: AuditLog, speech: SpeechHelper? = nil, autoStart: Bool = true, trace: URL? = nil,
+         showChat: @escaping () -> Void = {}) {
         if let trace {
             FileManager.default.createFile(atPath: trace.path, contents: nil, attributes: [.posixPermissions: 0o600])
             traceFile = FileHandle(forWritingAtPath: trace.path)
@@ -109,8 +116,10 @@ final class VoiceModel: ObservableObject {
             traceFile = nil
         }
         talkOver = UserDefaults.standard.object(forKey: Self.talkOverKey) as? Bool ?? true
-        // The System Voice unless the user chose otherwise: it is where a Siri voice is picked.
-        usesSystemVoice = UserDefaults.standard.object(forKey: Self.systemVoiceKey) as? Bool ?? true
+        hasOwnVoice = speech != nil
+        // OMNIS's own voice unless the user chose otherwise, or it has not been set up.
+        voiceChoice = UserDefaults.standard.string(forKey: Self.voiceChoiceKey).flatMap(VoiceChoice.init(rawValue:))
+            ?? (speech != nil ? .adam : .system)
         let savedSpeed = UserDefaults.standard.double(forKey: Self.speedKey)
         speed = Self.speeds.contains { $0.value == savedSpeed } ? savedSpeed : 1.0
         self.chat = chat
@@ -122,6 +131,9 @@ final class VoiceModel: ObservableObject {
             persona = VoicePersona()
         }
         engine.speed = speed
+        engine.helper = speech
+        engine.choice = voiceChoice
+        voiceName = VoiceEngine.voiceDescription(voiceChoice, ownVoice: hasOwnVoice)
         engine.onUtterance = { [weak self] words in self?.heard(words) }
         engine.onPartial = { [weak self] words in
             guard let self, self.inConversation else { return }
@@ -184,6 +196,8 @@ final class VoiceModel: ObservableObject {
             self?.problem = why
             self?.isOn = false
         }
+        // Each time the connection goes or returns, the next spoken answer says so afresh.
+        connection = chat.$isOffline.removeDuplicates().sink { [weak self] _ in self?.saidOffline = false }
         watching = chat.$conversation.sink { [weak self] _ in
             // The chat is read as it stands when this runs, never as it was when the change was
             // announced: one question changes the chat several times, and an earlier picture of
@@ -202,7 +216,7 @@ final class VoiceModel: ObservableObject {
         audit.record(action: "voice", outcome: isOn ? "on" : "off")
         if isOn {
             problem = nil
-            voiceName = VoiceEngine.voiceDescription(system: usesSystemVoice)
+            voiceName = VoiceEngine.voiceDescription(voiceChoice, ownVoice: hasOwnVoice)
             Task {
                 do {
                     try await engine.start()
@@ -223,6 +237,7 @@ final class VoiceModel: ObservableObject {
             actingEvent = nil
             pendingAction = nil
             pendingEvent = nil
+            wakeCheck += 1
             run(flow.switchOff())
             engine.stop()
             state = .off
@@ -306,7 +321,34 @@ final class VoiceModel: ObservableObject {
         trace("heard (\(flow.state)): \(words)")
         // A typed question is being answered: voice waits its turn.
         if flow.state == .waiting, chat.isAnswering { return }
+        if flow.state == .waiting, VoicePhrases.afterWake(words) == nil {
+            listenAgain(to: words)
+            return
+        }
         run(flow.heard(words))
+    }
+
+    /// The recogniser did not hear the wake phrase, but what it wrote could be the phrase misheard
+    /// ("You owe me" for "Yo Omi"). A second listener, which has been told the name, hears the
+    /// same sound again. Only if it hears the phrase is anything done; otherwise its words are dropped.
+    private func listenAgain(to words: String) {
+        guard hasOwnVoice, VoicePhrases.mightBeWake(words) else { return }
+        let sound = engine.lastUtteranceSound()
+        guard !sound.isEmpty else { return }
+        wakeCheck += 1
+        let mine = wakeCheck
+        let began = Date()
+        Task { @MainActor [weak self] in
+            guard let self, let second = await self.engine.secondOpinion(on: sound) else { return }
+            guard mine == self.wakeCheck, self.isOn, self.flow.state == .waiting, !self.chat.isAnswering else { return }
+            guard VoicePhrases.afterWake(second) != nil else {
+                self.trace("second listen: not the phrase")
+                return
+            }
+            self.trace(String(format: "second listen (%.1f s) heard: %@", Date().timeIntervalSince(began), second))
+            self.audit.record(action: "voice", outcome: "woken on a second listen")
+            self.run(self.flow.heard(second))
+        }
     }
 
     private func listen(for seconds: Double) {
@@ -329,8 +371,10 @@ final class VoiceModel: ObservableObject {
                     chat.startFreshForVoice()
                 }
                 engine.chime()
-                // Claude is started now, so that it is ready by the time the question has been said.
+                // Claude and the voice are started now, so that both are ready by the time the question has been said.
                 chat.warmForVoice()
+                engine.warmVoice()
+                wakeCheck += 1
             case .ask(let text):
                 ask(text)
             case .speak(let words):
@@ -428,8 +472,15 @@ final class VoiceModel: ObservableObject {
         }
         stream = SpokenStream()
         askedAt = Date()
+        preface = nil
+        // Without the internet the model on this Mac stands in for Claude. That is said aloud, once each time the connection goes.
+        let standingIn = chat.standsInForClaude
         switch chat.askSpoken(text, style: persona.instruction()) {
         case .asked:
+            if standingIn, !saidOffline {
+                saidOffline = true
+                preface = "I'm offline, so I'm answering on this Mac."
+            }
             // Usually still being written. If it failed at once, `chatChanged` says so.
             awaited = chat.conversation.messages.last.flatMap { $0.role == .assistant ? $0.id : nil }
             if awaited == nil { run(flow.failed("The question could not be asked.")) }
@@ -488,7 +539,7 @@ final class VoiceModel: ObservableObject {
             // waiting on the user is asked first, and nothing is said over it.
             if answer.searchAsk?.state != .waiting {
                 let ready = stream.take(answer.text, final: false)
-                if !ready.isEmpty { run(flow.streamed(ready)) }
+                if !ready.isEmpty { run(flow.streamed(prefaced(ready))) }
             }
             return
         }
@@ -500,8 +551,15 @@ final class VoiceModel: ObservableObject {
             let waiting = pending(in: answer)
             // A preview is always put in front of the user, whether or not a spoken yes can confirm it.
             if waiting != nil { showChat() }
-            run(flow.answered(stream.take(answer.text, final: true), pending: waiting))
+            run(flow.answered(prefaced(stream.take(answer.text, final: true)), pending: waiting))
         }
+    }
+
+    /// The words to say, with anything that must be said first put in front of them.
+    private func prefaced(_ words: String) -> String {
+        guard let first = preface, !words.isEmpty else { return words }
+        preface = nil
+        return first + " " + words
     }
 
     /// What, if anything, the answer left waiting for the user.

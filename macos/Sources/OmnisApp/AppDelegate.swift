@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dashboard: DashboardWindowController!
     private var projectMode: ProjectModeModel!
     private var voice: VoiceModel!
+    private var connection: ConnectionWatch?
     private var notchModel: NotchModel!
     private var notch: NotchWindowController?
     private var searchContainer: SearXNGContainer?
@@ -27,6 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         searchContainer = web?.container
         if AppEnvironment.checkWebSearch {
             runWebSearchCheck(web?.search)
+            return
+        }
+        if let files = AppEnvironment.checkSpeech {
+            Task { @MainActor in
+                await SpeechCheck.run(files: files)
+                exit(0)
+            }
             return
         }
         if let file = AppEnvironment.checkMail {
@@ -126,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let lines = AppEnvironment.voiceRehearsal {
             // No windows, no hotkey, no microphone: only the conversation itself.
+            if AppEnvironment.forceOffline { model.connectionChanged(offline: true) }
             voice = VoiceModel(chat: model, audit: audit, autoStart: false)
             let started = Date()
             voice.rehearse(lines, report: { line in
@@ -136,7 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Something that needs the user's eyes during a spoken conversation is shown in
         // the notch panel when there is one, and in the chat window otherwise.
-        voice = VoiceModel(chat: model, audit: audit, autoStart: AppEnvironment.renderChat == nil,
+        connection = ConnectionWatch { [weak model] offline in model?.connectionChanged(offline: offline) }
+        voice = VoiceModel(chat: model, audit: audit, speech: AppEnvironment.speechConfig().map(SpeechHelper.init(config:)),
+                           autoStart: AppEnvironment.renderChat == nil,
                            trace: AppEnvironment.voiceTrace, showChat: { [weak self] in
             guard let self else { return }
             // Already in front of the user in the dashboard: nothing more to show.

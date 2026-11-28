@@ -463,4 +463,35 @@ import Testing
         var ran = false
         #expect(OmnisCatch { ran = true } == nil && ran)
     }
+
+    // What Apple's recogniser wrote for the wake phrases when they were played to it.
+    @Test func hearsTheSpellingsTheRecogniserGave() {
+        #expect(VoicePhrases.afterWake("Hey, Omniz, what's on my calendar today?") == "what's on my calendar today?")
+        #expect(VoicePhrases.afterWake("Hey, Omnas.") == "")
+        #expect(VoicePhrases.afterWake("Yo Omi. What's the weather like?") == "What's the weather like?")
+        #expect(VoicePhrases.afterWake("Hey Omni") == "")
+    }
+
+    @Test func aMishearingIsWorthASecondListen() {
+        for heard in ["You owe me.", "Hey, all me.", "Kaomi, what time is it?", "Hey, army.", "Yo, owe me.", "Hey, Ami.",
+                      "Hey on this.", "Hey, I'm Niz.", "You'll owe me.", "Naomi, what's up"] {
+            #expect(VoicePhrases.afterWake(heard) == nil, "\(heard)")
+            #expect(VoicePhrases.mightBeWake(heard), "\(heard)")
+        }
+    }
+
+    @Test func ordinaryTalkIsNotListenedToTwice() {
+        for heard in ["", "The meeting moved to Thursday.", "Can we order pizza tonight?", "I think the build is broken again.",
+                      "What time does the game start?", "You should see the new schedule.", "Your turn to cook tonight.",
+                      "A few of us are going out.", "They said it would rain.", "Yeah, that works for me later."] {
+            #expect(!VoicePhrases.mightBeWake(heard), "\(heard)")
+        }
+    }
+
+    @Test func ownVoicesHaveAHelperNameAndApplesDoNot() {
+        #expect(VoiceChoice.adam.helperVoice == "am_adam")
+        #expect(VoiceChoice.heart.helperVoice == "af_heart")
+        #expect(VoiceChoice.system.helperVoice == nil && VoiceChoice.apple.helperVoice == nil)
+        #expect(VoicePersona().preset == "warm")
+    }
 }
