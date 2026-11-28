@@ -474,7 +474,9 @@ import Testing
 
     @Test func aMishearingIsWorthASecondListen() {
         for heard in ["You owe me.", "Hey, all me.", "Kaomi, what time is it?", "Hey, army.", "Yo, owe me.", "Hey, Ami.",
-                      "Hey on this.", "Hey, I'm Niz.", "You'll owe me.", "Naomi, what's up"] {
+                      "Hey on this.", "Hey, I'm Niz.", "You'll owe me.", "Naomi, what's up",
+                      // What it wrote for the user's own voice saying "Hey Omi", "Yo Omi" and, run on, "Yo Omnis".
+                      "Your army.", "you're Omnes."] {
             #expect(VoicePhrases.afterWake(heard) == nil, "\(heard)")
             #expect(VoicePhrases.mightBeWake(heard), "\(heard)")
         }
