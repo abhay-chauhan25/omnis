@@ -435,6 +435,9 @@ final class VoiceEngine: NSObject, AVSpeechSynthesizerDelegate, NSSpeechSynthesi
         resultsTask?.cancel()
         resultsTask = nil
         stopAudio()
+        // The engine itself is let go, not only stopped. One that has ever looked at the microphone keeps
+        // Bluetooth headphones in their low-quality call mode for as long as it exists, even when stopped.
+        audio = AVAudioEngine()
         echoCancelling = false
         reconfiguring = false
         feed?.finish()

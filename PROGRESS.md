@@ -137,6 +137,7 @@ Read `CLAUDE.md` first: it is the contract. Then this file, then the stage docum
 
 ## Things worth knowing
 
+- Bluetooth headphones drop to their low-quality call mode whenever any program uses their microphone. While voice is on and the headphones are the Mac's input, this is expected; OMNIS lets its audio engine go when voice is switched off so the quality returns (fixed 2026-11-28; an engine that had merely looked at the input kept call mode on). Pointing a live engine at the Mac's own microphone afterwards did not bring the quality back in a trial, so using the built-in microphone needs another approach.
 - **Accuracy:** on current-events questions the local model was right 20 to 23 times in 26 across four runs. Its mistakes are mostly about dates.
 - **Search engines throttle bursts.** Heavy testing got this network refused by three engines for some hours. More engines are now switched on and tests pause between searches.
 - **Memory:** 7.7 GB while the model is loaded; nothing when idle.
